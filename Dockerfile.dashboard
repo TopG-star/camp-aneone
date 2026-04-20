@@ -14,6 +14,10 @@ COPY packages/dashboard/package.json packages/dashboard/
 # Install dependencies
 RUN pnpm install --frozen-lockfile
 
+# Bake the correct agent-server URL so Next.js rewrites don't fall back to localhost
+ARG AGENT_SERVER_URL=http://agent-server:4000
+ENV AGENT_SERVER_URL=$AGENT_SERVER_URL
+
 # Copy source
 COPY packages/domain/ packages/domain/
 COPY packages/contracts/ packages/contracts/
