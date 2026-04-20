@@ -1,6 +1,5 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  reactStrictMode: true,
   transpilePackages: ["@oneon/contracts"],
   async rewrites() {
     const agentServer = process.env.AGENT_SERVER_URL ?? "http://localhost:4000";
