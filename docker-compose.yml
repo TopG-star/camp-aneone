@@ -46,9 +46,11 @@ services:
 
   cloudflared:
     image: cloudflare/cloudflared:latest
-    command: tunnel --no-autoupdate run
-    environment:
-      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    # Quick Tunnel: free random *.trycloudflare.com URL, no domain or token needed
+    # URL is printed in logs: docker compose logs cloudflared
+    # To switch to named tunnel later: command: tunnel --no-autoupdate run
+    #   and set TUNNEL_TOKEN env var (see .env.template)
+    command: tunnel --url http://dashboard:3000
     depends_on:
       - dashboard
     restart: unless-stopped

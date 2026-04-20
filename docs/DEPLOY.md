@@ -20,8 +20,7 @@ Three containers:
 | Item | Details |
 |------|---------|
 | Hetzner CX22 | 2 vCPU, 4 GB RAM, 40 GB disk, Ubuntu 24.04 |
-| Cloudflare account | Free plan is fine |
-| Domain | Managed via Cloudflare DNS |
+| Domain | **Not required** — Quick Tunnel provides a free `*.trycloudflare.com` URL |
 
 ## 1. Provision VPS
 
@@ -50,16 +49,18 @@ docker --version
 docker compose version
 ```
 
-## 2. Create Cloudflare Tunnel
+## 2. Cloudflare Quick Tunnel (automatic)
 
-1. Go to **Cloudflare Dashboard → Zero Trust → Networks → Tunnels**
-2. Click **Create a tunnel** → Name it `camp-aneone-staging`
-3. Copy the **tunnel token** (starts with `eyJ…`)
-4. Add a **Public Hostname**:
-   - Subdomain: `app` (or your choice)
-   - Domain: `aneone.com` (or your domain)
-   - Service: `http://dashboard:3000`
-5. DNS record is created automatically by Cloudflare
+No setup needed! The `cloudflared` container uses **Quick Tunnel** mode by default.
+On startup it creates a free random `*.trycloudflare.com` URL with TLS.
+
+After `docker compose up -d`, get your URL:
+```bash
+docker compose logs cloudflared | grep 'trycloudflare.com'
+```
+
+> **Note**: The URL changes on every container restart. This is fine for staging.
+> When you buy a domain, see [Migrating to a Named Tunnel](#migrating-to-a-named-tunnel-custom-domain) below.
 
 ## 3. Clone & Configure
 
@@ -78,21 +79,26 @@ Fill in all required values in `.env`:
 ```
 NODE_ENV=production
 PORT=4000
-PUBLIC_URL=https://app.aneone.com
+# PUBLIC_URL and NEXTAUTH_URL — set AFTER first deploy once you see the tunnel URL
+PUBLIC_URL=https://<your-tunnel-id>.trycloudflare.com
 NEXTAUTH_SECRET=<openssl rand -base64 32>
-NEXTAUTH_URL=https://app.aneone.com
+NEXTAUTH_URL=https://<your-tunnel-id>.trycloudflare.com
 ALLOWED_EMAILS=your@email.com
 API_TOKEN=<openssl rand -base64 32>
 OAUTH_TOKEN_ENCRYPTION_KEY=<openssl rand -base64 32>
 GOOGLE_CLIENT_ID=<from Google Cloud Console>
 GOOGLE_CLIENT_SECRET=<from Google Cloud Console>
 ANTHROPIC_API_KEY=<from Anthropic>
-CLOUDFLARE_TUNNEL_TOKEN=<from step 2>
 DATABASE_PATH=./data/oneon.db
 FEATURE_BACKGROUND_LOOP=true
 ```
 
-> **Important**: Update your Google OAuth authorized redirect URI to `https://app.aneone.com/api/auth/callback/google`.
+> **Quick Tunnel workflow**: Run `./deploy.sh` once → get the tunnel URL from logs →
+> update `PUBLIC_URL` and `NEXTAUTH_URL` in `.env` → restart with `./deploy.sh --no-build`.
+>
+> **Important**: Update your Google OAuth authorized redirect URI to match
+> `https://<your-tunnel-url>/api/auth/callback/google`.
+> (You'll need to update this each time the tunnel URL changes.)
 
 ## 4. Deploy
 
@@ -117,8 +123,9 @@ docker compose ps
 # Check health endpoint
 curl -s http://localhost:4000/health | python3 -m json.tool
 
-# Check Cloudflare Tunnel
-# Visit https://app.aneone.com in your browser
+# Get your Quick Tunnel URL
+docker compose logs cloudflared | grep 'trycloudflare.com'
+# Visit that URL in your browser
 ```
 
 ## Subsequent Deploys
@@ -175,10 +182,28 @@ ufw enable
 
 Port 3000 and 4000 stay internal to Docker — Cloudflare Tunnel connects outbound.
 
+## Migrating to a Named Tunnel (Custom Domain)
+
+When you buy a domain:
+1. Add the domain to Cloudflare (free plan)
+2. Go to **Zero Trust → Networks → Tunnels → Create a tunnel**
+3. Name it `camp-aneone-staging`, copy the tunnel token
+4. Add Public Hostname: `app.yourdomain.com` → `http://dashboard:3000`
+5. Set `CLOUDFLARE_TUNNEL_TOKEN=<token>` in `.env`
+6. Update `docker-compose.yml` cloudflared command:
+   ```yaml
+   command: tunnel --no-autoupdate run
+   environment:
+     TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+   ```
+7. Update `PUBLIC_URL` and `NEXTAUTH_URL` to `https://app.yourdomain.com`
+8. Update Google OAuth redirect URI
+9. `./deploy.sh --no-build`
+
 ## Migrating to Caddy (Future)
 
 When ready to replace Cloudflare Tunnel with Caddy for direct TLS:
 1. Add a Caddy service to `docker-compose.yml`
 2. Expose ports 80 and 443
 3. Remove the `cloudflared` service
-4. Update Cloudflare DNS to point A record to VPS IP
+4. Update DNS A record to point to VPS IP
