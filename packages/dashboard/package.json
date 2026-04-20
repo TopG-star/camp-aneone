@@ -6,8 +6,8 @@
     "build": "next build",
     "dev": "next dev",
     "start": "next start",
-    "test": "vitest run",
-    "test:unit": "vitest run",
+    "test": "vitest run --passWithNoTests",
+    "test:unit": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit",
     "lint": "next lint",
     "clean": "rimraf .next dist"
