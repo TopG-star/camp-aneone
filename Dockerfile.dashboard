@@ -1,0 +1,50 @@
+# ── Stage 1: Build ─────────────────────────────────────────
+FROM node:20-slim AS builder
+
+RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+
+WORKDIR /app
+
+# Copy workspace manifests for dependency caching
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY packages/domain/package.json packages/domain/
+COPY packages/contracts/package.json packages/contracts/
+COPY packages/dashboard/package.json packages/dashboard/
+
+# Install dependencies
+RUN pnpm install --frozen-lockfile
+
+# Copy source
+COPY packages/domain/ packages/domain/
+COPY packages/contracts/ packages/contracts/
+COPY packages/dashboard/ packages/dashboard/
+
+# Build contracts first, then dashboard
+RUN pnpm --filter @oneon/contracts build
+RUN pnpm --filter @oneon/dashboard build
+
+# ── Stage 2: Runtime ──────────────────────────────────────
+FROM node:20-slim AS runtime
+
+WORKDIR /app
+
+# Next.js standalone not enabled — copy full .next build
+COPY --from=builder /app/packages/dashboard/.next ./packages/dashboard/.next
+COPY --from=builder /app/packages/dashboard/public ./packages/dashboard/public
+COPY --from=builder /app/packages/dashboard/package.json ./packages/dashboard/
+COPY --from=builder /app/packages/dashboard/next.config.js ./packages/dashboard/
+COPY --from=builder /app/packages/dashboard/node_modules ./packages/dashboard/node_modules
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/pnpm-workspace.yaml ./
+COPY --from=builder /app/packages/contracts/dist ./packages/contracts/dist
+COPY --from=builder /app/packages/contracts/package.json ./packages/contracts/
+
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+
+EXPOSE 3000
+
+WORKDIR /app/packages/dashboard
+CMD ["npx", "next", "start", "-p", "3000"]

@@ -1,0 +1,50 @@
+version: "3.9"
+
+# ── Required env vars (set in .env or override below) ────────
+# PUBLIC_URL          — externally-reachable base URL (e.g. https://app.example.com)
+# NEXTAUTH_URL        — same as PUBLIC_URL; used by NextAuth for cookie domain + OAuth callbacks
+# NEXTAUTH_SECRET     — Auth.js encryption secret (must match agent-server)
+# GOOGLE_CLIENT_ID    — Google OAuth client ID
+# GOOGLE_CLIENT_SECRET— Google OAuth client secret
+# ALLOWED_EMAILS      — comma-separated list of allowed sign-in emails
+# API_TOKEN           — shared bearer token for server-to-server calls
+
+services:
+  agent-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    ports:
+      - "4000:4000"
+    volumes:
+      - db-data:/app/data
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      DB_PATH: /app/data/oneon.db
+      # PUBLIC_URL must be the external origin so OAuth redirect_uri is correct
+      # PUBLIC_URL: https://app.example.com
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      AGENT_SERVER_URL: http://agent-server:4000
+      # NextAuth needs to know its own origin for cookies and OAuth redirects
+      # NEXTAUTH_URL: https://app.example.com
+      AUTH_TRUST_HOST: "true"
+    depends_on:
+      - agent-server
+    restart: unless-stopped
+
+volumes:
+  db-data:

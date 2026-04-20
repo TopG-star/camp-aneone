@@ -1,0 +1,219 @@
+"use client";
+
+import { useState } from "react";
+import { useDeadlines } from "@/lib/hooks";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { CalendarClock, AlertTriangle, Filter } from "lucide-react";
+
+interface DeadlineItem {
+  id: string;
+  itemId: string;
+  subject: string;
+  source: string;
+  dueDate: string;
+  status: string;
+  isOverdue: boolean;
+}
+
+interface DeadlinesResponse {
+  deadlines: DeadlineItem[];
+  counts: { total: number; open: number; overdue: number };
+}
+
+const STATUS_OPTIONS = ["all", "open", "done", "dismissed"] as const;
+const RANGE_OPTIONS = [
+  { label: "7 days", value: "7" },
+  { label: "14 days", value: "14" },
+  { label: "30 days", value: "30" },
+  { label: "90 days", value: "90" },
+] as const;
+
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const diffMs = d.getTime() - now.getTime();
+  const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+  const formatted = d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
+  });
+
+  if (diffDays < 0) return `${formatted} (${Math.abs(diffDays)}d overdue)`;
+  if (diffDays === 0) return `${formatted} (today)`;
+  if (diffDays === 1) return `${formatted} (tomorrow)`;
+  if (diffDays <= 7) return `${formatted} (${diffDays}d)`;
+  return formatted;
+}
+
+export default function DeadlinesPage() {
+  const [status, setStatus] = useState<string>("all");
+  const [range, setRange] = useState<string>("30");
+
+  const queryParts: string[] = [`range=${range}`];
+  if (status !== "all") queryParts.push(`status=${status}`);
+  const query = queryParts.join("&");
+
+  const { data, error, isLoading } = useDeadlines(query);
+  const response = data as DeadlinesResponse | undefined;
+
+  return (
+    <div className="space-y-8">
+      {/* Header */}
+      <div className="space-y-2">
+        <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+          Planning
+        </p>
+        <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
+          Deadlines
+        </h1>
+        <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+          Upcoming deadlines extracted from your messages and calendar.
+        </p>
+      </div>
+
+      {/* Summary Counts */}
+      {response && (
+        <div className="flex gap-4">
+          <div className="rounded-twelve bg-surface-low px-4 py-2 dark:bg-dark-surface-low">
+            <span className="text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+              Total
+            </span>
+            <p className="text-title-lg font-bold text-on-surface dark:text-dark-on-surface">
+              {response.counts.total}
+            </p>
+          </div>
+          <div className="rounded-twelve bg-surface-low px-4 py-2 dark:bg-dark-surface-low">
+            <span className="text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+              Open
+            </span>
+            <p className="text-title-lg font-bold text-on-surface dark:text-dark-on-surface">
+              {response.counts.open}
+            </p>
+          </div>
+          <div className="rounded-twelve bg-error-container px-4 py-2 dark:bg-dark-error-container">
+            <span className="text-label-sm text-on-error-container dark:text-dark-on-error-container">
+              Overdue
+            </span>
+            <p className="text-title-lg font-bold text-on-error-container dark:text-dark-on-error-container">
+              {response.counts.overdue}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-3">
+        <Filter className="h-4 w-4 text-on-surface-variant dark:text-dark-on-surface-variant" />
+        <div className="flex gap-1">
+          {STATUS_OPTIONS.map((s) => (
+            <button
+              key={s}
+              onClick={() => setStatus(s)}
+              className={`rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
+                status === s
+                  ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
+                  : "text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high"
+              }`}
+            >
+              {s === "all" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
+            </button>
+          ))}
+        </div>
+        <span className="text-on-surface-variant/30 dark:text-dark-on-surface-variant/30">
+          |
+        </span>
+        <div className="flex gap-1">
+          {RANGE_OPTIONS.map(({ label, value }) => (
+            <button
+              key={value}
+              onClick={() => setRange(value)}
+              className={`rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
+                range === value
+                  ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
+                  : "text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* List */}
+      {isLoading && (
+        <div className="space-y-3">
+          {[1, 2, 3].map((i) => (
+            <div
+              key={i}
+              className="h-20 animate-pulse rounded-twelve bg-surface-low dark:bg-dark-surface-low"
+            />
+          ))}
+        </div>
+      )}
+
+      {error && (
+        <Card>
+          <CardContent className="py-8 text-center text-on-surface-variant dark:text-dark-on-surface-variant">
+            Failed to load deadlines. Please try again.
+          </CardContent>
+        </Card>
+      )}
+
+      {response && response.deadlines.length === 0 && (
+        <Card>
+          <CardContent className="py-12 text-center">
+            <CalendarClock className="mx-auto mb-3 h-10 w-10 text-on-surface-variant/30 dark:text-dark-on-surface-variant/30" />
+            <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+              No deadlines found for this time range.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {response && response.deadlines.length > 0 && (
+        <div className="space-y-2">
+          {response.deadlines.map((deadline) => (
+            <Card
+              key={deadline.id}
+              className={
+                deadline.isOverdue
+                  ? "border-error/30 dark:border-dark-error/30"
+                  : ""
+              }
+            >
+              <CardContent className="flex items-center gap-4 py-4">
+                {deadline.isOverdue ? (
+                  <AlertTriangle className="h-5 w-5 shrink-0 text-error dark:text-dark-error" />
+                ) : (
+                  <CalendarClock className="h-5 w-5 shrink-0 text-on-surface-variant dark:text-dark-on-surface-variant" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-medium text-on-surface dark:text-dark-on-surface">
+                    {deadline.subject}
+                  </p>
+                  <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
+                    {deadline.source} &middot; {formatDate(deadline.dueDate)}
+                  </p>
+                </div>
+                <Badge
+                  variant={
+                    deadline.isOverdue
+                      ? "error"
+                      : deadline.status === "done"
+                        ? "success"
+                        : "default"
+                  }
+                >
+                  {deadline.isOverdue ? "Overdue" : deadline.status}
+                </Badge>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

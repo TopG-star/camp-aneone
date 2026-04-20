@@ -1,0 +1,19 @@
+# Gitleaks configuration — secret scanning rules
+# https://github.com/gitleaks/gitleaks
+
+title = "camp-aneone gitleaks config"
+
+[extend]
+# Inherit the default gitleaks ruleset (covers AWS, GCP, GitHub tokens, etc.)
+useDefault = true
+
+[allowlist]
+# Files that are allowed to contain secret-like patterns (templates only)
+paths = [
+  '''.env\.template$''',
+  '''.env\.local\.template$''',
+  '''.env\.test\.local\.template$''',
+  '''.env\.example$''',
+  '''docs/SETUP_ENV\.md$''',
+  '''\.gitleaks\.toml$''',
+]

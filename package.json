@@ -1,0 +1,24 @@
+{
+  "name": "camp-aneone",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Personal AI agent — unified inbox, classification, actions, chat",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r run build",
+    "dev:server": "pnpm --filter @oneon/agent-server dev",
+    "dev:dashboard": "pnpm --filter @oneon/dashboard dev",
+    "test": "pnpm -r run test",
+    "test:unit": "pnpm -r run test:unit",
+    "lint": "pnpm -r run lint",
+    "typecheck": "pnpm -r run typecheck",
+    "clean": "pnpm -r run clean",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7"
+  }
+}

@@ -1,0 +1,53 @@
+# ── Dependencies ──────────────────────────────────────
+node_modules/
+
+# ── Environment secrets ──────────────────────────────
+.env
+.env.local
+.env.production
+.env.*.local
+# Keep templates in repo (these contain no secrets)
+!.env.template
+!.env.local.template
+!.env.test.local.template
+!.env.example
+
+# ── Database ─────────────────────────────────────────
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# ── Build outputs ────────────────────────────────────
+dist/
+.next/
+out/
+*.tsbuildinfo
+
+# ── Local reference / design files ───────────────────
+External Context/
+
+# ── OS / Editor ──────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/settings.json
+
+# ── Docker ───────────────────────────────────────────
+docker-compose.override.yml
+
+# ── Cloudflare ───────────────────────────────────────
+*.json
+!package.json
+!tsconfig.json
+!tsconfig.*.json
+
+# ── Logs ─────────────────────────────────────────────
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# ── Coverage ─────────────────────────────────────────
+coverage/

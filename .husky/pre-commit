@@ -1,0 +1,10 @@
+# Scan staged files for secrets using gitleaks
+# Install gitleaks: https://github.com/gitleaks/gitleaks#installing
+# On Windows: winget install gitleaks
+# On macOS: brew install gitleaks
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks protect --staged --config .gitleaks.toml
+else
+  echo "⚠ gitleaks not installed — skipping secret scan"
+  echo "  Install: https://github.com/gitleaks/gitleaks#installing"
+fi
