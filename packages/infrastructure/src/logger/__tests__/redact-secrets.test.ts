@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { redactSecrets } from "../structured-logger.js";
 
+// Security: verify log redaction covers all sensitive patterns
 describe("redactSecrets", () => {
   it("redacts Authorization Bearer tokens", () => {
     const input = '{"Authorization":"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def"}';
