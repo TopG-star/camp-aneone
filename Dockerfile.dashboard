@@ -23,8 +23,10 @@ COPY packages/domain/ packages/domain/
 COPY packages/contracts/ packages/contracts/
 COPY packages/dashboard/ packages/dashboard/
 
-# Build contracts first, then dashboard
-RUN pnpm --filter @oneon/contracts build
+# Build contracts via tsc directly from root node_modules (avoids pnpm per-package
+# symlink resolution which breaks in Docker). Then build dashboard via next build
+# (Next.js build cannot be replaced with plain tsc).
+RUN node node_modules/typescript/bin/tsc --build packages/contracts/tsconfig.json
 RUN pnpm --filter @oneon/dashboard build
 
 # ── Stage 2: Runtime ──────────────────────────────────────
