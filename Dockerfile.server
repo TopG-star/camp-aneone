@@ -6,7 +6,7 @@ RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 WORKDIR /app
 
 # Copy workspace manifests for dependency caching
-COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json ./
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json .npmrc ./
 COPY packages/domain/package.json packages/domain/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/infrastructure/package.json packages/infrastructure/
@@ -52,10 +52,6 @@ COPY --from=builder /app/packages/application/dist ./packages/application/dist
 COPY --from=builder /app/packages/application/package.json ./packages/application/
 COPY --from=builder /app/packages/agent-server/dist ./packages/agent-server/dist
 COPY --from=builder /app/packages/agent-server/package.json ./packages/agent-server/
-COPY --from=builder /app/packages/agent-server/node_modules ./packages/agent-server/node_modules
-COPY --from=builder /app/packages/infrastructure/node_modules ./packages/infrastructure/node_modules
-COPY --from=builder /app/packages/application/node_modules ./packages/application/node_modules
-COPY --from=builder /app/packages/contracts/node_modules ./packages/contracts/node_modules
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/pnpm-workspace.yaml ./
 
