@@ -23,15 +23,12 @@ COPY packages/infrastructure/ packages/infrastructure/
 COPY packages/application/ packages/application/
 COPY packages/agent-server/ packages/agent-server/
 
-# Build all packages in dependency order
-RUN pnpm --filter @oneon/domain build \
-  && pnpm --filter @oneon/contracts build \
-  && pnpm --filter @oneon/infrastructure build \
-  && pnpm --filter @oneon/application build \
-  && pnpm --filter @oneon/agent-server build
-
-# Prune dev dependencies
-RUN pnpm prune --prod
+# Build all packages via tsc --build from root node_modules.
+# Using node_modules/typescript/bin/tsc directly (not pnpm --filter build) because
+# pnpm --filter resolves .bin from the package's own node_modules, which are symlinks
+# into the virtual store; those symlinks break inside Docker layers.
+# tsc --build resolves project references automatically in dependency order.
+RUN node node_modules/typescript/bin/tsc --build packages/agent-server/tsconfig.json
 
 # ── Stage 2: Runtime ──────────────────────────────────────
 FROM node:20-slim AS runtime
