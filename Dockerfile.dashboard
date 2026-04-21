@@ -6,7 +6,7 @@ RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 WORKDIR /app
 
 # Copy workspace manifests for dependency caching
-COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json ./
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json .npmrc ./
 COPY packages/domain/package.json packages/domain/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/dashboard/package.json packages/dashboard/
@@ -14,7 +14,7 @@ COPY packages/dashboard/package.json packages/dashboard/
 # Install dependencies
 RUN pnpm install --frozen-lockfile
 
-# Bake the correct agent-server URL so Next.js rewrites don't fall back to localhost
+# Bake AGENT_SERVER_URL into the Next.js build so rewrites() uses the correct host
 ARG AGENT_SERVER_URL=http://agent-server:4000
 ENV AGENT_SERVER_URL=$AGENT_SERVER_URL
 
