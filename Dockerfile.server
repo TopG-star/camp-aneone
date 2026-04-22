@@ -45,6 +45,7 @@ COPY --from=builder /app/packages/contracts/dist ./packages/contracts/dist
 COPY --from=builder /app/packages/contracts/package.json ./packages/contracts/
 COPY --from=builder /app/packages/infrastructure/dist ./packages/infrastructure/dist
 COPY --from=builder /app/packages/infrastructure/package.json ./packages/infrastructure/
+COPY --from=builder /app/packages/infrastructure/src/database/migrations ./packages/infrastructure/src/database/migrations
 COPY --from=builder /app/packages/application/dist ./packages/application/dist
 COPY --from=builder /app/packages/application/package.json ./packages/application/
 COPY --from=builder /app/packages/agent-server/dist ./packages/agent-server/dist
