@@ -53,6 +53,17 @@ COPY --from=builder /app/packages/agent-server/package.json ./packages/agent-ser
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/pnpm-workspace.yaml ./
 
+# Ensure workspace package specifiers (@oneon/*) resolve at runtime.
+# We intentionally set explicit links rather than copying package-level node_modules,
+# because some workspace packages may not have a node_modules directory in builder.
+RUN rm -rf /app/node_modules/@oneon \
+	&& mkdir -p /app/node_modules/@oneon \
+	&& ln -s /app/packages/domain /app/node_modules/@oneon/domain \
+	&& ln -s /app/packages/contracts /app/node_modules/@oneon/contracts \
+	&& ln -s /app/packages/application /app/node_modules/@oneon/application \
+	&& ln -s /app/packages/infrastructure /app/node_modules/@oneon/infrastructure \
+	&& ln -s /app/packages/agent-server /app/node_modules/@oneon/agent-server
+
 # SQLite data directory
 RUN mkdir -p /app/data
 VOLUME /app/data
