@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { apiFetch } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { MessageSquare, Send, Loader2, Bot, User } from "lucide-react";
+import { MessageSquare, Send, Loader2, Bot, User, AlertTriangle } from "lucide-react";
 import { getMotionDelayClass } from "@/lib/motion-utils";
 
 interface ChatMessage {
@@ -118,15 +118,15 @@ export default function ChatPage() {
       >
         <div className="flex-1 space-y-3 sm:space-y-4 overflow-y-auto p-3 sm:p-4">
           {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-center space-y-4">
+            <div className="state-content state-content-center h-full justify-center gap-4">
               <div className="rounded-full bg-surface-low dark:bg-dark-surface-low p-4">
-                <MessageSquare className="h-8 w-8 text-on-surface-variant/50 dark:text-dark-on-surface-variant/50" />
+                <MessageSquare className="state-icon" />
               </div>
-              <div className="space-y-2">
-                <p className="text-title-md font-medium text-on-surface dark:text-dark-on-surface">
+              <div className="state-content state-content-center gap-1">
+                <p className="state-title">
                   Start a conversation
                 </p>
-                <p className="text-body-md text-on-surface-variant dark:text-dark-on-surface-variant max-w-md">
+                <p className="state-subtext max-w-md">
                   Ask about your inbox, upcoming deadlines, calendar events, or pending actions.
                 </p>
               </div>
@@ -192,8 +192,11 @@ export default function ChatPage() {
 
         {/* Error */}
         {error && (
-          <div className="px-4 pb-2">
-            <p className="text-label-md text-red-600 dark:text-red-400">{error}</p>
+          <div className="mx-3 mb-2 rounded-eight border border-red-500/30 bg-red-500/10 px-3 py-2 sm:mx-4">
+            <div className="state-content gap-1 sm:flex-row sm:items-center sm:justify-center">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-red-500/80 dark:text-red-400/80" />
+              <p className="state-error">{error}</p>
+            </div>
           </div>
         )}
 

@@ -155,13 +155,13 @@ export default function SettingsPage() {
 
       {/* Flash messages */}
       {error && (
-        <div className="rounded-eight border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400">
-          {error}
+        <div className="rounded-eight border border-red-500/30 bg-red-500/10 p-4">
+          <p className="state-error">{error}</p>
         </div>
       )}
       {success && (
-        <div className="rounded-eight border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-400">
-          {success}
+        <div className="rounded-eight border border-emerald-500/30 bg-emerald-500/10 p-4">
+          <p className="state-success">{success}</p>
         </div>
       )}
 
@@ -175,7 +175,7 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent>
           {statusLoading ? (
-            <div className="h-12 animate-pulse rounded-eight bg-surface-low dark:bg-dark-surface-low" />
+            <div className="state-skeleton h-12" />
           ) : gmail?.connected && gmail.source === "db" ? (
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -240,7 +240,7 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent>
           {statusLoading ? (
-            <div className="h-12 animate-pulse rounded-eight bg-surface-low dark:bg-dark-surface-low" />
+            <div className="state-skeleton h-12" />
           ) : github?.connected && github.source === "db" ? (
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -301,9 +301,9 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent>
           {statusLoading ? (
-            <div className="animate-pulse space-y-4">
+            <div className="space-y-4">
               {[1, 2, 3].map((i) => (
-                <div key={i} className="h-12 rounded-eight bg-surface-low dark:bg-dark-surface-low" />
+                <div key={i} className="state-skeleton h-12" />
               ))}
             </div>
           ) : status ? (
@@ -352,7 +352,7 @@ export default function SettingsPage() {
               </div>
             </div>
           ) : (
-            <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+            <p className="state-subtext">
               Unable to load status
             </p>
           )}
@@ -366,15 +366,16 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent>
           {!prefsData ? (
-            <p className="meta-copy">
-              Loading preferences...
-            </p>
+            <div className="space-y-2 py-1">
+              <div className="state-skeleton h-4 w-40" />
+              <div className="state-skeleton h-4 w-56" />
+            </div>
           ) : prefEntries.length === 0 ? (
-            <div className="rounded-eight bg-surface-low p-4 dark:bg-dark-surface-low">
-              <p className="text-sm text-on-surface dark:text-dark-on-surface">
+            <div className="state-content rounded-eight bg-surface-low p-4 dark:bg-dark-surface-low">
+              <p className="state-title">
                 No custom preferences yet.
               </p>
-              <p className="mt-1 text-sm meta-copy">
+              <p className="state-subtext">
                 Defaults are active: notification events are enabled until you set an override.
               </p>
             </div>
