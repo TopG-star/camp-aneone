@@ -45,8 +45,8 @@ export default function TodayPage() {
         </div>
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {[1, 2, 3].map((i) => (
-            <Card key={i} className="animate-pulse">
-              <div className="h-32" />
+            <Card key={i}>
+              <div className="state-skeleton h-32" />
             </Card>
           ))}
         </div>
@@ -59,8 +59,9 @@ export default function TodayPage() {
       <div className="space-y-4 motion-page-enter">
         <h1 className="page-title">Today</h1>
         <Card>
-          <CardContent>
-            <p className="text-red-500">Failed to load dashboard data. Is the agent server running?</p>
+          <CardContent className="state-content state-content-center py-8">
+            <AlertTriangle className="h-8 w-8 text-red-500/80 dark:text-red-400/80" />
+            <p className="state-error">Failed to load dashboard data. Is the agent server running?</p>
           </CardContent>
         </Card>
       </div>

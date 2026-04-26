@@ -6,7 +6,7 @@ import { apiFetch } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Zap, Check, X } from "lucide-react";
+import { Zap, Check, X, AlertTriangle } from "lucide-react";
 import type { ActionsListResponse } from "@oneon/contracts";
 import { getMotionDelayClass } from "@/lib/motion-utils";
 
@@ -85,8 +85,8 @@ export default function ActionsPage() {
       {isLoading && (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
-            <Card key={i} className="animate-pulse">
-              <div className="h-24" />
+            <Card key={i}>
+              <div className="state-skeleton h-24" />
             </Card>
           ))}
         </div>
@@ -94,8 +94,9 @@ export default function ActionsPage() {
 
       {error && (
         <Card>
-          <CardContent>
-            <p className="text-red-500">Failed to load actions.</p>
+          <CardContent className="state-content state-content-center py-8">
+            <AlertTriangle className="h-8 w-8 text-red-500/80 dark:text-red-400/80" />
+            <p className="state-error">Failed to load actions.</p>
           </CardContent>
         </Card>
       )}
@@ -104,8 +105,9 @@ export default function ActionsPage() {
         <>
           {response.actions.length === 0 ? (
             <Card>
-              <CardContent>
-                <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+              <CardContent className="state-content state-content-center py-10">
+                <Zap className="state-icon" />
+                <p className="state-title">
                   No actions match your filters.
                 </p>
               </CardContent>

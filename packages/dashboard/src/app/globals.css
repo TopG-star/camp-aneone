@@ -199,6 +199,34 @@
     @apply mb-2 text-label-sm uppercase tracking-[0.14em] text-on-surface-variant/70 dark:text-dark-on-surface-variant/75;
   }
 
+  .state-content {
+    @apply flex flex-col gap-2;
+  }
+
+  .state-content-center {
+    @apply items-center text-center;
+  }
+
+  .state-title {
+    @apply text-base font-medium text-on-surface dark:text-dark-on-surface;
+  }
+
+  .state-subtext {
+    @apply text-sm text-on-surface-variant/75 dark:text-dark-on-surface-variant/75;
+  }
+
+  .state-error {
+    @apply text-sm text-red-600 dark:text-red-400;
+  }
+
+  .state-icon {
+    @apply h-10 w-10 text-on-surface-variant/35 dark:text-dark-on-surface-variant/35;
+  }
+
+  .state-skeleton {
+    @apply animate-pulse rounded-eight bg-surface-low dark:bg-dark-surface-low;
+  }
+
   .meta-copy {
     @apply text-on-surface-variant/70 dark:text-dark-on-surface-variant/75;
   }

@@ -159,27 +159,27 @@ export default function DeadlinesPage() {
       {isLoading && (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
-            <div
-              key={i}
-              className="h-20 animate-pulse rounded-twelve bg-surface-low dark:bg-dark-surface-low"
-            />
+            <Card key={i}>
+              <div className="state-skeleton h-20" />
+            </Card>
           ))}
         </div>
       )}
 
       {error && (
         <Card>
-          <CardContent className="py-8 text-center text-on-surface-variant dark:text-dark-on-surface-variant">
-            Failed to load deadlines. Please try again.
+          <CardContent className="state-content state-content-center py-8">
+            <AlertTriangle className="h-8 w-8 text-red-500/80 dark:text-red-400/80" />
+            <p className="state-error">Failed to load deadlines. Please try again.</p>
           </CardContent>
         </Card>
       )}
 
       {response && response.deadlines.length === 0 && (
         <Card>
-          <CardContent className="py-12 text-center">
-            <CalendarClock className="mx-auto mb-3 h-10 w-10 text-on-surface-variant/30 dark:text-dark-on-surface-variant/30" />
-            <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+          <CardContent className="state-content state-content-center py-10">
+            <CalendarClock className="state-icon" />
+            <p className="state-title">
               No deadlines found for this time range.
             </p>
           </CardContent>
