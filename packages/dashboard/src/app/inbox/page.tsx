@@ -54,7 +54,7 @@ export default function InboxPage() {
         <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
           Inbox
         </h1>
-        <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+        <p className="page-copy">
           All signals from connected sources, classified by the agent.
         </p>
       </div>
@@ -73,10 +73,10 @@ export default function InboxPage() {
             <button
               key={s}
               onClick={() => { setSource(s); setOffset(0); }}
-              className={`shrink-0 rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
+              className={`filter-chip ${
                 source === s
-                  ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
-                  : "text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high"
+                  ? "filter-chip-active"
+                  : "filter-chip-idle"
               }`}
             >
               {s === "all" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
@@ -89,10 +89,10 @@ export default function InboxPage() {
             <button
               key={c}
               onClick={() => { setCategory(c); setOffset(0); }}
-              className={`shrink-0 rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
+              className={`filter-chip ${
                 category === c
-                  ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
-                  : "text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high"
+                  ? "filter-chip-active"
+                  : "filter-chip-idle"
               }`}
             >
               {c === "all" ? "All" : c.replace(/_/g, " ")}
@@ -154,7 +154,7 @@ export default function InboxPage() {
                                 P{item.classification.priority}
                               </Badge>
                             )}
-                            <span className="text-label-sm text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+                            <span className="text-label-sm meta-copy">
                               {new Date(item.receivedAt).toLocaleDateString("en-US", {
                                 month: "short",
                                 day: "numeric",
@@ -162,11 +162,11 @@ export default function InboxPage() {
                             </span>
                           </div>
                         </div>
-                        <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                        <p className="text-sm meta-copy">
                           {item.from}
                         </p>
                         {item.classification && (
-                          <p className="mt-1 text-sm text-on-surface-variant/70 dark:text-dark-on-surface-variant/70">
+                          <p className="mt-1 text-sm meta-copy">
                             {item.classification.summary}
                           </p>
                         )}
@@ -182,7 +182,7 @@ export default function InboxPage() {
           <div
             className={`motion-rise-in-soft flex flex-col gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between ${getMotionDelayClass(3)}`}
           >
-            <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
+            <p className="text-label-md meta-copy">
               Showing {offset + 1}–{Math.min(offset + limit, response.pagination.total)} of{" "}
               {response.pagination.total}
             </p>

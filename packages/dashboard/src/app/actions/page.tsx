@@ -57,7 +57,7 @@ export default function ActionsPage() {
         <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
           Action Center
         </h1>
-        <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+        <p className="page-copy">
           Review, validate, and execute agent-proposed actions.
         </p>
       </div>
@@ -69,10 +69,10 @@ export default function ActionsPage() {
             <button
               key={s}
               onClick={() => { setStatusFilter(s); setOffset(0); }}
-              className={`shrink-0 rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
+              className={`filter-chip ${
                 statusFilter === s
-                  ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
-                  : "text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high"
+                  ? "filter-chip-active"
+                  : "filter-chip-idle"
               }`}
             >
               {s === "all" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
@@ -140,15 +140,15 @@ export default function ActionsPage() {
                       </p>
                     )}
                     <div className="rounded-eight bg-surface-low p-4 dark:bg-dark-surface-low">
-                      <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50 mb-2">
+                      <p className="text-label-md uppercase tracking-wider meta-copy mb-2">
                         Payload
                       </p>
-                      <pre className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant overflow-x-auto whitespace-pre-wrap">
+                      <pre className="text-sm meta-copy overflow-x-auto whitespace-pre-wrap">
                         {formatPayload(action.payloadJson)}
                       </pre>
                     </div>
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <p className="text-label-sm text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+                      <p className="text-label-sm meta-copy">
                         Created{" "}
                         {new Date(action.createdAt).toLocaleString("en-US", {
                           month: "short",
@@ -190,7 +190,7 @@ export default function ActionsPage() {
           <div
             className={`motion-rise-in-soft flex flex-col gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between ${getMotionDelayClass(3)}`}
           >
-            <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
+            <p className="text-label-md meta-copy">
               Showing {offset + 1}–{Math.min(offset + limit, response.pagination.total)} of{" "}
               {response.pagination.total}
             </p>

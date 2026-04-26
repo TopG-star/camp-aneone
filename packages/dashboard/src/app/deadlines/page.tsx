@@ -70,7 +70,7 @@ export default function DeadlinesPage() {
         <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
           Deadlines
         </h1>
-        <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+        <p className="page-copy">
           Upcoming deadlines extracted from your messages and calendar.
         </p>
       </div>
@@ -127,10 +127,10 @@ export default function DeadlinesPage() {
             <button
               key={s}
               onClick={() => setStatus(s)}
-              className={`shrink-0 rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
+              className={`filter-chip ${
                 status === s
-                  ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
-                  : "text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high"
+                  ? "filter-chip-active"
+                  : "filter-chip-idle"
               }`}
             >
               {s === "all" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
@@ -143,10 +143,10 @@ export default function DeadlinesPage() {
             <button
               key={value}
               onClick={() => setRange(value)}
-              className={`shrink-0 rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
+              className={`filter-chip ${
                 range === value
-                  ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
-                  : "text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high"
+                  ? "filter-chip-active"
+                  : "filter-chip-idle"
               }`}
             >
               {label}
@@ -207,7 +207,7 @@ export default function DeadlinesPage() {
                   <p className="truncate font-medium text-on-surface dark:text-dark-on-surface">
                     {deadline.subject}
                   </p>
-                  <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
+                  <p className="text-label-md meta-copy">
                     {deadline.source} &middot; {formatDate(deadline.dueDate)}
                   </p>
                 </div>

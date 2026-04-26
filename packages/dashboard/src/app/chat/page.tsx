@@ -107,7 +107,7 @@ export default function ChatPage() {
         <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
           Chat
         </h1>
-        <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+        <p className="page-copy">
           Ask your AI assistant about emails, deadlines, calendar, and more.
         </p>
       </div>
@@ -140,7 +140,7 @@ export default function ChatPage() {
                   <button
                     key={suggestion}
                     onClick={() => setInput(suggestion)}
-                    className="motion-interactive rounded-full px-3 py-1.5 text-label-md text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high ghost-border transition-colors"
+                    className="motion-interactive filter-chip filter-chip-idle"
                   >
                     {suggestion}
                   </button>
@@ -166,7 +166,7 @@ export default function ChatPage() {
                     : "bg-surface-low dark:bg-dark-surface-low text-on-surface dark:text-dark-on-surface"
                 }`}
               >
-                <p className="text-body-md whitespace-pre-wrap">{msg.content}</p>
+                <p className="text-body-md whitespace-pre-wrap leading-relaxed">{msg.content}</p>
               </div>
               {msg.role === "user" && (
                 <div className="flex-shrink-0 w-8 h-8 rounded-full bg-surface-high dark:bg-dark-surface-high flex items-center justify-center">
@@ -219,7 +219,7 @@ export default function ChatPage() {
               <Send className="h-4 w-4" />
             </Button>
           </div>
-          <p className="mt-2 text-label-sm text-on-surface-variant/40 dark:text-dark-on-surface-variant/40">
+          <p className="mt-2 text-label-sm meta-copy">
             Press Enter to send, Shift+Enter for new line
           </p>
         </div>

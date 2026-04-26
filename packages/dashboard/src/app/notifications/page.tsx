@@ -67,6 +67,9 @@ export default function NotificationsPage() {
           <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
             Notifications
           </h1>
+          <p className="page-copy">
+            Latest system and workflow updates from your agent.
+          </p>
         </div>
         <Button
           variant="ghost"
@@ -132,7 +135,7 @@ export default function NotificationsPage() {
                           <Badge variant={typeVariant(n.type)}>
                             {n.type.replace(/_/g, " ")}
                           </Badge>
-                          <span className="text-label-sm text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+                          <span className="text-label-sm meta-copy">
                             {new Date(n.createdAt).toLocaleString("en-US", {
                               month: "short",
                               day: "numeric",
@@ -142,7 +145,7 @@ export default function NotificationsPage() {
                           </span>
                         </div>
                       </div>
-                      <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                      <p className="text-sm meta-copy">
                         {n.body}
                       </p>
                     </div>

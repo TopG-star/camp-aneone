@@ -148,6 +148,9 @@ export default function SettingsPage() {
         <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
           Settings
         </h1>
+        <p className="page-copy">
+          Manage integrations, notification behavior, and appearance preferences.
+        </p>
       </div>
 
       {/* Flash messages */}
@@ -178,7 +181,7 @@ export default function SettingsPage() {
               <div>
                 <Badge variant="success">Connected via OAuth</Badge>
                 {gmail.connectedAs && (
-                  <p className="mt-1 text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                  <p className="mt-1 text-sm meta-copy">
                     {gmail.connectedAs}
                   </p>
                 )}
@@ -196,7 +199,7 @@ export default function SettingsPage() {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <Badge variant="success">Connected via env</Badge>
-                <p className="mt-1 text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                <p className="mt-1 text-sm meta-copy">
                   Configured via environment variables. Connect via OAuth to manage from here.
                 </p>
               </div>
@@ -211,7 +214,7 @@ export default function SettingsPage() {
             </div>
           ) : (
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+              <p className="text-sm meta-copy">
                 Not connected. Sign in with Google to enable Gmail and Calendar.
               </p>
               <button
@@ -243,7 +246,7 @@ export default function SettingsPage() {
               <div>
                 <Badge variant="success">Connected via PAT</Badge>
                 {github.connectedAs && (
-                  <p className="mt-1 text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                  <p className="mt-1 text-sm meta-copy">
                     {github.connectedAs}
                   </p>
                 )}
@@ -260,13 +263,13 @@ export default function SettingsPage() {
           ) : github?.connected && github.source === "env" ? (
             <div>
               <Badge variant="success">Connected via env</Badge>
-              <p className="mt-1 text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+              <p className="mt-1 text-sm meta-copy">
                 Configured via GITHUB_TOKEN environment variable.
               </p>
             </div>
           ) : (
             <div className="space-y-3">
-              <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+              <p className="text-sm meta-copy">
                 Enter a GitHub Personal Access Token to enable GitHub integration.
               </p>
               <div className="flex flex-col gap-2 sm:flex-row">
@@ -319,7 +322,7 @@ export default function SettingsPage() {
                           {integration.name}
                         </p>
                         {integration.detail && (
-                          <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
+                          <p className="text-label-md meta-copy">
                             {integration.detail}
                             {integration.connectedAs ? ` · ${integration.connectedAs}` : ""}
                           </p>
@@ -343,7 +346,7 @@ export default function SettingsPage() {
                 );
               })}
               <div className="pt-2">
-                <p className="text-label-sm text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+                <p className="text-label-sm meta-copy">
                   Uptime: {formatUptime(status.uptime)}
                 </p>
               </div>
@@ -363,7 +366,7 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent>
           {!prefsData ? (
-            <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+            <p className="meta-copy">
               Loading preferences...
             </p>
           ) : prefEntries.length === 0 ? (
@@ -371,7 +374,7 @@ export default function SettingsPage() {
               <p className="text-sm text-on-surface dark:text-dark-on-surface">
                 No custom preferences yet.
               </p>
-              <p className="mt-1 text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+              <p className="mt-1 text-sm meta-copy">
                 Defaults are active: notification events are enabled until you set an override.
               </p>
             </div>
@@ -383,7 +386,7 @@ export default function SettingsPage() {
                   className="flex items-start justify-between gap-4 rounded-eight bg-surface-low px-3 py-2 dark:bg-dark-surface-low"
                 >
                   <p className="text-sm text-on-surface dark:text-dark-on-surface">{key}</p>
-                  <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant break-all">
+                  <p className="text-sm meta-copy break-all">
                     {value}
                   </p>
                 </div>
@@ -410,8 +413,8 @@ export default function SettingsPage() {
                     onClick={() => setThemeMode(value)}
                     className={
                       active
-                        ? "flex items-center justify-center gap-2 rounded-eight bg-surface-lowest px-3 py-2 text-sm font-medium text-on-surface shadow-ambient dark:bg-dark-surface-container dark:text-dark-on-surface"
-                        : "flex items-center justify-center gap-2 rounded-eight px-3 py-2 text-sm font-medium text-on-surface-variant transition-colors hover:bg-surface-high hover:text-on-surface dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high dark:hover:text-dark-on-surface"
+                        ? "flex items-center justify-center gap-2 rounded-eight bg-surface-lowest px-3 py-2 text-xs font-medium text-on-surface shadow-ambient sm:text-sm dark:bg-dark-surface-container dark:text-dark-on-surface"
+                        : "flex items-center justify-center gap-2 rounded-eight px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-high hover:text-on-surface sm:text-sm dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high dark:hover:text-dark-on-surface"
                     }
                     aria-label={`Set ${label.toLowerCase()} theme mode`}
                   >
@@ -422,7 +425,7 @@ export default function SettingsPage() {
               })}
             </div>
 
-            <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+            <p className="text-sm meta-copy">
               Current appearance: {resolvedMode === "dark" ? "Dark" : "Light"}
               {themeMode === "system" ? " (following your system preference)." : "."}
             </p>

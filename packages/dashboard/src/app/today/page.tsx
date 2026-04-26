@@ -79,7 +79,7 @@ export default function TodayPage() {
         <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
           Today
         </h1>
-        <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+        <p className="page-copy">
           {new Date(today.date).toLocaleDateString("en-US", {
             weekday: "long",
             month: "long",
@@ -101,7 +101,7 @@ export default function TodayPage() {
               </div>
               <div>
                 <p className="text-2xl font-bold">{today.counts.totalInbox}</p>
-                <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
+                <p className="text-label-md meta-copy">
                   Total Inbox
                 </p>
               </div>
@@ -119,7 +119,7 @@ export default function TodayPage() {
               </div>
               <div>
                 <p className="text-2xl font-bold">{today.counts.pendingActions}</p>
-                <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
+                <p className="text-label-md meta-copy">
                   Pending Actions
                 </p>
               </div>
@@ -137,7 +137,7 @@ export default function TodayPage() {
               </div>
               <div>
                 <p className="text-2xl font-bold">{today.counts.unreadNotifications}</p>
-                <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
+                <p className="text-label-md meta-copy">
                   Unread Notifications
                 </p>
               </div>
@@ -172,7 +172,7 @@ export default function TodayPage() {
                       </p>
                       <Badge variant="priority">P{item.priority}</Badge>
                     </div>
-                    <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
+                      <p className="text-label-md meta-copy">
                       {item.source} · {item.category}
                     </p>
                   </Link>
@@ -192,7 +192,7 @@ export default function TodayPage() {
                   </CardTitle>
                   <Link
                     href="/actions"
-                    className="text-label-md font-medium text-on-surface hover:underline dark:text-dark-on-surface"
+                    className="text-label-md font-medium text-on-surface hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface dark:text-dark-on-surface dark:focus-visible:ring-dark-primary/45 dark:focus-visible:ring-offset-dark-surface"
                   >
                     View all →
                   </Link>
@@ -229,11 +229,11 @@ export default function TodayPage() {
             </CardHeader>
             <CardContent>
               {today.calendar.status !== "connected" ? (
-                <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                <p className="text-sm meta-copy">
                   Calendar not connected
                 </p>
               ) : today.calendar.events.length === 0 ? (
-                <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                <p className="text-sm meta-copy">
                   No events today
                 </p>
               ) : (
@@ -247,7 +247,7 @@ export default function TodayPage() {
                         {ev.title}
                       </p>
                       {!ev.allDay && (
-                        <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
+                        <p className="text-label-md meta-copy">
                           {new Date(ev.start).toLocaleTimeString("en-US", {
                             hour: "numeric",
                             minute: "2-digit",
@@ -271,7 +271,7 @@ export default function TodayPage() {
             </CardHeader>
             <CardContent>
               {today.deadlines.length === 0 ? (
-                <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                <p className="text-sm meta-copy">
                   No upcoming deadlines
                 </p>
               ) : (
@@ -284,7 +284,7 @@ export default function TodayPage() {
                       <p className="font-medium text-on-surface dark:text-dark-on-surface">
                         {dl.description}
                       </p>
-                      <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
+                      <p className="text-label-md meta-copy">
                         Due {new Date(dl.dueDate).toLocaleDateString("en-US", {
                           month: "short",
                           day: "numeric",
