@@ -5,6 +5,7 @@ import { useDeadlines } from "@/lib/hooks";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CalendarClock, AlertTriangle, Filter } from "lucide-react";
+import { getMotionDelayClass } from "@/lib/motion-utils";
 
 interface DeadlineItem {
   id: string;
@@ -60,9 +61,9 @@ export default function DeadlinesPage() {
   const response = data as DeadlinesResponse | undefined;
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-8 motion-page-enter">
       {/* Header */}
-      <div className="space-y-2">
+      <div className="space-y-2 motion-rise-in">
         <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
           Planning
         </p>
@@ -76,8 +77,10 @@ export default function DeadlinesPage() {
 
       {/* Summary Counts */}
       {response && (
-        <div className="flex gap-4">
-          <div className="rounded-twelve bg-surface-low px-4 py-2 dark:bg-dark-surface-low">
+        <div className="flex flex-wrap gap-4">
+          <div
+            className={`motion-rise-in-soft rounded-twelve bg-surface-low px-4 py-2 dark:bg-dark-surface-low ${getMotionDelayClass(1)}`}
+          >
             <span className="text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
               Total
             </span>
@@ -85,7 +88,9 @@ export default function DeadlinesPage() {
               {response.counts.total}
             </p>
           </div>
-          <div className="rounded-twelve bg-surface-low px-4 py-2 dark:bg-dark-surface-low">
+          <div
+            className={`motion-rise-in-soft rounded-twelve bg-surface-low px-4 py-2 dark:bg-dark-surface-low ${getMotionDelayClass(2)}`}
+          >
             <span className="text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
               Open
             </span>
@@ -93,7 +98,9 @@ export default function DeadlinesPage() {
               {response.counts.open}
             </p>
           </div>
-          <div className="rounded-twelve bg-error-container px-4 py-2 dark:bg-dark-error-container">
+          <div
+            className={`motion-rise-in-soft rounded-twelve bg-error-container px-4 py-2 dark:bg-dark-error-container ${getMotionDelayClass(3)}`}
+          >
             <span className="text-label-sm text-on-error-container dark:text-dark-on-error-container">
               Overdue
             </span>
@@ -105,7 +112,9 @@ export default function DeadlinesPage() {
       )}
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3">
+      <div
+        className={`motion-rise-in-soft flex flex-wrap items-center gap-3 ${getMotionDelayClass(2)}`}
+      >
         <Filter className="h-4 w-4 text-on-surface-variant dark:text-dark-on-surface-variant" />
         <div className="flex gap-1">
           {STATUS_OPTIONS.map((s) => (
@@ -175,13 +184,13 @@ export default function DeadlinesPage() {
 
       {response && response.deadlines.length > 0 && (
         <div className="space-y-2">
-          {response.deadlines.map((deadline) => (
+          {response.deadlines.map((deadline, index) => (
             <Card
               key={deadline.id}
               className={
                 deadline.isOverdue
-                  ? "border-error/30 dark:border-dark-error/30"
-                  : ""
+                  ? `motion-rise-in-soft border-error/30 dark:border-dark-error/30 ${getMotionDelayClass(index + 2)}`
+                  : `motion-rise-in-soft ${getMotionDelayClass(index + 2)}`
               }
             >
               <CardContent className="flex items-center gap-4 py-4">

@@ -5,6 +5,7 @@ import { apiFetch } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { MessageSquare, Send, Loader2, Bot, User } from "lucide-react";
+import { getMotionDelayClass } from "@/lib/motion-utils";
 
 interface ChatMessage {
   id: string;
@@ -97,9 +98,9 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-5rem)] flex-col">
+    <div className="motion-page-enter flex h-[calc(100vh-5rem)] flex-col">
       {/* Header */}
-      <div className="space-y-2 pb-4">
+      <div className="motion-rise-in space-y-2 pb-4">
         <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
           Assistant
         </p>
@@ -112,7 +113,9 @@ export default function ChatPage() {
       </div>
 
       {/* Messages Area */}
-      <Card className="flex-1 overflow-hidden flex flex-col">
+      <Card
+        className={`motion-rise-in-soft flex flex-1 flex-col overflow-hidden ${getMotionDelayClass(1)}`}
+      >
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {messages.length === 0 && (
             <div className="flex flex-col items-center justify-center h-full text-center space-y-4">
@@ -137,7 +140,7 @@ export default function ChatPage() {
                   <button
                     key={suggestion}
                     onClick={() => setInput(suggestion)}
-                    className="rounded-full px-3 py-1.5 text-label-md text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high ghost-border transition-colors"
+                    className="motion-interactive rounded-full px-3 py-1.5 text-label-md text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high ghost-border transition-colors"
                   >
                     {suggestion}
                   </button>

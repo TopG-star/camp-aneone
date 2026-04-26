@@ -6,6 +6,7 @@ import { useStatus, useNotificationPreferences } from "@/lib/hooks";
 import { apiFetch } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { useThemeMode } from "@/components/theme-provider";
 import {
   Wifi,
   WifiOff,
@@ -17,6 +18,9 @@ import {
   ExternalLink,
   Trash2,
   Loader2,
+  Monitor,
+  Moon,
+  Sun,
 } from "lucide-react";
 
 interface Integration {
@@ -32,6 +36,10 @@ interface StatusResponse {
   uptime: number;
 }
 
+interface NotificationPreferencesResponse {
+  preferences: Record<string, string>;
+}
+
 const integrationIcons: Record<string, typeof Mail> = {
   gmail: Mail,
   github: GitBranch,
@@ -42,15 +50,25 @@ const integrationIcons: Record<string, typeof Mail> = {
 
 export default function SettingsPage() {
   const { data: session } = useSession();
+  const { mode: themeMode, resolvedMode, setMode: setThemeMode } = useThemeMode();
   const userId = session?.user?.email ?? "";
   const { data: statusData, isLoading: statusLoading, mutate: mutateStatus } = useStatus();
   const { data: prefsData } = useNotificationPreferences();
   const status = statusData as StatusResponse | undefined;
+  const prefs =
+    (prefsData as NotificationPreferencesResponse | undefined)?.preferences ?? {};
+  const prefEntries = Object.entries(prefs);
 
   const [githubPat, setGithubPat] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  const themeOptions = [
+    { value: "light" as const, label: "Light", icon: Sun },
+    { value: "dark" as const, label: "Dark", icon: Moon },
+    { value: "system" as const, label: "System", icon: Monitor },
+  ];
 
   const gmail = status?.integrations.find((i) => i.name === "gmail");
   const github = status?.integrations.find((i) => i.name === "github");
@@ -121,9 +139,9 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-8 motion-page-enter">
       {/* Header */}
-      <div className="space-y-2">
+      <div className="space-y-2 motion-rise-in">
         <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
           Configuration
         </p>
@@ -344,14 +362,33 @@ export default function SettingsPage() {
           <CardTitle>Notification Preferences</CardTitle>
         </CardHeader>
         <CardContent>
-          {prefsData ? (
-            <pre className="rounded-eight bg-surface-low p-4 text-sm text-on-surface-variant overflow-x-auto dark:bg-dark-surface-low dark:text-dark-on-surface-variant">
-              {JSON.stringify(prefsData, null, 2)}
-            </pre>
-          ) : (
+          {!prefsData ? (
             <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
               Loading preferences...
             </p>
+          ) : prefEntries.length === 0 ? (
+            <div className="rounded-eight bg-surface-low p-4 dark:bg-dark-surface-low">
+              <p className="text-sm text-on-surface dark:text-dark-on-surface">
+                No custom preferences yet.
+              </p>
+              <p className="mt-1 text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                Defaults are active: notification events are enabled until you set an override.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {prefEntries.map(([key, value]) => (
+                <div
+                  key={key}
+                  className="flex items-start justify-between gap-4 rounded-eight bg-surface-low px-3 py-2 dark:bg-dark-surface-low"
+                >
+                  <p className="text-sm text-on-surface dark:text-dark-on-surface">{key}</p>
+                  <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant break-all">
+                    {value}
+                  </p>
+                </div>
+              ))}
+            </div>
           )}
         </CardContent>
       </Card>
@@ -362,9 +399,34 @@ export default function SettingsPage() {
           <CardTitle>Theme</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
-            Dark mode is currently the default. Theme switching will be available in a future update.
-          </p>
+          <div className="space-y-4">
+            <div className="grid grid-cols-3 gap-2 rounded-eight bg-surface-low p-1 dark:bg-dark-surface-low">
+              {themeOptions.map(({ value, label, icon: Icon }) => {
+                const active = themeMode === value;
+
+                return (
+                  <button
+                    key={value}
+                    onClick={() => setThemeMode(value)}
+                    className={
+                      active
+                        ? "flex items-center justify-center gap-2 rounded-eight bg-surface-lowest px-3 py-2 text-sm font-medium text-on-surface shadow-ambient dark:bg-dark-surface-container dark:text-dark-on-surface"
+                        : "flex items-center justify-center gap-2 rounded-eight px-3 py-2 text-sm font-medium text-on-surface-variant transition-colors hover:bg-surface-high hover:text-on-surface dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high dark:hover:text-dark-on-surface"
+                    }
+                    aria-label={`Set ${label.toLowerCase()} theme mode`}
+                  >
+                    <Icon className="h-4 w-4" />
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+              Current appearance: {resolvedMode === "dark" ? "Dark" : "Light"}
+              {themeMode === "system" ? " (following your system preference)." : "."}
+            </p>
+          </div>
         </CardContent>
       </Card>
     </div>

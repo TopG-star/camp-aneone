@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Bell, CheckCheck } from "lucide-react";
+import { getMotionDelayClass } from "@/lib/motion-utils";
 
 interface Notification {
   id: string;
@@ -56,9 +57,9 @@ export default function NotificationsPage() {
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-8 motion-page-enter">
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between gap-4 motion-rise-in">
         <div className="space-y-2">
           <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
             Alerts
@@ -67,7 +68,7 @@ export default function NotificationsPage() {
             Notifications
           </h1>
         </div>
-        <Button variant="ghost" size="sm" onClick={markAllRead}>
+        <Button variant="ghost" size="sm" onClick={markAllRead} className="shrink-0">
           <CheckCheck className="h-4 w-4" />
           Mark all read
         </Button>
@@ -105,10 +106,10 @@ export default function NotificationsPage() {
             </Card>
           ) : (
             <div className="space-y-2">
-              {response.notifications.map((n) => (
+              {response.notifications.map((n, index) => (
                 <Card
                   key={n.id}
-                  className={`cursor-pointer transition-colors hover:bg-surface-low dark:hover:bg-dark-surface-high ${
+                  className={`motion-interactive motion-rise-in-soft cursor-pointer transition-colors hover:bg-surface-low dark:hover:bg-dark-surface-high ${getMotionDelayClass(index + 1)} ${
                     !n.read ? "ghost-border-dark" : "opacity-70"
                   }`}
                   onClick={() => !n.read && markRead(n.id)}

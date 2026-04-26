@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Zap, Check, X } from "lucide-react";
 import type { ActionsListResponse } from "@oneon/contracts";
+import { getMotionDelayClass } from "@/lib/motion-utils";
 
 const STATUS_OPTIONS = ["all", "proposed", "approved", "executed", "rejected"] as const;
 
@@ -47,9 +48,9 @@ export default function ActionsPage() {
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-8 motion-page-enter">
       {/* Header */}
-      <div className="space-y-2">
+      <div className="space-y-2 motion-rise-in">
         <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
           Operational Hub
         </p>
@@ -62,7 +63,7 @@ export default function ActionsPage() {
       </div>
 
       {/* Status filter */}
-      <div className="flex gap-1">
+      <div className={`motion-rise-in-soft flex gap-1 ${getMotionDelayClass(1)}`}>
         {STATUS_OPTIONS.map((s) => (
           <button
             key={s}
@@ -109,8 +110,11 @@ export default function ActionsPage() {
             </Card>
           ) : (
             <div className="space-y-4">
-              {response.actions.map((action) => (
-                <Card key={action.id}>
+              {response.actions.map((action, index) => (
+                <Card
+                  key={action.id}
+                  className={`motion-rise-in-soft ${getMotionDelayClass(index + 2)}`}
+                >
                   <CardHeader>
                     <div className="flex items-center justify-between">
                       <CardTitle className="flex items-center gap-2">
@@ -179,7 +183,7 @@ export default function ActionsPage() {
           )}
 
           {/* Pagination */}
-          <div className="flex items-center justify-between pt-4">
+          <div className={`motion-rise-in-soft flex items-center justify-between pt-4 ${getMotionDelayClass(3)}`}>
             <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
               Showing {offset + 1}–{Math.min(offset + limit, response.pagination.total)} of{" "}
               {response.pagination.total}

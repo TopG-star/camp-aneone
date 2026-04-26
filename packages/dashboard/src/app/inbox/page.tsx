@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Mail, GitBranch, MessageSquare, Filter } from "lucide-react";
 import type { InboxListResponse } from "@oneon/contracts";
+import { getMotionDelayClass } from "@/lib/motion-utils";
 
 const sourceIcons: Record<string, typeof Mail> = {
   gmail: Mail,
@@ -44,9 +45,9 @@ export default function InboxPage() {
   const response = data as InboxListResponse | undefined;
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-8 motion-page-enter">
       {/* Header */}
-      <div className="space-y-2">
+      <div className="space-y-2 motion-rise-in">
         <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
           Intelligence
         </p>
@@ -59,7 +60,7 @@ export default function InboxPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3">
+      <div className={`motion-rise-in-soft flex flex-wrap items-center gap-3 ${getMotionDelayClass(1)}`}>
         <Filter className="h-4 w-4 text-on-surface-variant dark:text-dark-on-surface-variant" />
         <div className="flex gap-1">
           {SOURCE_OPTIONS.map((s) => (
@@ -127,12 +128,12 @@ export default function InboxPage() {
             </Card>
           ) : (
             <div className="space-y-2">
-              {response.items.map((item) => {
+              {response.items.map((item, index) => {
                 const Icon = sourceIcons[item.source] ?? Mail;
                 return (
                   <Card
                     key={item.id}
-                    className="group cursor-pointer transition-colors hover:bg-surface-low dark:hover:bg-dark-surface-high"
+                    className={`group motion-interactive motion-rise-in-soft cursor-pointer transition-colors hover:bg-surface-low dark:hover:bg-dark-surface-high ${getMotionDelayClass(index + 2)}`}
                   >
                     <CardContent className="flex items-start gap-4">
                       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-eight bg-surface-high dark:bg-dark-surface-high">
@@ -174,7 +175,7 @@ export default function InboxPage() {
           )}
 
           {/* Pagination */}
-          <div className="flex items-center justify-between pt-4">
+          <div className={`motion-rise-in-soft flex items-center justify-between pt-4 ${getMotionDelayClass(3)}`}>
             <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
               Showing {offset + 1}–{Math.min(offset + limit, response.pagination.total)} of{" "}
               {response.pagination.total}
