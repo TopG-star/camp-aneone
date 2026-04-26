@@ -98,9 +98,9 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="motion-page-enter flex h-[calc(100vh-5rem)] flex-col">
+    <div className="motion-page-enter flex h-[calc(100dvh-5rem)] min-h-[calc(100dvh-5rem)] flex-col">
       {/* Header */}
-      <div className="motion-rise-in space-y-2 pb-4">
+      <div className="motion-rise-in space-y-2 pb-2 sm:pb-3 md:pb-4">
         <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
           Assistant
         </p>
@@ -116,7 +116,7 @@ export default function ChatPage() {
       <Card
         className={`motion-rise-in-soft flex flex-1 flex-col overflow-hidden ${getMotionDelayClass(1)}`}
       >
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div className="flex-1 space-y-3 sm:space-y-4 overflow-y-auto p-3 sm:p-4">
           {messages.length === 0 && (
             <div className="flex flex-col items-center justify-center h-full text-center space-y-4">
               <div className="rounded-full bg-surface-low dark:bg-dark-surface-low p-4">
@@ -160,7 +160,7 @@ export default function ChatPage() {
                 </div>
               )}
               <div
-                className={`max-w-[75%] rounded-twelve px-4 py-3 ${
+                className={`max-w-[86%] rounded-twelve px-4 py-3 sm:max-w-[75%] ${
                   msg.role === "user"
                     ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
                     : "bg-surface-low dark:bg-dark-surface-low text-on-surface dark:text-dark-on-surface"
@@ -198,8 +198,8 @@ export default function ChatPage() {
         )}
 
         {/* Input Area */}
-        <div className="border-t border-outline-variant/20 dark:border-dark-outline-variant/20 p-4">
-          <div className="flex items-end gap-3">
+        <div className="border-t border-outline-variant/20 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] dark:border-dark-outline-variant/20 sm:p-4 sm:pb-4">
+          <div className="flex items-end gap-2 sm:gap-3">
             <textarea
               ref={inputRef}
               value={input}

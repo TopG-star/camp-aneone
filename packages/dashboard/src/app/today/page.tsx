@@ -70,7 +70,7 @@ export default function TodayPage() {
   if (!today) return null;
 
   return (
-    <div className="space-y-8 motion-page-enter">
+    <div className="space-y-6 md:space-y-7 lg:space-y-8 motion-page-enter">
       {/* Hero header */}
       <div className="space-y-2 motion-rise-in">
         <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
@@ -90,7 +90,7 @@ export default function TodayPage() {
       </div>
 
       {/* Quick stats row */}
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-3 md:gap-4">
         <Link href="/inbox">
           <Card
             className={`group motion-interactive motion-rise-in-soft cursor-pointer transition-colors hover:bg-surface-low dark:hover:bg-dark-surface-high ${getMotionDelayClass(0)}`}
@@ -147,9 +147,9 @@ export default function TodayPage() {
       </div>
 
       {/* Main content grid — asymmetric layout per design system */}
-      <div className="grid gap-6 lg:grid-cols-5">
+      <div className="grid gap-5 md:gap-6 lg:grid-cols-5">
         {/* Left column — 3/5 */}
-        <div className="space-y-6 lg:col-span-3">
+        <div className="space-y-5 md:space-y-6 lg:col-span-3">
           {/* Urgent items */}
           {today.urgentItems.length > 0 && (
             <Card className={`motion-rise-in-soft ${getMotionDelayClass(3)}`}>
@@ -218,7 +218,7 @@ export default function TodayPage() {
         </div>
 
         {/* Right column — 2/5 */}
-        <div className="space-y-6 lg:col-span-2">
+        <div className="space-y-5 md:space-y-6 lg:col-span-2">
           {/* Calendar */}
           <Card className={`motion-rise-in-soft ${getMotionDelayClass(5)}`}>
             <CardHeader>

@@ -139,7 +139,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="space-y-8 motion-page-enter">
+    <div className="space-y-6 md:space-y-7 lg:space-y-8 motion-page-enter">
       {/* Header */}
       <div className="space-y-2 motion-rise-in">
         <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
@@ -174,7 +174,7 @@ export default function SettingsPage() {
           {statusLoading ? (
             <div className="h-12 animate-pulse rounded-eight bg-surface-low dark:bg-dark-surface-low" />
           ) : gmail?.connected && gmail.source === "db" ? (
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <Badge variant="success">Connected via OAuth</Badge>
                 {gmail.connectedAs && (
@@ -186,14 +186,14 @@ export default function SettingsPage() {
               <button
                 onClick={disconnectGoogle}
                 disabled={busy === "google-disconnect"}
-                className="flex items-center gap-2 rounded-eight px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+                className="flex w-full items-center justify-center gap-2 rounded-eight px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50 sm:w-auto"
               >
                 {busy === "google-disconnect" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                 Disconnect
               </button>
             </div>
           ) : gmail?.connected && gmail.source === "env" ? (
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <Badge variant="success">Connected via env</Badge>
                 <p className="mt-1 text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
@@ -203,21 +203,21 @@ export default function SettingsPage() {
               <button
                 onClick={connectGoogle}
                 disabled={busy === "google"}
-                className="flex items-center gap-2 rounded-eight bg-surface-low px-4 py-2 text-sm font-medium text-on-surface hover:bg-surface-low/80 dark:bg-dark-surface-low dark:text-dark-on-surface dark:hover:bg-dark-surface-low/80 disabled:opacity-50"
+                className="flex w-full items-center justify-center gap-2 rounded-eight bg-surface-low px-4 py-2 text-sm font-medium text-on-surface hover:bg-surface-low/80 dark:bg-dark-surface-low dark:text-dark-on-surface dark:hover:bg-dark-surface-low/80 disabled:opacity-50 sm:w-auto"
               >
                 {busy === "google" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ExternalLink className="h-4 w-4" />}
                 Reconnect via OAuth
               </button>
             </div>
           ) : (
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
                 Not connected. Sign in with Google to enable Gmail and Calendar.
               </p>
               <button
                 onClick={connectGoogle}
                 disabled={busy === "google"}
-                className="flex items-center gap-2 rounded-eight bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary/90 disabled:opacity-50"
+                className="flex w-full items-center justify-center gap-2 rounded-eight bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary/90 disabled:opacity-50 sm:w-auto"
               >
                 {busy === "google" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ExternalLink className="h-4 w-4" />}
                 Connect Google
@@ -239,7 +239,7 @@ export default function SettingsPage() {
           {statusLoading ? (
             <div className="h-12 animate-pulse rounded-eight bg-surface-low dark:bg-dark-surface-low" />
           ) : github?.connected && github.source === "db" ? (
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <Badge variant="success">Connected via PAT</Badge>
                 {github.connectedAs && (
@@ -251,7 +251,7 @@ export default function SettingsPage() {
               <button
                 onClick={disconnectGithub}
                 disabled={busy === "github-disconnect"}
-                className="flex items-center gap-2 rounded-eight px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+                className="flex w-full items-center justify-center gap-2 rounded-eight px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50 sm:w-auto"
               >
                 {busy === "github-disconnect" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                 Disconnect
@@ -269,7 +269,7 @@ export default function SettingsPage() {
               <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
                 Enter a GitHub Personal Access Token to enable GitHub integration.
               </p>
-              <div className="flex gap-2">
+              <div className="flex flex-col gap-2 sm:flex-row">
                 <input
                   type="password"
                   placeholder="ghp_..."
@@ -280,7 +280,7 @@ export default function SettingsPage() {
                 <button
                   onClick={connectGithub}
                   disabled={busy === "github" || !githubPat.trim()}
-                  className="flex items-center gap-2 rounded-eight bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary/90 disabled:opacity-50"
+                  className="flex items-center justify-center gap-2 rounded-eight bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary/90 disabled:opacity-50"
                 >
                   {busy === "github" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                   Connect

@@ -42,7 +42,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
 
       <div className="flex min-w-0 flex-1 flex-col md:pl-56">
         <Topbar onOpenNav={openMobileNav} />
-        <main className="flex-1 px-4 py-5 md:px-8 md:py-6">{children}</main>
+        <main className="flex-1 px-4 py-4 sm:py-5 md:px-6 md:py-6 lg:px-8">{children}</main>
       </div>
     </div>
   );

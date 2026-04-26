@@ -61,7 +61,7 @@ export default function DeadlinesPage() {
   const response = data as DeadlinesResponse | undefined;
 
   return (
-    <div className="space-y-8 motion-page-enter">
+    <div className="space-y-6 md:space-y-7 lg:space-y-8 motion-page-enter">
       {/* Header */}
       <div className="space-y-2 motion-rise-in">
         <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
@@ -77,7 +77,7 @@ export default function DeadlinesPage() {
 
       {/* Summary Counts */}
       {response && (
-        <div className="flex flex-wrap gap-4">
+        <div className="grid gap-3 sm:grid-cols-3">
           <div
             className={`motion-rise-in-soft rounded-twelve bg-surface-low px-4 py-2 dark:bg-dark-surface-low ${getMotionDelayClass(1)}`}
           >
@@ -113,15 +113,21 @@ export default function DeadlinesPage() {
 
       {/* Filters */}
       <div
-        className={`motion-rise-in-soft flex flex-wrap items-center gap-3 ${getMotionDelayClass(2)}`}
+        className={`motion-rise-in-soft space-y-2 ${getMotionDelayClass(2)}`}
       >
-        <Filter className="h-4 w-4 text-on-surface-variant dark:text-dark-on-surface-variant" />
-        <div className="flex gap-1">
+        <div className="flex items-center gap-2">
+          <Filter className="h-4 w-4 text-on-surface-variant dark:text-dark-on-surface-variant" />
+          <span className="text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+            Filters
+          </span>
+        </div>
+
+        <div className="flex gap-1 overflow-x-auto pb-1">
           {STATUS_OPTIONS.map((s) => (
             <button
               key={s}
               onClick={() => setStatus(s)}
-              className={`rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
+              className={`shrink-0 rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
                 status === s
                   ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
                   : "text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high"
@@ -131,15 +137,13 @@ export default function DeadlinesPage() {
             </button>
           ))}
         </div>
-        <span className="text-on-surface-variant/30 dark:text-dark-on-surface-variant/30">
-          |
-        </span>
-        <div className="flex gap-1">
+
+        <div className="flex gap-1 overflow-x-auto pb-1">
           {RANGE_OPTIONS.map(({ label, value }) => (
             <button
               key={value}
               onClick={() => setRange(value)}
-              className={`rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
+              className={`shrink-0 rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
                 range === value
                   ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
                   : "text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high"
@@ -183,7 +187,7 @@ export default function DeadlinesPage() {
       )}
 
       {response && response.deadlines.length > 0 && (
-        <div className="space-y-2">
+        <div className="space-y-2 md:space-y-3">
           {response.deadlines.map((deadline, index) => (
             <Card
               key={deadline.id}
@@ -193,7 +197,7 @@ export default function DeadlinesPage() {
                   : `motion-rise-in-soft ${getMotionDelayClass(index + 2)}`
               }
             >
-              <CardContent className="flex items-center gap-4 py-4">
+              <CardContent className="flex flex-col items-start gap-3 py-4 sm:flex-row sm:items-center sm:gap-4">
                 {deadline.isOverdue ? (
                   <AlertTriangle className="h-5 w-5 shrink-0 text-error dark:text-dark-error" />
                 ) : (
@@ -215,6 +219,7 @@ export default function DeadlinesPage() {
                         ? "success"
                         : "default"
                   }
+                    className="self-end sm:self-auto"
                 >
                   {deadline.isOverdue ? "Overdue" : deadline.status}
                 </Badge>

@@ -16,7 +16,7 @@ export function Topbar({ onOpenNav }: TopbarProps) {
   const nextMode = resolvedMode === "dark" ? "light" : "dark";
 
   return (
-    <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b-0 bg-surface/75 px-4 backdrop-blur-glass md:px-8 dark:bg-dark-surface/75">
+    <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b-0 bg-surface/75 px-3 sm:px-4 md:px-6 lg:px-8 backdrop-blur-glass dark:bg-dark-surface/75">
       <div className="flex min-w-0 items-center gap-2">
         <button
           onClick={onOpenNav}

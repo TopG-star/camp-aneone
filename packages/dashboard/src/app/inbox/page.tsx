@@ -45,7 +45,7 @@ export default function InboxPage() {
   const response = data as InboxListResponse | undefined;
 
   return (
-    <div className="space-y-8 motion-page-enter">
+    <div className="space-y-6 md:space-y-7 lg:space-y-8 motion-page-enter">
       {/* Header */}
       <div className="space-y-2 motion-rise-in">
         <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
@@ -60,14 +60,20 @@ export default function InboxPage() {
       </div>
 
       {/* Filters */}
-      <div className={`motion-rise-in-soft flex flex-wrap items-center gap-3 ${getMotionDelayClass(1)}`}>
-        <Filter className="h-4 w-4 text-on-surface-variant dark:text-dark-on-surface-variant" />
-        <div className="flex gap-1">
+      <div className={`motion-rise-in-soft space-y-2 ${getMotionDelayClass(1)}`}>
+        <div className="flex items-center gap-2">
+          <Filter className="h-4 w-4 text-on-surface-variant dark:text-dark-on-surface-variant" />
+          <span className="text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+            Filters
+          </span>
+        </div>
+
+        <div className="flex gap-1 overflow-x-auto pb-1">
           {SOURCE_OPTIONS.map((s) => (
             <button
               key={s}
               onClick={() => { setSource(s); setOffset(0); }}
-              className={`rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
+              className={`shrink-0 rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
                 source === s
                   ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
                   : "text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high"
@@ -77,15 +83,13 @@ export default function InboxPage() {
             </button>
           ))}
         </div>
-        <span className="text-on-surface-variant/30 dark:text-dark-on-surface-variant/30">
-          |
-        </span>
-        <div className="flex gap-1">
+
+        <div className="flex gap-1 overflow-x-auto pb-1">
           {CATEGORY_OPTIONS.map((c) => (
             <button
               key={c}
               onClick={() => { setCategory(c); setOffset(0); }}
-              className={`rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
+              className={`shrink-0 rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
                 category === c
                   ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
                   : "text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high"
@@ -127,7 +131,7 @@ export default function InboxPage() {
               </CardContent>
             </Card>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-2 md:space-y-3">
               {response.items.map((item, index) => {
                 const Icon = sourceIcons[item.source] ?? Mail;
                 return (
@@ -140,11 +144,11 @@ export default function InboxPage() {
                         <Icon className="h-5 w-5" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center justify-between gap-4">
+                        <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
                           <p className="truncate font-medium text-on-surface dark:text-dark-on-surface">
                             {item.subject}
                           </p>
-                          <div className="flex items-center gap-2 shrink-0">
+                          <div className="flex items-center gap-2">
                             {item.classification && (
                               <Badge variant={priorityVariant(item.classification.priority)}>
                                 P{item.classification.priority}
@@ -175,15 +179,18 @@ export default function InboxPage() {
           )}
 
           {/* Pagination */}
-          <div className={`motion-rise-in-soft flex items-center justify-between pt-4 ${getMotionDelayClass(3)}`}>
+          <div
+            className={`motion-rise-in-soft flex flex-col gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between ${getMotionDelayClass(3)}`}
+          >
             <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
               Showing {offset + 1}–{Math.min(offset + limit, response.pagination.total)} of{" "}
               {response.pagination.total}
             </p>
-            <div className="flex gap-2">
+            <div className="flex w-full gap-2 sm:w-auto">
               <Button
                 variant="secondary"
                 size="sm"
+                className="flex-1 sm:flex-none"
                 disabled={offset === 0}
                 onClick={() => setOffset(Math.max(0, offset - limit))}
               >
@@ -192,6 +199,7 @@ export default function InboxPage() {
               <Button
                 variant="secondary"
                 size="sm"
+                className="flex-1 sm:flex-none"
                 disabled={!response.pagination.hasMore}
                 onClick={() => setOffset(offset + limit)}
               >
