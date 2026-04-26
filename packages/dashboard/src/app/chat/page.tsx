@@ -101,10 +101,10 @@ export default function ChatPage() {
     <div className="motion-page-enter flex h-[calc(100dvh-5rem)] min-h-[calc(100dvh-5rem)] flex-col">
       {/* Header */}
       <div className="motion-rise-in space-y-2 pb-2 sm:pb-3 md:pb-4">
-        <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+        <p className="page-eyebrow">
           Assistant
         </p>
-        <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
+        <h1 className="page-title">
           Chat
         </h1>
         <p className="page-copy">

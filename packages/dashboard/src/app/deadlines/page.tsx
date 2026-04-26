@@ -64,10 +64,10 @@ export default function DeadlinesPage() {
     <div className="space-y-6 md:space-y-7 lg:space-y-8 motion-page-enter">
       {/* Header */}
       <div className="space-y-2 motion-rise-in">
-        <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+        <p className="page-eyebrow">
           Planning
         </p>
-        <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
+        <h1 className="page-title">
           Deadlines
         </h1>
         <p className="page-copy">
@@ -79,7 +79,7 @@ export default function DeadlinesPage() {
       {response && (
         <div className="grid gap-3 sm:grid-cols-3">
           <div
-            className={`motion-rise-in-soft rounded-twelve bg-surface-low px-4 py-2 dark:bg-dark-surface-low ${getMotionDelayClass(1)}`}
+            className={`motion-rise-in-soft rounded-twelve border border-outline-variant/30 bg-surface-low px-4 py-3 dark:border-dark-outline-variant/30 dark:bg-dark-surface-low ${getMotionDelayClass(1)}`}
           >
             <span className="text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
               Total
@@ -89,7 +89,7 @@ export default function DeadlinesPage() {
             </p>
           </div>
           <div
-            className={`motion-rise-in-soft rounded-twelve bg-surface-low px-4 py-2 dark:bg-dark-surface-low ${getMotionDelayClass(2)}`}
+            className={`motion-rise-in-soft rounded-twelve border border-outline-variant/30 bg-surface-low px-4 py-3 dark:border-dark-outline-variant/30 dark:bg-dark-surface-low ${getMotionDelayClass(2)}`}
           >
             <span className="text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
               Open
@@ -99,7 +99,7 @@ export default function DeadlinesPage() {
             </p>
           </div>
           <div
-            className={`motion-rise-in-soft rounded-twelve bg-error-container px-4 py-2 dark:bg-dark-error-container ${getMotionDelayClass(3)}`}
+            className={`motion-rise-in-soft rounded-twelve border border-error/20 bg-error-container px-4 py-3 dark:border-dark-error/25 dark:bg-dark-error-container ${getMotionDelayClass(3)}`}
           >
             <span className="text-label-sm text-on-error-container dark:text-dark-on-error-container">
               Overdue

@@ -61,10 +61,10 @@ export default function NotificationsPage() {
       {/* Header */}
       <div className="flex flex-col gap-3 motion-rise-in sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-2">
-          <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+          <p className="page-eyebrow">
             Alerts
           </p>
-          <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
+          <h1 className="page-title">
             Notifications
           </h1>
           <p className="page-copy">

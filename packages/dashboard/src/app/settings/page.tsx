@@ -142,10 +142,10 @@ export default function SettingsPage() {
     <div className="space-y-6 md:space-y-7 lg:space-y-8 motion-page-enter">
       {/* Header */}
       <div className="space-y-2 motion-rise-in">
-        <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+        <p className="page-eyebrow">
           Configuration
         </p>
-        <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
+        <h1 className="page-title">
           Settings
         </h1>
         <p className="page-copy">

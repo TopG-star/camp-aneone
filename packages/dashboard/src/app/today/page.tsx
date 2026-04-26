@@ -36,10 +36,10 @@ export default function TodayPage() {
     return (
       <div className="space-y-6 motion-page-enter">
         <div className="space-y-2 motion-rise-in">
-          <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+          <p className="page-eyebrow">
             Operational Hub
           </p>
-          <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
+          <h1 className="page-title">
             Today
           </h1>
         </div>
@@ -57,7 +57,7 @@ export default function TodayPage() {
   if (error) {
     return (
       <div className="space-y-4 motion-page-enter">
-        <h1 className="text-display-md font-bold">Today</h1>
+        <h1 className="page-title">Today</h1>
         <Card>
           <CardContent>
             <p className="text-red-500">Failed to load dashboard data. Is the agent server running?</p>
@@ -73,10 +73,10 @@ export default function TodayPage() {
     <div className="space-y-6 md:space-y-7 lg:space-y-8 motion-page-enter">
       {/* Hero header */}
       <div className="space-y-2 motion-rise-in">
-        <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+        <p className="page-eyebrow">
           Operational Hub
         </p>
-        <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
+        <h1 className="page-title">
           Today
         </h1>
         <p className="page-copy">

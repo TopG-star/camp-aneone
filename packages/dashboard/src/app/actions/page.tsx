@@ -51,10 +51,10 @@ export default function ActionsPage() {
     <div className="space-y-6 md:space-y-7 lg:space-y-8 motion-page-enter">
       {/* Header */}
       <div className="space-y-2 motion-rise-in">
-        <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+        <p className="page-eyebrow">
           Operational Hub
         </p>
-        <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
+        <h1 className="page-title">
           Action Center
         </h1>
         <p className="page-copy">
@@ -140,7 +140,7 @@ export default function ActionsPage() {
                       </p>
                     )}
                     <div className="rounded-eight bg-surface-low p-4 dark:bg-dark-surface-low">
-                      <p className="text-label-md uppercase tracking-wider meta-copy mb-2">
+                      <p className="panel-eyebrow">
                         Payload
                       </p>
                       <pre className="text-sm meta-copy overflow-x-auto whitespace-pre-wrap">
