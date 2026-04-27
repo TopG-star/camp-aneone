@@ -223,12 +223,32 @@
     @apply text-sm text-emerald-600 dark:text-emerald-400;
   }
 
+  .state-error-icon {
+    @apply h-8 w-8 text-red-500/80 dark:text-red-400/80;
+  }
+
   .state-icon {
     @apply h-10 w-10 text-on-surface-variant/35 dark:text-dark-on-surface-variant/35;
   }
 
   .state-skeleton {
     @apply animate-pulse rounded-eight bg-surface-low dark:bg-dark-surface-low;
+  }
+
+  .inline-state {
+    @apply flex items-center gap-2 rounded-eight bg-surface-low/70 px-3 py-2 text-sm text-on-surface-variant dark:bg-dark-surface-low/70 dark:text-dark-on-surface-variant;
+  }
+
+  .inline-state-icon {
+    @apply h-4 w-4 shrink-0 text-on-surface-variant/70 dark:text-dark-on-surface-variant/70;
+  }
+
+  .auth-shell {
+    @apply flex min-h-screen items-center justify-center bg-surface px-4 py-8 dark:bg-dark-surface;
+  }
+
+  .auth-card {
+    @apply w-full max-w-sm rounded-2xl border border-outline-variant/35 bg-surface-lowest p-6 shadow-ambient dark:border-dark-outline-variant/35 dark:bg-dark-surface-container dark:shadow-ambient-dark sm:p-8;
   }
 
   .meta-copy {

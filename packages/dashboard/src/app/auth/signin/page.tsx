@@ -13,13 +13,14 @@ export default function SignInPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-surface dark:bg-dark-surface">
-      <div className="w-full max-w-sm space-y-8 text-center">
-        <div className="space-y-2">
-          <h1 className="text-display-lg font-bold text-on-surface dark:text-dark-on-surface">
+    <div className="auth-shell motion-page-enter">
+      <div className="auth-card state-content state-content-center motion-rise-in-soft gap-6">
+        <div className="state-content state-content-center gap-1">
+          <p className="page-eyebrow">Secure Access</p>
+          <h1 className="page-title">
             Oneon
           </h1>
-          <p className="text-body-lg text-on-surface-variant dark:text-dark-on-surface-variant">
+          <p className="state-subtext">
             Your personal AI agent
           </p>
         </div>
@@ -37,7 +38,7 @@ export default function SignInPage() {
           Sign in with Google
         </button>
 
-        <p className="text-label-sm text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+        <p className="state-subtext">
           Access is restricted to authorized users.
         </p>
       </div>

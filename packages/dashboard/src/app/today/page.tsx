@@ -10,6 +10,7 @@ import {
   CalendarDays,
   AlertTriangle,
   Clock,
+  CheckCircle2,
 } from "lucide-react";
 import Link from "next/link";
 import { getMotionDelayClass } from "@/lib/motion-utils";
@@ -151,6 +152,19 @@ export default function TodayPage() {
       <div className="grid gap-5 md:gap-6 lg:grid-cols-5">
         {/* Left column — 3/5 */}
         <div className="space-y-5 md:space-y-6 lg:col-span-3">
+          {/* Empty summary when no urgent work is queued */}
+          {today.urgentItems.length === 0 && today.pendingActions.count === 0 && (
+            <Card className={`motion-rise-in-soft ${getMotionDelayClass(3)}`}>
+              <CardContent className="state-content state-content-center py-10">
+                <CheckCircle2 className="h-10 w-10 text-emerald-600/80 dark:text-emerald-400/80" />
+                <p className="state-title">All clear</p>
+                <p className="state-subtext">
+                  No urgent inbox items or pending actions right now.
+                </p>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Urgent items */}
           {today.urgentItems.length > 0 && (
             <Card className={`motion-rise-in-soft ${getMotionDelayClass(3)}`}>
@@ -173,7 +187,7 @@ export default function TodayPage() {
                       </p>
                       <Badge variant="priority">P{item.priority}</Badge>
                     </div>
-                      <p className="text-label-md meta-copy">
+                    <p className="text-label-md meta-copy">
                       {item.source} · {item.category}
                     </p>
                   </Link>
@@ -230,13 +244,15 @@ export default function TodayPage() {
             </CardHeader>
             <CardContent>
               {today.calendar.status !== "connected" ? (
-                <p className="text-sm meta-copy">
-                  Calendar not connected
-                </p>
+                <div className="inline-state">
+                  <CalendarDays className="inline-state-icon" />
+                  <p>Calendar not connected</p>
+                </div>
               ) : today.calendar.events.length === 0 ? (
-                <p className="text-sm meta-copy">
-                  No events today
-                </p>
+                <div className="inline-state">
+                  <CalendarDays className="inline-state-icon" />
+                  <p>No events today</p>
+                </div>
               ) : (
                 <div className="space-y-3">
                   {today.calendar.events.map((ev, index) => (
@@ -272,9 +288,10 @@ export default function TodayPage() {
             </CardHeader>
             <CardContent>
               {today.deadlines.length === 0 ? (
-                <p className="text-sm meta-copy">
-                  No upcoming deadlines
-                </p>
+                <div className="inline-state">
+                  <Clock className="inline-state-icon" />
+                  <p>No upcoming deadlines</p>
+                </div>
               ) : (
                 <div className="space-y-3">
                   {today.deadlines.map((dl, index) => (
