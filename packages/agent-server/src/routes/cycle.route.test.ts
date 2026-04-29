@@ -54,6 +54,17 @@ describe("GET /api/cycle/status", () => {
     });
   });
 
+  it("reports enabled=true when loop exists but is currently paused", async () => {
+    loop = makeLoop();
+    vi.mocked(loop.isRunning).mockReturnValue(false);
+
+    const res = await request(app).get("/api/cycle/status");
+
+    expect(res.status).toBe(200);
+    expect(res.body.running).toBe(false);
+    expect(res.body.enabled).toBe(true);
+  });
+
   it("returns disabled state when loop is null", async () => {
     loop = null;
     const res = await request(app).get("/api/cycle/status");

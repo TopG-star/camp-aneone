@@ -111,6 +111,33 @@ const envSchema = z.object({
     .string()
     .transform((v) => v === "true")
     .default("false"),
+  FEATURE_FINANCE_STATEMENT_INTAKE: z
+    .string()
+    .transform((v) => v === "true")
+    .default("false"),
+
+  // ── Finance Statement Intake (FIN-001a) ─────────────────
+  FINANCE_STATEMENT_SENDER_ALLOWLIST: z
+    .string()
+    .default("")
+    .transform((value) =>
+      value
+        .split(",")
+        .map((entry) => entry.trim().toLowerCase())
+        .filter(Boolean)
+    ),
+  FINANCE_STATEMENT_SUBJECT_KEYWORDS: z
+    .string()
+    .default("statement")
+    .transform((value) =>
+      value
+        .split(",")
+        .map((entry) => entry.trim().toLowerCase())
+        .filter(Boolean)
+    ),
+  FINANCE_STATEMENT_DETECTION_RULE_VERSION: z
+    .string()
+    .default("fin-001a-v1"),
 
   // ── Processing Loop ──────────────────────────────────────
   PROCESSING_BATCH_SIZE: z.coerce.number().default(10),

@@ -14,11 +14,30 @@ import { createContainer } from "./container.js";
 import { registerRoutes } from "./routes/index.js";
 import { BackgroundLoop } from "./background-loop.js";
 import { ingestGmail, runProcessingCycle } from "@oneon/application";
-import type { DailyCallCounter } from "@oneon/application";
+import type { CycleSummary, DailyCallCounter } from "@oneon/application";
 import {
   GmailHttpClient,
   GmailPollingAdapter,
 } from "@oneon/infrastructure";
+
+function emptyCycleSummary(): CycleSummary {
+  return {
+    classification: {
+      total: 0,
+      classified: 0,
+      skippedByRule: 0,
+      skippedMaxAttempts: 0,
+      skippedDailyLimit: 0,
+      failed: 0,
+    },
+    actionsProposed: 0,
+    actionsAutoExecuted: 0,
+    actionErrors: 0,
+    notificationsSent: 0,
+    abortedEarly: false,
+    durationMs: 0,
+  };
+}
 
 // ── Bootstrap ────────────────────────────────────────────────
 const env = loadEnv();
@@ -101,13 +120,21 @@ logger.info("Camp-Aneone (Oneon) agent-server starting", {
     pushNotifications: env.FEATURE_PUSH_NOTIFICATIONS,
     chat: env.FEATURE_CHAT,
     backgroundLoop: env.FEATURE_BACKGROUND_LOOP,
+    financeStatementIntake: env.FEATURE_FINANCE_STATEMENT_INTAKE,
   },
 });
 
 // ── Background Processing Loop ──────────────────────────────
 let backgroundLoop: BackgroundLoop | null = null;
 
-if (env.FEATURE_BACKGROUND_LOOP && container.llmPort) {
+if (env.FEATURE_BACKGROUND_LOOP) {
+  if (!container.llmPort) {
+    logger.warn(
+      "Background loop running in ingest-only mode (LLM unavailable). " +
+        "Inbox will populate, but classification/actions are paused.",
+    );
+  }
+
   // Shared daily LLM call counter (mutable, survives across cycles)
   const dailyCallCounter: DailyCallCounter = {
     date: new Date().toISOString().slice(0, 10),
@@ -115,6 +142,24 @@ if (env.FEATURE_BACKGROUND_LOOP && container.llmPort) {
   };
   // First cycle uses smaller batch to avoid burst on startup
   let isFirstCycle = true;
+
+  const bankStatementIntake =
+    env.FEATURE_FINANCE_STATEMENT_INTAKE &&
+    env.FINANCE_STATEMENT_SENDER_ALLOWLIST.length > 0 &&
+    env.FINANCE_STATEMENT_SUBJECT_KEYWORDS.length > 0
+      ? {
+          repository: container.bankStatementRepo,
+          senderAllowlist: env.FINANCE_STATEMENT_SENDER_ALLOWLIST,
+          subjectKeywords: env.FINANCE_STATEMENT_SUBJECT_KEYWORDS,
+          detectionRuleVersion: env.FINANCE_STATEMENT_DETECTION_RULE_VERSION,
+        }
+      : undefined;
+
+  if (env.FEATURE_FINANCE_STATEMENT_INTAKE && !bankStatementIntake) {
+    logger.warn(
+      "Finance statement intake is enabled but missing allowlist/keywords; intake is disabled for this run",
+    );
+  }
 
   const userCycleRunner = async (userId: string) => {
     // 1. Create per-user Google token provider
@@ -141,7 +186,13 @@ if (env.FEATURE_BACKGROUND_LOOP && container.llmPort) {
       inboundItemRepo: container.inboundItemRepo,
       logger,
       userId,
+      bankStatementIntake,
     });
+
+    if (!container.llmPort) {
+      // Ingest-first fallback: keep Inbox/TODAY counts flowing even without LLM.
+      return emptyCycleSummary();
+    }
 
     // 3. Run processing cycle for this user
     const batchSize = isFirstCycle
@@ -198,8 +249,8 @@ if (env.FEATURE_BACKGROUND_LOOP && container.llmPort) {
     },
   );
   container.backgroundLoop = backgroundLoop;
-} else if (env.FEATURE_BACKGROUND_LOOP) {
-  logger.warn("Background loop enabled but LLM port unavailable — loop not started");
+} else {
+  logger.info("Background loop disabled via FEATURE_BACKGROUND_LOOP=false");
 }
 
 server = app.listen(env.PORT, () => {

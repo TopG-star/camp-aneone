@@ -8,7 +8,9 @@ import type {
   NotificationRepository,
   ConversationRepository,
   PreferenceRepository,
+  BankStatementRepository,
   UserRepository,
+  UserProfileRepository,
   OAuthTokenRepository,
   LLMPort,
   CalendarPort,
@@ -30,7 +32,9 @@ import {
   SqliteNotificationRepository,
   SqliteConversationRepository,
   SqlitePreferenceRepository,
+  SqliteBankStatementRepository,
   SqliteUserRepository,
+  SqliteUserProfileRepository,
   SqliteOAuthTokenRepository,
   SqliteTransactionRunner,
   ClaudeClassifierAdapter,
@@ -72,7 +76,9 @@ export interface AppContainer {
   notificationRepo: NotificationRepository;
   conversationRepo: ConversationRepository;
   preferenceRepo: PreferenceRepository;
+  bankStatementRepo: BankStatementRepository;
   userRepo: UserRepository | null;
+  userProfileRepo: UserProfileRepository;
   oauthTokenRepo: OAuthTokenRepository | null;
 
   // ── External Ports ────────────────────────────────────────
@@ -122,6 +128,8 @@ export function createContainer(env: Env): AppContainer {
   const notificationRepo = new SqliteNotificationRepository(db);
   const conversationRepo = new SqliteConversationRepository(db);
   const preferenceRepo = new SqlitePreferenceRepository(db);
+  const bankStatementRepo = new SqliteBankStatementRepository(db);
+  const userProfileRepo = new SqliteUserProfileRepository(db);
 
   // ── OAuth Repositories (requires OAUTH_TOKEN_ENCRYPTION_KEY) ──
   let userRepo: UserRepository | null = null;
@@ -398,7 +406,9 @@ export function createContainer(env: Env): AppContainer {
     notificationRepo,
     conversationRepo,
     preferenceRepo,
+    bankStatementRepo,
     userRepo,
+    userProfileRepo,
     oauthTokenRepo,
     hasGoogleCredentials: hasGoogleClientCreds,
     getEligibleUsers,

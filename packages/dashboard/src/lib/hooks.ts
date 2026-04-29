@@ -1,6 +1,7 @@
 "use client";
 
 import useSWR, { type SWRConfiguration } from "swr";
+import type { UserProfileResponse } from "@oneon/contracts";
 import { apiFetch } from "@/lib/api";
 
 function fetcher<T>(path: string): Promise<T> {
@@ -65,6 +66,11 @@ export function useStatus(config?: SWRConfiguration) {
 /** Notification preferences */
 export function useNotificationPreferences(config?: SWRConfiguration) {
   return useSWR("/api/notification-preferences", fetcher, config);
+}
+
+/** User profile preferences */
+export function useUserProfile(config?: SWRConfiguration) {
+  return useSWR<UserProfileResponse>("/api/profile", fetcher, config);
 }
 
 /** Deadlines — refresh every 30s */

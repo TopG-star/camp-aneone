@@ -143,6 +143,7 @@ describe("checkApproachingDeadlines", () => {
         eventType: "deadline_approaching",
         title: "Deadline approaching: Submit Q4 report",
         deepLink: "/deadlines/dl-001",
+        userId: "test-user",
       }),
     );
     expect(result.notified).toBe(2);
@@ -244,6 +245,7 @@ describe("checkApproachingDeadlines", () => {
     expect(deps.notificationPort.send).toHaveBeenCalledWith(
       expect.objectContaining({
         body: expect.stringContaining("Apr"),
+        userId: "test-user",
       }),
     );
   });

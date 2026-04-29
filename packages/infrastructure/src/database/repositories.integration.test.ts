@@ -29,12 +29,16 @@ function createTestDb(): Database.Database {
   const migration4 = readFileSync(join(migrationsDir, "004_add_conversation_id.sql"), "utf-8");
   const migration5 = readFileSync(join(migrationsDir, "005_users_and_oauth_tokens.sql"), "utf-8");
   const migration6 = readFileSync(join(migrationsDir, "006_add_user_id_to_core_tables.sql"), "utf-8");
+  const migration7 = readFileSync(join(migrationsDir, "007_user_profiles.sql"), "utf-8");
+  const migration8 = readFileSync(join(migrationsDir, "008_bank_statement_intake.sql"), "utf-8");
   db.exec(migration1);
   db.exec(migration2);
   db.exec(migration3);
   db.exec(migration4);
   db.exec(migration5);
   db.exec(migration6);
+  db.exec(migration7);
+  db.exec(migration8);
 
   return db;
 }

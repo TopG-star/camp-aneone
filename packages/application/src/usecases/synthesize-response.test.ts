@@ -253,6 +253,25 @@ describe("buildSynthesisPrompt", () => {
     expect(prompt).toContain("ONLY from the tool results");
     expect(prompt).toContain("Do not hallucinate");
   });
+
+  it("includes user personalization block when persona is provided", () => {
+    const prompt = buildSynthesisPrompt(
+      {
+        ...defaultPromptInput(),
+        // Cast here so we can drive RED first before adding persona type support.
+        persona: {
+          preferredName: "Adewale",
+          nickname: "Wale",
+          salutationMode: "sir_with_name",
+          communicationStyle: "technical",
+        },
+      } as BuildSynthesisPromptInput,
+    );
+
+    expect(prompt).toContain("[USER PREFERENCES]");
+    expect(prompt).toContain("Address the user as: Sir Adewale");
+    expect(prompt).toContain("Communication style: technical");
+  });
 });
 
 // ── synthesizeResponse ───────────────────────────────────────

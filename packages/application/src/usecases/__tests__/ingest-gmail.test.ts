@@ -8,6 +8,40 @@ import type {
   Source,
 } from "@oneon/domain";
 
+type BankStatementStatus = "discovered" | "queued_for_parse" | "skipped_duplicate";
+
+interface BankStatementRecord {
+  id: string;
+  userId: string | null;
+  source: Source;
+  externalId: string;
+  messageId: string;
+  threadId: string | null;
+  sender: string;
+  senderDomain: string;
+  subject: string;
+  receivedAt: string;
+  status: BankStatementStatus;
+  detectionRuleVersion: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface BankStatementIntakeConfig {
+  repository: {
+    upsert: ReturnType<typeof vi.fn>;
+    findById: ReturnType<typeof vi.fn>;
+    findBySourceAndExternalId: ReturnType<typeof vi.fn>;
+    findByStatus: ReturnType<typeof vi.fn>;
+    markQueuedForParse: ReturnType<typeof vi.fn>;
+    markSkippedDuplicate: ReturnType<typeof vi.fn>;
+    count: ReturnType<typeof vi.fn>;
+  };
+  senderAllowlist: string[];
+  subjectKeywords: string[];
+  detectionRuleVersion: string;
+}
+
 // ── Helpers ──────────────────────────────────────────────────
 
 function makeItem(id: string, externalId: string): InboundItem {
@@ -75,6 +109,63 @@ function mockLogger(): Logger {
   };
 }
 
+function makeBankStatement(
+  id: string,
+  externalId: string,
+  status: BankStatementStatus
+): BankStatementRecord {
+  const now = new Date().toISOString();
+  return {
+    id,
+    userId: "test-user",
+    source: "gmail" as Source,
+    externalId,
+    messageId: externalId,
+    threadId: "thread-1",
+    sender: "alerts@chase.com",
+    senderDomain: "chase.com",
+    subject: "Your statement is ready",
+    receivedAt: now,
+    status,
+    detectionRuleVersion: "fin-001a-v1",
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function mockBankStatementRepo() {
+  return {
+    upsert: vi.fn((input: { externalId: string; status: BankStatementStatus }) =>
+      makeBankStatement("bank-" + input.externalId, input.externalId, input.status)
+    ),
+    findById: vi.fn().mockReturnValue(null),
+    findBySourceAndExternalId: vi.fn().mockReturnValue(null),
+    findByStatus: vi.fn().mockReturnValue([]),
+    markQueuedForParse: vi.fn(),
+    markSkippedDuplicate: vi.fn(),
+    count: vi.fn().mockReturnValue(0),
+  };
+}
+
+function makeCandidateItem(externalId: string) {
+  return {
+    source: "gmail" as Source,
+    externalId,
+    from: "alerts@chase.com",
+    subject: "Your monthly statement is ready",
+    bodyPreview: "New statement available.",
+    receivedAt: new Date().toISOString(),
+    rawJson: JSON.stringify({
+      id: externalId,
+      threadId: "thread-1",
+    }),
+    threadId: "thread-1",
+    labels: "[]",
+    classifiedAt: null,
+    classifyAttempts: 0,
+  };
+}
+
 describe("ingestGmail", () => {
   let ingestionPort: ReturnType<typeof mockIngestionPort>;
   let inboundItemRepo: ReturnType<typeof mockInboundItemRepo>;
@@ -87,8 +178,14 @@ describe("ingestGmail", () => {
     logger = mockLogger();
   });
 
-  function run() {
-    return ingestGmail({ ingestionPort, inboundItemRepo, logger, userId: "test-user" });
+  function run(bankStatementIntake?: BankStatementIntakeConfig) {
+    return ingestGmail({
+      ingestionPort,
+      inboundItemRepo,
+      logger,
+      userId: "test-user",
+      bankStatementIntake,
+    });
   }
 
   it("calls ingestionPort.fetchNew() with userId", async () => {
@@ -179,5 +276,86 @@ describe("ingestGmail", () => {
       expect.stringContaining("Gmail ingestion"),
       expect.objectContaining({ ingested: 1 })
     );
+  });
+
+  it("stores finance candidate and transitions to queued_for_parse", async () => {
+    const items = [makeCandidateItem("fin-ext-1")];
+    (ingestionPort.fetchNew as ReturnType<typeof vi.fn>).mockResolvedValue(items);
+
+    const bankRepo = mockBankStatementRepo();
+
+    await run({
+      repository: bankRepo,
+      senderAllowlist: ["chase.com"],
+      subjectKeywords: ["statement", "monthly"],
+      detectionRuleVersion: "fin-001a-v1",
+    });
+
+    expect(bankRepo.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "test-user",
+        source: "gmail",
+        externalId: "fin-ext-1",
+        messageId: "fin-ext-1",
+        threadId: "thread-1",
+        sender: "alerts@chase.com",
+        senderDomain: "chase.com",
+        subject: "Your monthly statement is ready",
+        status: "discovered",
+        detectionRuleVersion: "fin-001a-v1",
+      })
+    );
+
+    expect(bankRepo.markQueuedForParse).toHaveBeenCalledWith("bank-fin-ext-1");
+    expect(bankRepo.markSkippedDuplicate).not.toHaveBeenCalled();
+  });
+
+  it("marks duplicate finance candidate as skipped_duplicate", async () => {
+    const items = [makeCandidateItem("fin-ext-dup")];
+    (ingestionPort.fetchNew as ReturnType<typeof vi.fn>).mockResolvedValue(items);
+
+    const bankRepo = mockBankStatementRepo();
+    bankRepo.findBySourceAndExternalId.mockReturnValue(
+      makeBankStatement("bank-existing", "fin-ext-dup", "queued_for_parse")
+    );
+
+    await run({
+      repository: bankRepo,
+      senderAllowlist: ["chase.com"],
+      subjectKeywords: ["statement", "monthly"],
+      detectionRuleVersion: "fin-001a-v1",
+    });
+
+    expect(bankRepo.findBySourceAndExternalId).toHaveBeenCalledWith(
+      "gmail",
+      "fin-ext-dup",
+      "test-user"
+    );
+    expect(bankRepo.markSkippedDuplicate).toHaveBeenCalledWith("bank-existing");
+    expect(bankRepo.markQueuedForParse).not.toHaveBeenCalled();
+  });
+
+  it("does not store non-candidate messages in finance intake", async () => {
+    const items = [
+      {
+        ...makeInboundItemCreate("ext-non-fin"),
+        from: "noreply@github.com",
+        subject: "Build succeeded",
+      },
+    ];
+    (ingestionPort.fetchNew as ReturnType<typeof vi.fn>).mockResolvedValue(items);
+
+    const bankRepo = mockBankStatementRepo();
+
+    await run({
+      repository: bankRepo,
+      senderAllowlist: ["chase.com", "bankofamerica.com"],
+      subjectKeywords: ["statement"],
+      detectionRuleVersion: "fin-001a-v1",
+    });
+
+    expect(bankRepo.upsert).not.toHaveBeenCalled();
+    expect(bankRepo.markQueuedForParse).not.toHaveBeenCalled();
+    expect(bankRepo.markSkippedDuplicate).not.toHaveBeenCalled();
   });
 });

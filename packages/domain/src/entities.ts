@@ -102,10 +102,50 @@ export interface ClassificationFeedback {
   createdAt: string;
 }
 
+export type BankStatementIntakeStatus =
+  | "discovered"
+  | "queued_for_parse"
+  | "skipped_duplicate";
+
+export interface BankStatement {
+  id: string;
+  userId: string;
+  source: Source;
+  externalId: string;
+  messageId: string;
+  threadId: string | null;
+  sender: string;
+  senderDomain: string;
+  subject: string;
+  receivedAt: string;
+  status: BankStatementIntakeStatus;
+  detectionRuleVersion: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface User {
   id: string;
   email: string;
   createdAt: string;
+}
+
+export type SalutationMode = "sir" | "sir_with_name" | "nickname";
+export type CommunicationStyle =
+  | "formal"
+  | "friendly"
+  | "concise"
+  | "technical";
+
+export interface UserProfile {
+  userId: string;
+  preferredName: string | null;
+  nickname: string | null;
+  salutationMode: SalutationMode;
+  communicationStyle: CommunicationStyle;
+  timezone: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type OAuthProvider = "google" | "github";

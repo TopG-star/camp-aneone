@@ -8,6 +8,8 @@ import { createChatRouter } from "./chat.route.js";
 import { createDeadlinesRouter } from "./deadlines.route.js";
 import { createNotificationRouter } from "./notification.route.js";
 import { createNotificationPreferencesRouter } from "./notification-preferences.route.js";
+import { createProfileRouter } from "./profile.route.js";
+import { createFinanceStatementsRouter } from "./finance-statements.route.js";
 import { createInboxRouter } from "./inbox.route.js";
 import { createActionsRouter } from "./actions.route.js";
 import { createTodayRouter } from "./today.route.js";
@@ -229,6 +231,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       createChatRouter({
         conversationRepo: container.conversationRepo,
         logger: chatLogger,
+        userProfileRepo: container.userProfileRepo,
         intentExtractor: container.llmPort,
         synthesizer: container.llmPort,
         toolRegistry,
@@ -264,6 +267,32 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     }),
   );
   prefLogger.info("Notification preferences routes registered at /api/notification-preferences");
+
+  // ── User Profile Preferences ─────────────────────────────
+  const profileLogger = new StructuredLogger("profile", env.LOG_LEVEL);
+  app.use(
+    "/api/profile",
+    ...userAuth,
+    createProfileRouter({
+      userProfileRepo: container.userProfileRepo,
+      logger: profileLogger,
+    }),
+  );
+  profileLogger.info("Profile routes registered at /api/profile");
+
+  // ── Finance Statement Intake (read-only) ────────────────
+  if (env.FEATURE_FINANCE_STATEMENT_INTAKE) {
+    const financeLogger = new StructuredLogger("finance-statements", env.LOG_LEVEL);
+    app.use(
+      "/api/finance/statements",
+      ...userAuth,
+      createFinanceStatementsRouter({
+        bankStatementRepo: container.bankStatementRepo,
+        logger: financeLogger,
+      }),
+    );
+    financeLogger.info("Finance statement routes registered at /api/finance/statements");
+  }
 
   // ── Inbox ─────────────────────────────────────────────────
   const inboxLogger = new StructuredLogger("inbox", env.LOG_LEVEL);

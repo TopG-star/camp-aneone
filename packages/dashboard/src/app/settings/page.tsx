@@ -1,8 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
-import { useStatus, useNotificationPreferences } from "@/lib/hooks";
+import {
+  useStatus,
+  useNotificationPreferences,
+  useUserProfile,
+} from "@/lib/hooks";
 import { apiFetch } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -22,6 +26,13 @@ import {
   Moon,
   Sun,
 } from "lucide-react";
+import type {
+  CommunicationStyle,
+  SalutationMode,
+  UserProfileResponse,
+  UserProfileSettings,
+} from "@oneon/contracts";
+import { DEFAULT_USER_PROFILE_SETTINGS } from "@oneon/contracts";
 
 interface Integration {
   name: string;
@@ -54,12 +65,23 @@ export default function SettingsPage() {
   const userId = session?.user?.email ?? "";
   const { data: statusData, isLoading: statusLoading, mutate: mutateStatus } = useStatus();
   const { data: prefsData } = useNotificationPreferences();
+  const {
+    data: profileData,
+    isLoading: profileLoading,
+    mutate: mutateProfile,
+  } = useUserProfile();
   const status = statusData as StatusResponse | undefined;
   const prefs =
     (prefsData as NotificationPreferencesResponse | undefined)?.preferences ?? {};
+  const profile =
+    (profileData as UserProfileResponse | undefined)?.profile;
   const prefEntries = Object.entries(prefs);
 
   const [githubPat, setGithubPat] = useState("");
+  const [profileForm, setProfileForm] = useState<UserProfileSettings>(
+    DEFAULT_USER_PROFILE_SETTINGS,
+  );
+  const [profileDirty, setProfileDirty] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -72,6 +94,12 @@ export default function SettingsPage() {
 
   const gmail = status?.integrations.find((i) => i.name === "gmail");
   const github = status?.integrations.find((i) => i.name === "github");
+
+  useEffect(() => {
+    if (profile && !profileDirty) {
+      setProfileForm(profile);
+    }
+  }, [profile, profileDirty]);
 
   async function connectGoogle() {
     setBusy("google");
@@ -133,6 +161,46 @@ export default function SettingsPage() {
       await mutateStatus();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to disconnect GitHub");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function updateProfileField<K extends keyof UserProfileSettings>(
+    key: K,
+    value: UserProfileSettings[K],
+  ) {
+    setProfileDirty(true);
+    setProfileForm((prev) => ({
+      ...prev,
+      [key]: value,
+    }));
+  }
+
+  async function saveProfile() {
+    if (
+      profileForm.salutationMode === "nickname" &&
+      (!profileForm.nickname || profileForm.nickname.trim().length === 0)
+    ) {
+      setError("Nickname is required when salutation mode is set to nickname.");
+      return;
+    }
+
+    setBusy("profile-save");
+    setError(null);
+
+    try {
+      const data = await apiFetch<UserProfileResponse>("/api/profile", {
+        method: "PUT",
+        body: JSON.stringify({ profile: profileForm }),
+      });
+
+      setProfileForm(data.profile);
+      setProfileDirty(false);
+      setSuccess("Profile preferences saved.");
+      await mutateProfile();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save profile settings");
     } finally {
       setBusy(null);
     }
@@ -355,6 +423,119 @@ export default function SettingsPage() {
             <p className="state-subtext">
               Unable to load status
             </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Assistant Profile */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Assistant Personalization</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {profileLoading ? (
+            <div className="space-y-2 py-1">
+              <div className="state-skeleton h-4 w-56" />
+              <div className="state-skeleton h-4 w-40" />
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <p className="text-sm meta-copy">
+                Control how Oneon addresses you and the response style it uses.
+              </p>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="space-y-1">
+                  <span className="text-label-sm meta-copy">Preferred Name</span>
+                  <input
+                    type="text"
+                    value={profileForm.preferredName ?? ""}
+                    onChange={(e) =>
+                      updateProfileField(
+                        "preferredName",
+                        e.target.value.trim().length > 0 ? e.target.value : null,
+                      )
+                    }
+                    placeholder="Your first name"
+                    className="w-full rounded-eight border border-outline/20 bg-surface-low px-3 py-2 text-sm text-on-surface placeholder:text-on-surface-variant/40 focus:border-primary focus:outline-none dark:border-dark-outline/20 dark:bg-dark-surface-low dark:text-dark-on-surface dark:placeholder:text-dark-on-surface-variant/40 dark:focus:border-dark-primary"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-label-sm meta-copy">Nickname</span>
+                  <input
+                    type="text"
+                    value={profileForm.nickname ?? ""}
+                    onChange={(e) =>
+                      updateProfileField(
+                        "nickname",
+                        e.target.value.trim().length > 0 ? e.target.value : null,
+                      )
+                    }
+                    placeholder="How you like to be called"
+                    className="w-full rounded-eight border border-outline/20 bg-surface-low px-3 py-2 text-sm text-on-surface placeholder:text-on-surface-variant/40 focus:border-primary focus:outline-none dark:border-dark-outline/20 dark:bg-dark-surface-low dark:text-dark-on-surface dark:placeholder:text-dark-on-surface-variant/40 dark:focus:border-dark-primary"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-label-sm meta-copy">Salutation</span>
+                  <select
+                    value={profileForm.salutationMode}
+                    onChange={(e) =>
+                      updateProfileField("salutationMode", e.target.value as SalutationMode)
+                    }
+                    className="w-full rounded-eight border border-outline/20 bg-surface-low px-3 py-2 text-sm text-on-surface focus:border-primary focus:outline-none dark:border-dark-outline/20 dark:bg-dark-surface-low dark:text-dark-on-surface dark:focus:border-dark-primary"
+                  >
+                    <option value="sir">Sir</option>
+                    <option value="sir_with_name">Sir + preferred name</option>
+                    <option value="nickname">Nickname</option>
+                  </select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-label-sm meta-copy">Communication Style</span>
+                  <select
+                    value={profileForm.communicationStyle}
+                    onChange={(e) =>
+                      updateProfileField(
+                        "communicationStyle",
+                        e.target.value as CommunicationStyle,
+                      )
+                    }
+                    className="w-full rounded-eight border border-outline/20 bg-surface-low px-3 py-2 text-sm text-on-surface focus:border-primary focus:outline-none dark:border-dark-outline/20 dark:bg-dark-surface-low dark:text-dark-on-surface dark:focus:border-dark-primary"
+                  >
+                    <option value="formal">Formal</option>
+                    <option value="friendly">Friendly</option>
+                    <option value="concise">Concise</option>
+                    <option value="technical">Technical</option>
+                  </select>
+                </label>
+              </div>
+
+              <label className="space-y-1">
+                <span className="text-label-sm meta-copy">Timezone</span>
+                <input
+                  type="text"
+                  value={profileForm.timezone}
+                  onChange={(e) => updateProfileField("timezone", e.target.value)}
+                  placeholder="UTC"
+                  className="w-full rounded-eight border border-outline/20 bg-surface-low px-3 py-2 text-sm text-on-surface placeholder:text-on-surface-variant/40 focus:border-primary focus:outline-none dark:border-dark-outline/20 dark:bg-dark-surface-low dark:text-dark-on-surface dark:placeholder:text-dark-on-surface-variant/40 dark:focus:border-dark-primary"
+                />
+              </label>
+
+              <div className="flex justify-end">
+                <button
+                  onClick={saveProfile}
+                  disabled={busy === "profile-save" || !profileDirty}
+                  className="flex items-center justify-center gap-2 rounded-eight bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {busy === "profile-save" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : null}
+                  Save profile
+                </button>
+              </div>
+            </div>
           )}
         </CardContent>
       </Card>
