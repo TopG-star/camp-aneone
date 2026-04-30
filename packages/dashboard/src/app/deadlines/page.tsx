@@ -5,6 +5,7 @@ import { useDeadlines } from "@/lib/hooks";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CalendarClock, AlertTriangle, Filter } from "lucide-react";
+import { getMotionDelayClass } from "@/lib/motion-utils";
 
 interface DeadlineItem {
   id: string;
@@ -60,24 +61,26 @@ export default function DeadlinesPage() {
   const response = data as DeadlinesResponse | undefined;
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 md:space-y-7 lg:space-y-8 motion-page-enter">
       {/* Header */}
-      <div className="space-y-2">
-        <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+      <div className="space-y-2 motion-rise-in">
+        <p className="page-eyebrow">
           Planning
         </p>
-        <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
+        <h1 className="page-title">
           Deadlines
         </h1>
-        <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+        <p className="page-copy">
           Upcoming deadlines extracted from your messages and calendar.
         </p>
       </div>
 
       {/* Summary Counts */}
       {response && (
-        <div className="flex gap-4">
-          <div className="rounded-twelve bg-surface-low px-4 py-2 dark:bg-dark-surface-low">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div
+            className={`motion-rise-in-soft rounded-twelve border border-outline-variant/30 bg-surface-low px-4 py-3 dark:border-dark-outline-variant/30 dark:bg-dark-surface-low ${getMotionDelayClass(1)}`}
+          >
             <span className="text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
               Total
             </span>
@@ -85,7 +88,9 @@ export default function DeadlinesPage() {
               {response.counts.total}
             </p>
           </div>
-          <div className="rounded-twelve bg-surface-low px-4 py-2 dark:bg-dark-surface-low">
+          <div
+            className={`motion-rise-in-soft rounded-twelve border border-outline-variant/30 bg-surface-low px-4 py-3 dark:border-dark-outline-variant/30 dark:bg-dark-surface-low ${getMotionDelayClass(2)}`}
+          >
             <span className="text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
               Open
             </span>
@@ -93,7 +98,9 @@ export default function DeadlinesPage() {
               {response.counts.open}
             </p>
           </div>
-          <div className="rounded-twelve bg-error-container px-4 py-2 dark:bg-dark-error-container">
+          <div
+            className={`motion-rise-in-soft rounded-twelve border border-error/20 bg-error-container px-4 py-3 dark:border-dark-error/25 dark:bg-dark-error-container ${getMotionDelayClass(3)}`}
+          >
             <span className="text-label-sm text-on-error-container dark:text-dark-on-error-container">
               Overdue
             </span>
@@ -105,35 +112,41 @@ export default function DeadlinesPage() {
       )}
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3">
-        <Filter className="h-4 w-4 text-on-surface-variant dark:text-dark-on-surface-variant" />
-        <div className="flex gap-1">
+      <div
+        className={`motion-rise-in-soft space-y-2 ${getMotionDelayClass(2)}`}
+      >
+        <div className="flex items-center gap-2">
+          <Filter className="h-4 w-4 text-on-surface-variant dark:text-dark-on-surface-variant" />
+          <span className="text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+            Filters
+          </span>
+        </div>
+
+        <div className="flex gap-1 overflow-x-auto pb-1">
           {STATUS_OPTIONS.map((s) => (
             <button
               key={s}
               onClick={() => setStatus(s)}
-              className={`rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
+              className={`filter-chip ${
                 status === s
-                  ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
-                  : "text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high"
+                  ? "filter-chip-active"
+                  : "filter-chip-idle"
               }`}
             >
               {s === "all" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
             </button>
           ))}
         </div>
-        <span className="text-on-surface-variant/30 dark:text-dark-on-surface-variant/30">
-          |
-        </span>
-        <div className="flex gap-1">
+
+        <div className="flex gap-1 overflow-x-auto pb-1">
           {RANGE_OPTIONS.map(({ label, value }) => (
             <button
               key={value}
               onClick={() => setRange(value)}
-              className={`rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
+              className={`filter-chip ${
                 range === value
-                  ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
-                  : "text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high"
+                  ? "filter-chip-active"
+                  : "filter-chip-idle"
               }`}
             >
               {label}
@@ -146,27 +159,27 @@ export default function DeadlinesPage() {
       {isLoading && (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
-            <div
-              key={i}
-              className="h-20 animate-pulse rounded-twelve bg-surface-low dark:bg-dark-surface-low"
-            />
+            <Card key={i}>
+              <div className="state-skeleton h-20" />
+            </Card>
           ))}
         </div>
       )}
 
       {error && (
         <Card>
-          <CardContent className="py-8 text-center text-on-surface-variant dark:text-dark-on-surface-variant">
-            Failed to load deadlines. Please try again.
+          <CardContent className="state-content state-content-center py-8">
+            <AlertTriangle className="h-8 w-8 text-red-500/80 dark:text-red-400/80" />
+            <p className="state-error">Failed to load deadlines. Please try again.</p>
           </CardContent>
         </Card>
       )}
 
       {response && response.deadlines.length === 0 && (
         <Card>
-          <CardContent className="py-12 text-center">
-            <CalendarClock className="mx-auto mb-3 h-10 w-10 text-on-surface-variant/30 dark:text-dark-on-surface-variant/30" />
-            <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+          <CardContent className="state-content state-content-center py-10">
+            <CalendarClock className="state-icon" />
+            <p className="state-title">
               No deadlines found for this time range.
             </p>
           </CardContent>
@@ -174,17 +187,17 @@ export default function DeadlinesPage() {
       )}
 
       {response && response.deadlines.length > 0 && (
-        <div className="space-y-2">
-          {response.deadlines.map((deadline) => (
+        <div className="space-y-2 md:space-y-3">
+          {response.deadlines.map((deadline, index) => (
             <Card
               key={deadline.id}
               className={
                 deadline.isOverdue
-                  ? "border-error/30 dark:border-dark-error/30"
-                  : ""
+                  ? `motion-rise-in-soft border-error/30 dark:border-dark-error/30 ${getMotionDelayClass(index + 2)}`
+                  : `motion-rise-in-soft ${getMotionDelayClass(index + 2)}`
               }
             >
-              <CardContent className="flex items-center gap-4 py-4">
+              <CardContent className="flex flex-col items-start gap-3 py-4 sm:flex-row sm:items-center sm:gap-4">
                 {deadline.isOverdue ? (
                   <AlertTriangle className="h-5 w-5 shrink-0 text-error dark:text-dark-error" />
                 ) : (
@@ -194,7 +207,7 @@ export default function DeadlinesPage() {
                   <p className="truncate font-medium text-on-surface dark:text-dark-on-surface">
                     {deadline.subject}
                   </p>
-                  <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
+                  <p className="text-label-md meta-copy">
                     {deadline.source} &middot; {formatDate(deadline.dueDate)}
                   </p>
                 </div>
@@ -206,6 +219,7 @@ export default function DeadlinesPage() {
                         ? "success"
                         : "default"
                   }
+                    className="self-end sm:self-auto"
                 >
                   {deadline.isOverdue ? "Overdue" : deadline.status}
                 </Badge>

@@ -13,6 +13,7 @@ import { type SkipRule } from "./process-unclassified-items.js";
 import { proposeActions } from "./propose-actions.js";
 import { executeAction } from "./execute-action.js";
 import { checkApproachingDeadlines } from "./check-approaching-deadlines.js";
+import { evaluateReminderPriorityPolicy } from "./reminder-priority-policy.js";
 
 // ── Daily Call Limiter ───────────────────────────────────────
 
@@ -248,20 +249,29 @@ export async function runProcessingCycle(
       summary.classification.classified++;
 
       // ── Notification: urgent item ──
-      if (deps.notificationPort && classification.priority <= 2) {
-        try {
-          await deps.notificationPort.send({
-            eventType: "urgent_item",
-            title: `Urgent: ${item.subject}`,
-            body: classification.summary,
-            deepLink: `/items/${item.id}`,
-          });
-          summary.notificationsSent++;
-        } catch (notifError) {
-          logger.error("Failed to send urgent_item notification", {
-            itemId: item.id,
-            error: notifError instanceof Error ? notifError.message : String(notifError),
-          });
+      if (deps.notificationPort) {
+        const policyDecision = evaluateReminderPriorityPolicy({
+          userId: deps.userId,
+          eventType: "urgent_item",
+          priority: classification.priority,
+        });
+
+        if (policyDecision.shouldNotify) {
+          try {
+            await deps.notificationPort.send({
+              eventType: "urgent_item",
+              title: `Urgent: ${item.subject}`,
+              body: classification.summary,
+              deepLink: `/items/${item.id}`,
+              userId: deps.userId,
+            });
+            summary.notificationsSent++;
+          } catch (notifError) {
+            logger.error("Failed to send urgent_item notification", {
+              itemId: item.id,
+              error: notifError instanceof Error ? notifError.message : String(notifError),
+            });
+          }
         }
       }
 
@@ -298,21 +308,30 @@ export async function runProcessingCycle(
         // ── Notification: approval-required actions ──
         if (deps.notificationPort) {
           for (const action of proposeResult.created) {
-            if (action.riskLevel === "approval_required") {
-              try {
-                await deps.notificationPort.send({
-                  eventType: "action_proposed",
-                  title: `Action requires approval: ${action.actionType}`,
-                  body: `A "${action.actionType}" action on item ${action.resourceId} needs your approval.`,
-                  deepLink: `/actions/${action.id}`,
-                });
-                summary.notificationsSent++;
-              } catch (notifError) {
-                logger.error("Failed to send action_proposed notification", {
-                  actionId: action.id,
-                  error: notifError instanceof Error ? notifError.message : String(notifError),
-                });
-              }
+            const policyDecision = evaluateReminderPriorityPolicy({
+              userId: deps.userId,
+              eventType: "action_proposed",
+              riskLevel: action.riskLevel,
+            });
+
+            if (!policyDecision.shouldNotify) {
+              continue;
+            }
+
+            try {
+              await deps.notificationPort.send({
+                eventType: "action_proposed",
+                title: `Action requires approval: ${action.actionType}`,
+                body: `A "${action.actionType}" action on item ${action.resourceId} needs your approval.`,
+                deepLink: `/actions/${action.id}`,
+                userId: deps.userId,
+              });
+              summary.notificationsSent++;
+            } catch (notifError) {
+              logger.error("Failed to send action_proposed notification", {
+                actionId: action.id,
+                error: notifError instanceof Error ? notifError.message : String(notifError),
+              });
             }
           }
         }

@@ -4,7 +4,8 @@ import { useState, useRef, useEffect } from "react";
 import { apiFetch } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { MessageSquare, Send, Loader2, Bot, User } from "lucide-react";
+import { MessageSquare, Send, Loader2, Bot, User, AlertTriangle } from "lucide-react";
+import { getMotionDelayClass } from "@/lib/motion-utils";
 
 interface ChatMessage {
   id: string;
@@ -97,33 +98,35 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-5rem)] flex-col">
+    <div className="motion-page-enter flex h-[calc(100dvh-5rem)] min-h-[calc(100dvh-5rem)] flex-col">
       {/* Header */}
-      <div className="space-y-2 pb-4">
-        <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+      <div className="motion-rise-in space-y-2 pb-2 sm:pb-3 md:pb-4">
+        <p className="page-eyebrow">
           Assistant
         </p>
-        <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
+        <h1 className="page-title">
           Chat
         </h1>
-        <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+        <p className="page-copy">
           Ask your AI assistant about emails, deadlines, calendar, and more.
         </p>
       </div>
 
       {/* Messages Area */}
-      <Card className="flex-1 overflow-hidden flex flex-col">
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <Card
+        className={`motion-rise-in-soft flex flex-1 flex-col overflow-hidden ${getMotionDelayClass(1)}`}
+      >
+        <div className="flex-1 space-y-3 sm:space-y-4 overflow-y-auto p-3 sm:p-4">
           {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-center space-y-4">
+            <div className="state-content state-content-center h-full justify-center gap-4">
               <div className="rounded-full bg-surface-low dark:bg-dark-surface-low p-4">
-                <MessageSquare className="h-8 w-8 text-on-surface-variant/50 dark:text-dark-on-surface-variant/50" />
+                <MessageSquare className="state-icon" />
               </div>
-              <div className="space-y-2">
-                <p className="text-title-md font-medium text-on-surface dark:text-dark-on-surface">
+              <div className="state-content state-content-center gap-1">
+                <p className="state-title">
                   Start a conversation
                 </p>
-                <p className="text-body-md text-on-surface-variant dark:text-dark-on-surface-variant max-w-md">
+                <p className="state-subtext max-w-md">
                   Ask about your inbox, upcoming deadlines, calendar events, or pending actions.
                 </p>
               </div>
@@ -137,7 +140,7 @@ export default function ChatPage() {
                   <button
                     key={suggestion}
                     onClick={() => setInput(suggestion)}
-                    className="rounded-full px-3 py-1.5 text-label-md text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high ghost-border transition-colors"
+                    className="motion-interactive filter-chip filter-chip-idle"
                   >
                     {suggestion}
                   </button>
@@ -157,13 +160,13 @@ export default function ChatPage() {
                 </div>
               )}
               <div
-                className={`max-w-[75%] rounded-twelve px-4 py-3 ${
+                className={`max-w-[86%] rounded-twelve px-4 py-3 sm:max-w-[75%] ${
                   msg.role === "user"
                     ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
                     : "bg-surface-low dark:bg-dark-surface-low text-on-surface dark:text-dark-on-surface"
                 }`}
               >
-                <p className="text-body-md whitespace-pre-wrap">{msg.content}</p>
+                <p className="text-body-md whitespace-pre-wrap leading-relaxed">{msg.content}</p>
               </div>
               {msg.role === "user" && (
                 <div className="flex-shrink-0 w-8 h-8 rounded-full bg-surface-high dark:bg-dark-surface-high flex items-center justify-center">
@@ -189,14 +192,17 @@ export default function ChatPage() {
 
         {/* Error */}
         {error && (
-          <div className="px-4 pb-2">
-            <p className="text-label-md text-red-600 dark:text-red-400">{error}</p>
+          <div className="mx-3 mb-2 rounded-eight border border-red-500/30 bg-red-500/10 px-3 py-2 sm:mx-4">
+            <div className="state-content gap-1 sm:flex-row sm:items-center sm:justify-center">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-red-500/80 dark:text-red-400/80" />
+              <p className="state-error">{error}</p>
+            </div>
           </div>
         )}
 
         {/* Input Area */}
-        <div className="border-t border-outline-variant/20 dark:border-dark-outline-variant/20 p-4">
-          <div className="flex items-end gap-3">
+        <div className="border-t border-outline-variant/20 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] dark:border-dark-outline-variant/20 sm:p-4 sm:pb-4">
+          <div className="flex items-end gap-2 sm:gap-3">
             <textarea
               ref={inputRef}
               value={input}
@@ -216,7 +222,7 @@ export default function ChatPage() {
               <Send className="h-4 w-4" />
             </Button>
           </div>
-          <p className="mt-2 text-label-sm text-on-surface-variant/40 dark:text-dark-on-surface-variant/40">
+          <p className="mt-2 text-label-sm meta-copy">
             Press Enter to send, Shift+Enter for new line
           </p>
         </div>

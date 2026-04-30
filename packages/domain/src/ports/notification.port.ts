@@ -4,5 +4,6 @@ export interface NotificationPort {
     title: string;
     body: string;
     deepLink?: string;
+    userId?: string | null;
   }): Promise<void>;
 }

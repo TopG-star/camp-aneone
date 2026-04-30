@@ -8,7 +8,9 @@ import type {
   NotificationRepository,
   ConversationRepository,
   PreferenceRepository,
+  BankStatementRepository,
   UserRepository,
+  UserProfileRepository,
   OAuthTokenRepository,
   LLMPort,
   CalendarPort,
@@ -30,10 +32,15 @@ import {
   SqliteNotificationRepository,
   SqliteConversationRepository,
   SqlitePreferenceRepository,
+  SqliteBankStatementRepository,
   SqliteUserRepository,
+  SqliteUserProfileRepository,
   SqliteOAuthTokenRepository,
   SqliteTransactionRunner,
   ClaudeClassifierAdapter,
+  DeepSeekClassifierAdapter,
+  ShadowLlmAdapter,
+  RoutingLlmAdapter,
   StructuredLogger,
   EnvRefreshTokenProvider,
   DbGoogleTokenProvider,
@@ -69,7 +76,9 @@ export interface AppContainer {
   notificationRepo: NotificationRepository;
   conversationRepo: ConversationRepository;
   preferenceRepo: PreferenceRepository;
+  bankStatementRepo: BankStatementRepository;
   userRepo: UserRepository | null;
+  userProfileRepo: UserProfileRepository;
   oauthTokenRepo: OAuthTokenRepository | null;
 
   // ── External Ports ────────────────────────────────────────
@@ -119,6 +128,8 @@ export function createContainer(env: Env): AppContainer {
   const notificationRepo = new SqliteNotificationRepository(db);
   const conversationRepo = new SqliteConversationRepository(db);
   const preferenceRepo = new SqlitePreferenceRepository(db);
+  const bankStatementRepo = new SqliteBankStatementRepository(db);
+  const userProfileRepo = new SqliteUserProfileRepository(db);
 
   // ── OAuth Repositories (requires OAUTH_TOKEN_ENCRYPTION_KEY) ──
   let userRepo: UserRepository | null = null;
@@ -196,7 +207,7 @@ export function createContainer(env: Env): AppContainer {
   // createGoogleTokenProvider: creates DbGoogleTokenProvider for a userId
 
   const getEligibleUsers = (): string[] => {
-    if (!userRepo || !oauthTokenRepo) return [];
+    if (!userRepo || !oauthTokenRepo || !hasGoogleClientCreds) return [];
     const users = userRepo.list();
     return users
       .filter((u) => oauthTokenRepo!.get("google", u.id) !== null)
@@ -218,25 +229,85 @@ export function createContainer(env: Env): AppContainer {
   };
 
   let llmPort: LLMPort | null = null;
-  if (env.ANTHROPIC_API_KEY) {
-    llmPort = new ClaudeClassifierAdapter({
-      apiKey: env.ANTHROPIC_API_KEY,
-      classifierModel: env.LLM_CLASSIFIER_MODEL,
-      synthesisModel: env.LLM_SYNTHESIS_MODEL,
-      maxRetries: env.LLM_MAX_RETRIES,
-      timeoutMs: env.LLM_TIMEOUT_MS,
-      circuitBreaker: {
-        failureThreshold: env.CB_FAILURE_THRESHOLD,
-        resetTimeoutMs: env.CB_RESET_TIMEOUT_MS,
-      },
-      logger,
-    });
+
+  // ── LLM Provider Factory ───────────────────────────────────
+  function buildLlmAdapter(provider: "anthropic" | "deepseek"): LLMPort | null {
+    if (provider === "anthropic") {
+      if (!env.ANTHROPIC_API_KEY) return null;
+      return new ClaudeClassifierAdapter({
+        apiKey: env.ANTHROPIC_API_KEY,
+        classifierModel: env.LLM_CLASSIFIER_MODEL,
+        synthesisModel: env.LLM_SYNTHESIS_MODEL,
+        maxRetries: env.LLM_MAX_RETRIES,
+        timeoutMs: env.LLM_TIMEOUT_MS,
+        circuitBreaker: {
+          failureThreshold: env.CB_FAILURE_THRESHOLD,
+          resetTimeoutMs: env.CB_RESET_TIMEOUT_MS,
+        },
+        logger,
+      });
+    }
+    if (provider === "deepseek") {
+      // DEEPSEEK_API_KEY + model IDs are guaranteed present by env superRefine
+      return new DeepSeekClassifierAdapter({
+        apiKey: env.DEEPSEEK_API_KEY!,
+        classifierModel: env.DEEPSEEK_CLASSIFIER_MODEL!,
+        synthesisModel: env.DEEPSEEK_SYNTHESIS_MODEL!,
+        maxRetries: env.LLM_MAX_RETRIES,
+        classifierTimeoutMs: env.LLM_CLASSIFIER_TIMEOUT_MS,
+        synthesisTimeoutMs: env.LLM_SYNTHESIS_TIMEOUT_MS,
+        circuitBreaker: {
+          failureThreshold: env.CB_FAILURE_THRESHOLD,
+          resetTimeoutMs: env.CB_RESET_TIMEOUT_MS,
+        },
+        logger,
+      });
+    }
+    return null;
+  }
+
+  // Primary adapter
+  const primaryAdapter = buildLlmAdapter(env.LLM_PROVIDER);
+
+  if (primaryAdapter) {
+    llmPort = primaryAdapter;
+
+    // Premium reasoning provider for synthesize() calls
+    if (env.LLM_REASONING_PROVIDER_PREMIUM !== "none") {
+      const reasoningAdapter = buildLlmAdapter(
+        env.LLM_REASONING_PROVIDER_PREMIUM as "anthropic" | "deepseek",
+      );
+      if (reasoningAdapter) {
+        llmPort = new RoutingLlmAdapter({ standard: llmPort, reasoning: reasoningAdapter });
+        logger.info("LLM: ✓ premium routing enabled", {
+          reasoning: env.LLM_REASONING_PROVIDER_PREMIUM,
+        });
+      }
+    }
+
+    // Shadow harness for A/B comparison (fire-and-forget)
+    if (env.LLM_SHADOW_PROVIDER !== "none") {
+      const shadowAdapter = buildLlmAdapter(
+        env.LLM_SHADOW_PROVIDER as "anthropic" | "deepseek",
+      );
+      if (shadowAdapter) {
+        llmPort = new ShadowLlmAdapter({ primary: llmPort, shadow: shadowAdapter, logger });
+        logger.info("LLM: ✓ shadow mode enabled", {
+          shadowProvider: env.LLM_SHADOW_PROVIDER,
+        });
+      }
+    }
+
     logger.info("LLM: ✓ active", {
-      classifier: env.LLM_CLASSIFIER_MODEL,
-      synthesis: env.LLM_SYNTHESIS_MODEL,
+      provider: env.LLM_PROVIDER,
+      classifier: env.LLM_PROVIDER === "deepseek" ? env.DEEPSEEK_CLASSIFIER_MODEL : env.LLM_CLASSIFIER_MODEL,
+      synthesis: env.LLM_PROVIDER === "deepseek" ? env.DEEPSEEK_SYNTHESIS_MODEL : env.LLM_SYNTHESIS_MODEL,
     });
   } else {
-    logger.warn("LLM: ✗ disabled (missing ANTHROPIC_API_KEY)");
+    logger.warn("LLM: ✗ disabled", {
+      provider: env.LLM_PROVIDER,
+      reason: env.LLM_PROVIDER === "anthropic" ? "missing ANTHROPIC_API_KEY" : "missing DEEPSEEK_API_KEY",
+    });
   }
 
   let calendarPort: CalendarPort | null = null;
@@ -335,7 +406,9 @@ export function createContainer(env: Env): AppContainer {
     notificationRepo,
     conversationRepo,
     preferenceRepo,
+    bankStatementRepo,
     userRepo,
+    userProfileRepo,
     oauthTokenRepo,
     hasGoogleCredentials: hasGoogleClientCreds,
     getEligibleUsers,

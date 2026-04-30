@@ -5,8 +5,9 @@ import { useInbox } from "@/lib/hooks";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Mail, GitBranch, MessageSquare, Filter } from "lucide-react";
+import { Mail, GitBranch, MessageSquare, Filter, AlertTriangle } from "lucide-react";
 import type { InboxListResponse } from "@oneon/contracts";
+import { getMotionDelayClass } from "@/lib/motion-utils";
 
 const sourceIcons: Record<string, typeof Mail> = {
   gmail: Mail,
@@ -44,50 +45,54 @@ export default function InboxPage() {
   const response = data as InboxListResponse | undefined;
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 md:space-y-7 lg:space-y-8 motion-page-enter">
       {/* Header */}
-      <div className="space-y-2">
-        <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+      <div className="space-y-2 motion-rise-in">
+        <p className="page-eyebrow">
           Intelligence
         </p>
-        <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
+        <h1 className="page-title">
           Inbox
         </h1>
-        <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+        <p className="page-copy">
           All signals from connected sources, classified by the agent.
         </p>
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3">
-        <Filter className="h-4 w-4 text-on-surface-variant dark:text-dark-on-surface-variant" />
-        <div className="flex gap-1">
+      <div className={`motion-rise-in-soft space-y-2 ${getMotionDelayClass(1)}`}>
+        <div className="flex items-center gap-2">
+          <Filter className="h-4 w-4 text-on-surface-variant dark:text-dark-on-surface-variant" />
+          <span className="text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+            Filters
+          </span>
+        </div>
+
+        <div className="flex gap-1 overflow-x-auto pb-1">
           {SOURCE_OPTIONS.map((s) => (
             <button
               key={s}
               onClick={() => { setSource(s); setOffset(0); }}
-              className={`rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
+              className={`filter-chip ${
                 source === s
-                  ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
-                  : "text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high"
+                  ? "filter-chip-active"
+                  : "filter-chip-idle"
               }`}
             >
               {s === "all" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
             </button>
           ))}
         </div>
-        <span className="text-on-surface-variant/30 dark:text-dark-on-surface-variant/30">
-          |
-        </span>
-        <div className="flex gap-1">
+
+        <div className="flex gap-1 overflow-x-auto pb-1">
           {CATEGORY_OPTIONS.map((c) => (
             <button
               key={c}
               onClick={() => { setCategory(c); setOffset(0); }}
-              className={`rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
+              className={`filter-chip ${
                 category === c
-                  ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
-                  : "text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high"
+                  ? "filter-chip-active"
+                  : "filter-chip-idle"
               }`}
             >
               {c === "all" ? "All" : c.replace(/_/g, " ")}
@@ -100,8 +105,8 @@ export default function InboxPage() {
       {isLoading && (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
-            <Card key={i} className="animate-pulse">
-              <div className="h-20" />
+            <Card key={i}>
+              <div className="state-skeleton h-20" />
             </Card>
           ))}
         </div>
@@ -109,8 +114,9 @@ export default function InboxPage() {
 
       {error && (
         <Card>
-          <CardContent>
-            <p className="text-red-500">Failed to load inbox.</p>
+          <CardContent className="state-content state-content-center py-8">
+            <AlertTriangle className="h-8 w-8 text-red-500/80 dark:text-red-400/80" />
+            <p className="state-error">Failed to load inbox.</p>
           </CardContent>
         </Card>
       )}
@@ -119,37 +125,38 @@ export default function InboxPage() {
         <>
           {response.items.length === 0 ? (
             <Card>
-              <CardContent>
-                <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+              <CardContent className="state-content state-content-center py-10">
+                <Mail className="state-icon" />
+                <p className="state-title">
                   No items match your filters.
                 </p>
               </CardContent>
             </Card>
           ) : (
-            <div className="space-y-2">
-              {response.items.map((item) => {
+            <div className="space-y-2 md:space-y-3">
+              {response.items.map((item, index) => {
                 const Icon = sourceIcons[item.source] ?? Mail;
                 return (
                   <Card
                     key={item.id}
-                    className="group cursor-pointer transition-colors hover:bg-surface-low dark:hover:bg-dark-surface-high"
+                    className={`group motion-interactive motion-rise-in-soft cursor-pointer transition-colors hover:bg-surface-low dark:hover:bg-dark-surface-high ${getMotionDelayClass(index + 2)}`}
                   >
                     <CardContent className="flex items-start gap-4">
                       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-eight bg-surface-high dark:bg-dark-surface-high">
                         <Icon className="h-5 w-5" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center justify-between gap-4">
+                        <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
                           <p className="truncate font-medium text-on-surface dark:text-dark-on-surface">
                             {item.subject}
                           </p>
-                          <div className="flex items-center gap-2 shrink-0">
+                          <div className="flex items-center gap-2">
                             {item.classification && (
                               <Badge variant={priorityVariant(item.classification.priority)}>
                                 P{item.classification.priority}
                               </Badge>
                             )}
-                            <span className="text-label-sm text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+                            <span className="text-label-sm meta-copy">
                               {new Date(item.receivedAt).toLocaleDateString("en-US", {
                                 month: "short",
                                 day: "numeric",
@@ -157,11 +164,11 @@ export default function InboxPage() {
                             </span>
                           </div>
                         </div>
-                        <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                        <p className="text-sm meta-copy">
                           {item.from}
                         </p>
                         {item.classification && (
-                          <p className="mt-1 text-sm text-on-surface-variant/70 dark:text-dark-on-surface-variant/70">
+                          <p className="mt-1 text-sm meta-copy">
                             {item.classification.summary}
                           </p>
                         )}
@@ -174,15 +181,18 @@ export default function InboxPage() {
           )}
 
           {/* Pagination */}
-          <div className="flex items-center justify-between pt-4">
-            <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
+          <div
+            className={`motion-rise-in-soft flex flex-col gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between ${getMotionDelayClass(3)}`}
+          >
+            <p className="text-label-md meta-copy">
               Showing {offset + 1}–{Math.min(offset + limit, response.pagination.total)} of{" "}
               {response.pagination.total}
             </p>
-            <div className="flex gap-2">
+            <div className="flex w-full gap-2 sm:w-auto">
               <Button
                 variant="secondary"
                 size="sm"
+                className="flex-1 sm:flex-none"
                 disabled={offset === 0}
                 onClick={() => setOffset(Math.max(0, offset - limit))}
               >
@@ -191,6 +201,7 @@ export default function InboxPage() {
               <Button
                 variant="secondary"
                 size="sm"
+                className="flex-1 sm:flex-none"
                 disabled={!response.pagination.hasMore}
                 onClick={() => setOffset(offset + limit)}
               >

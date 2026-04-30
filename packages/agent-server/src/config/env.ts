@@ -23,11 +23,35 @@ const envSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
 
+  // ── LLM Provider Selection ────────────────────────────────
+  /** Which provider to use as the primary LLM. */
+  LLM_PROVIDER: z.enum(["anthropic", "deepseek"]).default("anthropic"),
+  /** Optional shadow provider for A/B comparison (fire-and-forget). */
+  LLM_SHADOW_PROVIDER: z.enum(["anthropic", "deepseek", "none"]).default("none"),
+  /** Optional premium provider used only for synthesize() calls. */
+  LLM_REASONING_PROVIDER_PREMIUM: z.enum(["anthropic", "deepseek", "none"]).default("none"),
+
   // ── Anthropic ─────────────────────────────────────────────
   ANTHROPIC_API_KEY: z.string().optional(),
+  /** Model used for classify() and extractIntents() when provider=anthropic. */
   LLM_CLASSIFIER_MODEL: z.string().default("claude-3-5-haiku-20241022"),
+  /** Model used for synthesize() when provider=anthropic. */
   LLM_SYNTHESIS_MODEL: z.string().default("claude-sonnet-4-20250514"),
+
+  // ── DeepSeek ──────────────────────────────────────────────
+  DEEPSEEK_API_KEY: z.string().optional(),
+  /** Model for classify() / extractIntents() when provider=deepseek. No default — must be set explicitly. */
+  DEEPSEEK_CLASSIFIER_MODEL: z.string().optional(),
+  /** Model for synthesize() when provider=deepseek (or premium). No default — must be set explicitly. */
+  DEEPSEEK_SYNTHESIS_MODEL: z.string().optional(),
+
+  // ── LLM Shared ────────────────────────────────────────────
   LLM_MAX_RETRIES: z.coerce.number().default(3),
+  /** Timeout for classifier calls (classify, extractIntents). ms. */
+  LLM_CLASSIFIER_TIMEOUT_MS: z.coerce.number().default(15000),
+  /** Timeout for synthesis calls (synthesize). ms. */
+  LLM_SYNTHESIS_TIMEOUT_MS: z.coerce.number().default(30000),
+  /** Legacy combined timeout — kept for backward compat; used only by the Claude adapter. */
   LLM_TIMEOUT_MS: z.coerce.number().default(30000),
 
   // ── Database ──────────────────────────────────────────────
@@ -87,6 +111,33 @@ const envSchema = z.object({
     .string()
     .transform((v) => v === "true")
     .default("false"),
+  FEATURE_FINANCE_STATEMENT_INTAKE: z
+    .string()
+    .transform((v) => v === "true")
+    .default("false"),
+
+  // ── Finance Statement Intake (FIN-001a) ─────────────────
+  FINANCE_STATEMENT_SENDER_ALLOWLIST: z
+    .string()
+    .default("")
+    .transform((value) =>
+      value
+        .split(",")
+        .map((entry) => entry.trim().toLowerCase())
+        .filter(Boolean)
+    ),
+  FINANCE_STATEMENT_SUBJECT_KEYWORDS: z
+    .string()
+    .default("statement")
+    .transform((value) =>
+      value
+        .split(",")
+        .map((entry) => entry.trim().toLowerCase())
+        .filter(Boolean)
+    ),
+  FINANCE_STATEMENT_DETECTION_RULE_VERSION: z
+    .string()
+    .default("fin-001a-v1"),
 
   // ── Processing Loop ──────────────────────────────────────
   PROCESSING_BATCH_SIZE: z.coerce.number().default(10),
@@ -114,6 +165,41 @@ const envSchema = z.object({
       message:
         "OAUTH_TOKEN_ENCRYPTION_KEY is required in production (min 32 chars). " +
         "Generate with: openssl rand -base64 32",
+    });
+  }
+
+  // ── DeepSeek fail-fast: any DeepSeek provider requires API key + explicit model IDs ──
+  const needsDeepSeek =
+    data.LLM_PROVIDER === "deepseek" ||
+    data.LLM_SHADOW_PROVIDER === "deepseek" ||
+    data.LLM_REASONING_PROVIDER_PREMIUM === "deepseek";
+
+  if (needsDeepSeek && !data.DEEPSEEK_API_KEY) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["DEEPSEEK_API_KEY"],
+      message:
+        "DEEPSEEK_API_KEY is required when any LLM provider is set to 'deepseek'.",
+    });
+  }
+
+  if (needsDeepSeek && !data.DEEPSEEK_CLASSIFIER_MODEL) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["DEEPSEEK_CLASSIFIER_MODEL"],
+      message:
+        "DEEPSEEK_CLASSIFIER_MODEL must be set explicitly when using DeepSeek " +
+        "(no default). E.g. deepseek-chat",
+    });
+  }
+
+  if (needsDeepSeek && !data.DEEPSEEK_SYNTHESIS_MODEL) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["DEEPSEEK_SYNTHESIS_MODEL"],
+      message:
+        "DEEPSEEK_SYNTHESIS_MODEL must be set explicitly when using DeepSeek " +
+        "(no default). E.g. deepseek-reasoner",
     });
   }
 });

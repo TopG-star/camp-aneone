@@ -9,7 +9,10 @@ import type { ToolRegistry } from "../tools/tool-registry.js";
 import { truncateHistory } from "./truncate-history.js";
 import { runIntentLoop } from "./run-intent-loop.js";
 import { synthesizeResponse } from "./synthesize-response.js";
-import type { ChatContextStats } from "./build-chat-context.js";
+import type {
+  ChatContextStats,
+  ChatPersonaProfile,
+} from "./build-chat-context.js";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -28,6 +31,7 @@ export interface SendChatMessageInput {
   userId: string;
   now?: Date;
   timezone?: string;
+  persona?: ChatPersonaProfile | null;
 }
 
 export interface SendChatMessageResult {
@@ -97,6 +101,7 @@ export async function sendChatMessage(
         stats: deps.stats ?? defaultStats(),
         now: input.now ?? new Date(),
         timezone: input.timezone ?? "UTC",
+        persona: input.persona ?? null,
       }
     );
 
@@ -114,6 +119,7 @@ export async function sendChatMessage(
             userMessage: input.message,
             toolCalls: loopResult.toolCalls,
             history: truncateHistory(history, TRUNCATE_OPTIONS),
+            persona: input.persona ?? null,
           }
         );
         response = synthesisResult.response.answer;

@@ -4,6 +4,7 @@ import type { IntentExtractionPort, Logger } from "@oneon/domain";
 import type { ToolRegistry } from "../tools/tool-registry.js";
 import {
   buildChatContext,
+  type ChatPersonaProfile,
   type ChatContextStats,
   type ToolCallRecord,
 } from "./build-chat-context.js";
@@ -48,6 +49,7 @@ export interface RunIntentLoopInput {
   stats: ChatContextStats;
   now: Date;
   timezone: string;
+  persona?: ChatPersonaProfile | null;
 }
 
 export interface RunIntentLoopResult {
@@ -63,7 +65,7 @@ export async function runIntentLoop(
   input: RunIntentLoopInput
 ): Promise<RunIntentLoopResult> {
   const { intentExtractor, toolRegistry, logger } = deps;
-  const { userMessage, history, toolDefinitions, stats, now, timezone } = input;
+  const { userMessage, history, toolDefinitions, stats, now, timezone, persona } = input;
 
   const allToolCalls: ToolCallRecord[] = [];
   const executedSet = new Set<string>(); // Refinement #3: dedupe
@@ -79,6 +81,7 @@ export async function runIntentLoop(
       executedActions: allToolCalls,
       now,
       timezone,
+      persona,
     });
 
     // Extract intents from LLM
