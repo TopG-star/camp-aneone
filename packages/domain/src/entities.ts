@@ -104,8 +104,10 @@ export interface ClassificationFeedback {
 
 export type BankStatementIntakeStatus =
   | "discovered"
-  | "queued_for_parse"
-  | "skipped_duplicate";
+  | "metadata_parsed"
+  | "error_metadata"
+  | "transactions_parsed"
+  | "error_transactions";
 
 export interface BankStatement {
   id: string;

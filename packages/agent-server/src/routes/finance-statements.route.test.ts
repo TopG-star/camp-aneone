@@ -38,8 +38,8 @@ function makeStatement(
 function createMockRepo(): BankStatementRepository {
   const items: BankStatement[] = [
     makeStatement("a", "discovered", "2026-04-29T10:00:00.000Z"),
-    makeStatement("b", "queued_for_parse", "2026-04-29T11:00:00.000Z"),
-    makeStatement("c", "skipped_duplicate", "2026-04-29T09:00:00.000Z"),
+    makeStatement("b", "metadata_parsed", "2026-04-29T11:00:00.000Z"),
+    makeStatement("c", "error_metadata", "2026-04-29T09:00:00.000Z"),
   ];
 
   return {
@@ -51,8 +51,10 @@ function createMockRepo(): BankStatementRepository {
         .filter((it) => it.status === status && (!userId || it.userId === userId))
         .slice(0, limit)
     ),
-    markQueuedForParse: vi.fn(),
-    markSkippedDuplicate: vi.fn(),
+    markMetadataParsed: vi.fn(),
+    markErrorMetadata: vi.fn(),
+    markTransactionsParsed: vi.fn(),
+    markTransactionsError: vi.fn(),
     count: vi.fn((options?: { status?: BankStatementIntakeStatus; userId?: string }) =>
       items.filter(
         (it) =>
@@ -96,8 +98,10 @@ describe("Finance Statements Route", () => {
     expect(res.status).toBe(200);
     expect(res.body.counts).toEqual({
       discovered: 1,
-      queuedForParse: 1,
-      skippedDuplicate: 1,
+      metadataParsed: 1,
+      errorMetadata: 1,
+      transactionsParsed: 0,
+      errorTransactions: 0,
       total: 3,
     });
     expect(res.body.items).toHaveLength(3);

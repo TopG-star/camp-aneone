@@ -96,20 +96,20 @@ export class SqliteBankStatementRepository implements BankStatementRepository {
     return rows.map(mapRow);
   }
 
-  markQueuedForParse(id: string): void {
-    this.db
-      .prepare(
-        "UPDATE bank_statements SET status = 'queued_for_parse', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
-      )
-      .run(id);
+  markMetadataParsed(id: string): void {
+    this.transitionStatus(id, "discovered", "metadata_parsed");
   }
 
-  markSkippedDuplicate(id: string): void {
-    this.db
-      .prepare(
-        "UPDATE bank_statements SET status = 'skipped_duplicate', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
-      )
-      .run(id);
+  markErrorMetadata(id: string): void {
+    this.transitionStatus(id, "discovered", "error_metadata");
+  }
+
+  markTransactionsParsed(id: string): void {
+    this.transitionStatus(id, "metadata_parsed", "transactions_parsed");
+  }
+
+  markTransactionsError(id: string): void {
+    this.transitionStatus(id, "metadata_parsed", "error_transactions");
   }
 
   count(options?: {
@@ -130,6 +130,29 @@ export class SqliteBankStatementRepository implements BankStatementRepository {
 
     const row = this.db.prepare(sql).get(...params) as { count: number };
     return row.count;
+  }
+
+  private transitionStatus(
+    id: string,
+    from: BankStatementIntakeStatus,
+    to: BankStatementIntakeStatus,
+  ): void {
+    const result = this.db
+      .prepare(
+        "UPDATE bank_statements SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND status = ?",
+      )
+      .run(to, id, from);
+
+    if (result.changes > 0) {
+      return;
+    }
+
+    const existing = this.findById(id);
+    if (!existing) {
+      throw new Error(`bank statement not found: ${id}`);
+    }
+
+    throw new Error(`invalid status transition: ${existing.status} -> ${to}`);
   }
 }
 

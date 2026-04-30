@@ -8,7 +8,12 @@ import type {
   Source,
 } from "@oneon/domain";
 
-type BankStatementStatus = "discovered" | "queued_for_parse" | "skipped_duplicate";
+type BankStatementStatus =
+  | "discovered"
+  | "metadata_parsed"
+  | "error_metadata"
+  | "transactions_parsed"
+  | "error_transactions";
 
 interface BankStatementRecord {
   id: string;
@@ -33,8 +38,10 @@ interface BankStatementIntakeConfig {
     findById: ReturnType<typeof vi.fn>;
     findBySourceAndExternalId: ReturnType<typeof vi.fn>;
     findByStatus: ReturnType<typeof vi.fn>;
-    markQueuedForParse: ReturnType<typeof vi.fn>;
-    markSkippedDuplicate: ReturnType<typeof vi.fn>;
+    markMetadataParsed: ReturnType<typeof vi.fn>;
+    markErrorMetadata: ReturnType<typeof vi.fn>;
+    markTransactionsParsed: ReturnType<typeof vi.fn>;
+    markTransactionsError: ReturnType<typeof vi.fn>;
     count: ReturnType<typeof vi.fn>;
   };
   senderAllowlist: string[];
@@ -141,8 +148,10 @@ function mockBankStatementRepo() {
     findById: vi.fn().mockReturnValue(null),
     findBySourceAndExternalId: vi.fn().mockReturnValue(null),
     findByStatus: vi.fn().mockReturnValue([]),
-    markQueuedForParse: vi.fn(),
-    markSkippedDuplicate: vi.fn(),
+    markMetadataParsed: vi.fn(),
+    markErrorMetadata: vi.fn(),
+    markTransactionsParsed: vi.fn(),
+    markTransactionsError: vi.fn(),
     count: vi.fn().mockReturnValue(0),
   };
 }
@@ -278,7 +287,7 @@ describe("ingestGmail", () => {
     );
   });
 
-  it("stores finance candidate and transitions to queued_for_parse", async () => {
+  it("stores finance candidate and transitions to metadata_parsed", async () => {
     const items = [makeCandidateItem("fin-ext-1")];
     (ingestionPort.fetchNew as ReturnType<typeof vi.fn>).mockResolvedValue(items);
 
@@ -306,17 +315,17 @@ describe("ingestGmail", () => {
       })
     );
 
-    expect(bankRepo.markQueuedForParse).toHaveBeenCalledWith("bank-fin-ext-1");
-    expect(bankRepo.markSkippedDuplicate).not.toHaveBeenCalled();
+    expect(bankRepo.markMetadataParsed).toHaveBeenCalledWith("bank-fin-ext-1");
+    expect(bankRepo.markErrorMetadata).not.toHaveBeenCalled();
   });
 
-  it("marks duplicate finance candidate as skipped_duplicate", async () => {
+  it("marks duplicate finance candidate as error_metadata", async () => {
     const items = [makeCandidateItem("fin-ext-dup")];
     (ingestionPort.fetchNew as ReturnType<typeof vi.fn>).mockResolvedValue(items);
 
     const bankRepo = mockBankStatementRepo();
     bankRepo.findBySourceAndExternalId.mockReturnValue(
-      makeBankStatement("bank-existing", "fin-ext-dup", "queued_for_parse")
+      makeBankStatement("bank-existing", "fin-ext-dup", "discovered")
     );
 
     await run({
@@ -331,8 +340,8 @@ describe("ingestGmail", () => {
       "fin-ext-dup",
       "test-user"
     );
-    expect(bankRepo.markSkippedDuplicate).toHaveBeenCalledWith("bank-existing");
-    expect(bankRepo.markQueuedForParse).not.toHaveBeenCalled();
+    expect(bankRepo.markErrorMetadata).toHaveBeenCalledWith("bank-existing");
+    expect(bankRepo.markMetadataParsed).not.toHaveBeenCalled();
   });
 
   it("does not store non-candidate messages in finance intake", async () => {
@@ -355,7 +364,9 @@ describe("ingestGmail", () => {
     });
 
     expect(bankRepo.upsert).not.toHaveBeenCalled();
-    expect(bankRepo.markQueuedForParse).not.toHaveBeenCalled();
-    expect(bankRepo.markSkippedDuplicate).not.toHaveBeenCalled();
+    expect(bankRepo.markMetadataParsed).not.toHaveBeenCalled();
+    expect(bankRepo.markErrorMetadata).not.toHaveBeenCalled();
+    expect(bankRepo.markTransactionsParsed).not.toHaveBeenCalled();
+    expect(bankRepo.markTransactionsError).not.toHaveBeenCalled();
   });
 });

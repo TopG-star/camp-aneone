@@ -13,8 +13,10 @@ export interface FinanceStatementsRouteDeps {
 
 const VALID_STATUSES: readonly BankStatementIntakeStatus[] = [
   "discovered",
-  "queued_for_parse",
-  "skipped_duplicate",
+  "metadata_parsed",
+  "error_metadata",
+  "transactions_parsed",
+  "error_transactions",
 ];
 
 const DEFAULT_LIMIT = 50;
@@ -47,8 +49,10 @@ export function createFinanceStatementsRouter(
 
       const counts = {
         discovered: bankStatementRepo.count({ status: "discovered", userId }),
-        queuedForParse: bankStatementRepo.count({ status: "queued_for_parse", userId }),
-        skippedDuplicate: bankStatementRepo.count({ status: "skipped_duplicate", userId }),
+        metadataParsed: bankStatementRepo.count({ status: "metadata_parsed", userId }),
+        errorMetadata: bankStatementRepo.count({ status: "error_metadata", userId }),
+        transactionsParsed: bankStatementRepo.count({ status: "transactions_parsed", userId }),
+        errorTransactions: bankStatementRepo.count({ status: "error_transactions", userId }),
         total: bankStatementRepo.count({ userId }),
       };
 
@@ -104,7 +108,7 @@ function parseStatusQuery(
     return {
       ok: false,
       error:
-        'status must be one of "discovered", "queued_for_parse", or "skipped_duplicate"',
+        'status must be one of "discovered", "metadata_parsed", "error_metadata", "transactions_parsed", or "error_transactions"',
     };
   }
 

@@ -95,11 +95,9 @@ export async function ingestGmail(
           });
 
           if (existingStatement) {
-            bankStatementIntake.repository.markSkippedDuplicate(
-              existingStatement.id,
-            );
+            bankStatementIntake.repository.markErrorMetadata(existingStatement.id);
           } else {
-            bankStatementIntake.repository.markQueuedForParse(statement.id);
+            bankStatementIntake.repository.markMetadataParsed(statement.id);
           }
         } catch (error) {
           logger.error("Gmail ingestion: bank statement intake failed", {

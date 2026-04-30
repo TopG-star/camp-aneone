@@ -90,6 +90,44 @@ function migrationAlreadyAppliedInSchema(
         hasColumn(db, "bank_statements", "status") &&
         hasColumn(db, "bank_statements", "detection_rule_version")
       );
+    case 9: {
+      if (
+        !hasTable(db, "bank_statements") ||
+        !hasColumn(db, "bank_statements", "status")
+      ) {
+        return false;
+      }
+
+      const table = db
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bank_statements'")
+        .get() as { sql: string } | undefined;
+
+      if (!table?.sql) {
+        return false;
+      }
+
+      const normalizedSql = table.sql.toLowerCase();
+      const hasCanonicalConstraint =
+        normalizedSql.includes("metadata_parsed") &&
+        normalizedSql.includes("error_metadata") &&
+        normalizedSql.includes("transactions_parsed") &&
+        normalizedSql.includes("error_transactions");
+      const hasLegacyConstraint =
+        normalizedSql.includes("queued_for_parse") ||
+        normalizedSql.includes("skipped_duplicate");
+
+      if (!hasCanonicalConstraint || hasLegacyConstraint) {
+        return false;
+      }
+
+      const row = db
+        .prepare(
+          "SELECT COUNT(*) as count FROM bank_statements WHERE status IN ('queued_for_parse', 'skipped_duplicate')",
+        )
+        .get() as { count: number };
+
+      return row.count === 0;
+    }
     default:
       return false;
   }
@@ -145,6 +183,7 @@ export function runMigrations(db: Database.Database): void {
     { version: 6, name: "add_user_id_to_core_tables", file: "006_add_user_id_to_core_tables.sql" },
     { version: 7, name: "user_profiles", file: "007_user_profiles.sql" },
     { version: 8, name: "bank_statement_intake", file: "008_bank_statement_intake.sql" },
+    { version: 9, name: "bank_statement_status_canonicalization", file: "009_bank_statement_status_canonicalization.sql" },
   ];
 
   const migrationsDir = getMigrationsDir();

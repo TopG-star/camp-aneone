@@ -80,7 +80,7 @@ describe("SqliteBankStatementRepository", () => {
     expect(second.subject).toBe("Statement #1 updated");
   });
 
-  it("supports deterministic status transitions", () => {
+  it("supports canonical deterministic status transitions", () => {
     const created = repo.upsert({
       userId: "user-1",
       source: "gmail",
@@ -95,12 +95,40 @@ describe("SqliteBankStatementRepository", () => {
       detectionRuleVersion: "fin-001a-v1",
     });
 
-    repo.markQueuedForParse(created.id);
-    const queued = repo.findById(created.id);
-    expect(queued?.status).toBe("queued_for_parse");
+    repo.markMetadataParsed(created.id);
+    const metadataParsed = repo.findById(created.id);
+    expect(metadataParsed?.status).toBe("metadata_parsed");
 
-    repo.markSkippedDuplicate(created.id);
-    const skipped = repo.findById(created.id);
-    expect(skipped?.status).toBe("skipped_duplicate");
+    repo.markTransactionsParsed(created.id);
+    const transactionsParsed = repo.findById(created.id);
+    expect(transactionsParsed?.status).toBe("transactions_parsed");
+  });
+
+  it("rejects invalid canonical transitions", () => {
+    const created = repo.upsert({
+      userId: "user-1",
+      source: "gmail",
+      externalId: "msg-transition-invalid",
+      messageId: "msg-transition-invalid",
+      threadId: "thread-1",
+      sender: "alerts@chase.com",
+      senderDomain: "chase.com",
+      subject: "Monthly statement",
+      receivedAt: "2026-04-29T09:00:00Z",
+      status: "discovered",
+      detectionRuleVersion: "fin-001a-v1",
+    });
+
+    expect(() => repo.markTransactionsParsed(created.id)).toThrow(
+      "invalid status transition",
+    );
+
+    repo.markErrorMetadata(created.id);
+    const errored = repo.findById(created.id);
+    expect(errored?.status).toBe("error_metadata");
+
+    expect(() => repo.markTransactionsError(created.id)).toThrow(
+      "invalid status transition",
+    );
   });
 });

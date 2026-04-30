@@ -17,8 +17,10 @@ export interface BankStatementRepository {
     limit: number,
     userId?: string,
   ): BankStatement[];
-  markQueuedForParse(id: string): void;
-  markSkippedDuplicate(id: string): void;
+  markMetadataParsed(id: string): void;
+  markErrorMetadata(id: string): void;
+  markTransactionsParsed(id: string): void;
+  markTransactionsError(id: string): void;
   count(options?: {
     status?: BankStatementIntakeStatus;
     userId?: string;
