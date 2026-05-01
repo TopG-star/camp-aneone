@@ -5,7 +5,19 @@ export type { ActionLogRepository } from "./action-log-repository.port.js";
 export type { NotificationRepository } from "./notification-repository.port.js";
 export type { ConversationRepository } from "./conversation-repository.port.js";
 export type { PreferenceRepository } from "./preference-repository.port.js";
+export type { BankStatementRepository } from "./bank-statement-repository.port.js";
+export type {
+	BankStatementParser,
+	BankStatementParserRegistry,
+	BankStatementParseRepository,
+	StatementDocument,
+	StatementDocumentProvider,
+} from "./bank-statement-parse.port.js";
 export type { UserRepository } from "./user-repository.port.js";
+export type {
+	UserProfileRepository,
+	UserProfileUpsertInput,
+} from "./user-profile-repository.port.js";
 export type { OAuthTokenRepository } from "./oauth-token-repository.port.js";
 export type { IngestionPort, EmailPort } from "./email.port.js";
 export type { LLMPort, IntentExtractionPort, SynthesisPort, ClassificationResult } from "./llm.port.js";

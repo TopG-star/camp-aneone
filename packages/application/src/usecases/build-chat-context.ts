@@ -1,4 +1,8 @@
-import type { ConversationMessage } from "@oneon/domain";
+import type {
+  CommunicationStyle,
+  ConversationMessage,
+  SalutationMode,
+} from "@oneon/domain";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -21,6 +25,13 @@ export interface ToolCallRecord {
   executedAt: string; // ISO-8601
 }
 
+export interface ChatPersonaProfile {
+  preferredName: string | null;
+  nickname: string | null;
+  salutationMode: SalutationMode;
+  communicationStyle: CommunicationStyle;
+}
+
 export interface BuildChatContextInput {
   stats: ChatContextStats;
   history: ConversationMessage[];
@@ -28,13 +39,14 @@ export interface BuildChatContextInput {
   executedActions: ToolCallRecord[];
   now: Date;
   timezone: string;
+  persona?: ChatPersonaProfile | null;
 }
 
 // ── Context Builder ──────────────────────────────────────────
 
 export function buildChatContext(input: BuildChatContextInput): string {
   const blocks: string[] = [
-    buildSystemBlock(input.now, input.timezone),
+    buildSystemBlock(input.now, input.timezone, input.persona ?? null),
     buildHistoryBlock(input.history),
     buildLocalContextBlock(input.stats),
     buildToolsBlock(input.toolDefinitions),
@@ -46,14 +58,26 @@ export function buildChatContext(input: BuildChatContextInput): string {
 
 // ── Block Builders ───────────────────────────────────────────
 
-function buildSystemBlock(now: Date, timezone: string): string {
-  return [
+function buildSystemBlock(
+  now: Date,
+  timezone: string,
+  persona: ChatPersonaProfile | null,
+): string {
+  const lines = [
     "=== SYSTEM ===",
     "You are Oneon, a personal AI assistant.",
     `Current time: ${now.toISOString()}`,
     `Timezone: ${timezone}`,
     "Respond to the user's request using the available tools. Return [{tool:\"none\",parameters:{}}] when no more tools are needed.",
-  ].join("\n");
+  ];
+
+  if (persona) {
+    lines.push("=== USER PREFERENCES ===");
+    lines.push(`Address the user as: ${resolvePreferredSalutation(persona)}`);
+    lines.push(`Communication style: ${persona.communicationStyle}`);
+  }
+
+  return lines.join("\n");
 }
 
 function buildHistoryBlock(history: ConversationMessage[]): string {
@@ -99,4 +123,16 @@ function buildActionsBlock(executedActions: ToolCallRecord[]): string {
     return `[${a.id}] ${a.tool} → ${a.result!.summary}`;
   });
   return `${header}\n${lines.join("\n")}`;
+}
+
+function resolvePreferredSalutation(persona: ChatPersonaProfile): string {
+  if (persona.salutationMode === "sir") {
+    return "Sir";
+  }
+
+  if (persona.salutationMode === "sir_with_name") {
+    return persona.preferredName ? `Sir ${persona.preferredName}` : "Sir";
+  }
+
+  return persona.nickname ?? persona.preferredName ?? "Sir";
 }

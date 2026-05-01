@@ -152,4 +152,35 @@ describe("POST /api/chat", () => {
     expect(res.body.error).toBe("Internal server error");
     expect(logger.error).toHaveBeenCalled();
   });
+
+  it("loads user profile settings before chat processing", async () => {
+    const userProfileRepo = {
+      findByUserId: vi.fn().mockReturnValue({
+        userId: "user-A",
+        preferredName: "Adewale",
+        nickname: "Wale",
+        salutationMode: "sir_with_name",
+        communicationStyle: "technical",
+        timezone: "Africa/Lagos",
+        createdAt: "2026-04-17T00:00:00.000Z",
+        updatedAt: "2026-04-17T00:00:00.000Z",
+      }),
+    };
+
+    app = buildApp(
+      {
+        conversationRepo,
+        logger,
+        // Cast here so we can drive RED first before adding route dep typing.
+        userProfileRepo,
+      } as ChatRouteDeps,
+    );
+
+    await request(app)
+      .post("/api/chat")
+      .send({ message: "Hello" })
+      .expect(200);
+
+    expect(userProfileRepo.findByUserId).toHaveBeenCalledWith("user-A");
+  });
 });

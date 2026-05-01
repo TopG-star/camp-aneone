@@ -5,7 +5,8 @@ import { apiFetch } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Bell, CheckCheck } from "lucide-react";
+import { Bell, CheckCheck, AlertTriangle } from "lucide-react";
+import { getMotionDelayClass } from "@/lib/motion-utils";
 
 interface Notification {
   id: string;
@@ -56,18 +57,26 @@ export default function NotificationsPage() {
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 md:space-y-7 lg:space-y-8 motion-page-enter">
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col gap-3 motion-rise-in sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-2">
-          <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+          <p className="page-eyebrow">
             Alerts
           </p>
-          <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
+          <h1 className="page-title">
             Notifications
           </h1>
+          <p className="page-copy">
+            Latest system and workflow updates from your agent.
+          </p>
         </div>
-        <Button variant="ghost" size="sm" onClick={markAllRead}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={markAllRead}
+          className="w-full justify-center sm:w-auto"
+        >
           <CheckCheck className="h-4 w-4" />
           Mark all read
         </Button>
@@ -77,8 +86,8 @@ export default function NotificationsPage() {
       {isLoading && (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
-            <Card key={i} className="animate-pulse">
-              <div className="h-16" />
+            <Card key={i}>
+              <div className="state-skeleton h-16" />
             </Card>
           ))}
         </div>
@@ -86,8 +95,9 @@ export default function NotificationsPage() {
 
       {error && (
         <Card>
-          <CardContent>
-            <p className="text-red-500">Failed to load notifications.</p>
+          <CardContent className="state-content state-content-center py-8">
+            <AlertTriangle className="h-8 w-8 text-red-500/80 dark:text-red-400/80" />
+            <p className="state-error">Failed to load notifications.</p>
           </CardContent>
         </Card>
       )}
@@ -96,19 +106,19 @@ export default function NotificationsPage() {
         <>
           {(!response.notifications || response.notifications.length === 0) ? (
             <Card>
-              <CardContent className="flex flex-col items-center py-12">
-                <Bell className="mb-4 h-12 w-12 text-on-surface-variant/20 dark:text-dark-on-surface-variant/20" />
-                <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+              <CardContent className="state-content state-content-center py-10">
+                <Bell className="state-icon" />
+                <p className="state-title">
                   No notifications
                 </p>
               </CardContent>
             </Card>
           ) : (
-            <div className="space-y-2">
-              {response.notifications.map((n) => (
+            <div className="space-y-2 md:space-y-3">
+              {response.notifications.map((n, index) => (
                 <Card
                   key={n.id}
-                  className={`cursor-pointer transition-colors hover:bg-surface-low dark:hover:bg-dark-surface-high ${
+                  className={`motion-interactive motion-rise-in-soft cursor-pointer transition-colors hover:bg-surface-low dark:hover:bg-dark-surface-high ${getMotionDelayClass(index + 1)} ${
                     !n.read ? "ghost-border-dark" : "opacity-70"
                   }`}
                   onClick={() => !n.read && markRead(n.id)}
@@ -118,15 +128,15 @@ export default function NotificationsPage() {
                       <span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-primary dark:bg-dark-primary" />
                     )}
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between gap-4">
+                      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                         <p className="font-medium text-on-surface dark:text-dark-on-surface">
                           {n.title}
                         </p>
-                        <div className="flex items-center gap-2 shrink-0">
+                        <div className="flex flex-wrap items-center gap-2">
                           <Badge variant={typeVariant(n.type)}>
                             {n.type.replace(/_/g, " ")}
                           </Badge>
-                          <span className="text-label-sm text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+                          <span className="text-label-sm meta-copy">
                             {new Date(n.createdAt).toLocaleString("en-US", {
                               month: "short",
                               day: "numeric",
@@ -136,7 +146,7 @@ export default function NotificationsPage() {
                           </span>
                         </div>
                       </div>
-                      <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                      <p className="text-sm meta-copy">
                         {n.body}
                       </p>
                     </div>

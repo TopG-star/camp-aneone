@@ -1,7 +1,7 @@
 # Camp-Aneone (Oneon) — Product Requirements Document
 
-**Version:** 1.0
-**Date:** 2026-04-14
+**Version:** 1.1
+**Date:** 2026-04-29
 **Author:** Product Owner
 **Status:** Draft → Approved
 
@@ -181,6 +181,16 @@ execution. *LLM decides; software guarantees.*
 | FR-060 | Normalize GitHub webhook payloads to `InboundItem` | P0 |
 | FR-061 | Verify webhook signatures via HMAC-SHA256 (`GITHUB_WEBHOOK_SECRET`) | P0 |
 
+### 5.10 Finance Statement Intake Foundation (FIN-001a)
+
+| ID | Requirement | Priority |
+|----|------------|----------|
+| FR-062 | Detect candidate bank-statement emails from configurable sender allowlist + subject keyword rules | P0 |
+| FR-063 | Persist candidates in `bank_statements` table with idempotent uniqueness on `(user_id, source, external_id)` | P0 |
+| FR-064 | Record intake status lifecycle: `discovered`, `skipped_duplicate`, `queued_for_parse` | P0 |
+| FR-065 | Store immutable message metadata evidence (`message_id`, `thread_id`, sender, subject, received_at, detection_rule_version) | P1 |
+| FR-066 | FIN-001a scope boundary: no PDF parsing, no transaction extraction, no finance analytics/chat/dashboard UI in this slice | P0 |
+
 ---
 
 ## 6. Non-Functional Requirements
@@ -216,6 +226,7 @@ execution. *LLM decides; software guarantees.*
 | `action_log` | Append-only action state machine | Never UPDATE/DELETE; full lifecycle audit trail |
 | `notifications` | In-app notification queue | Read status tracking; deep links |
 | `conversations` | Chat message history | Chronological order; never edited/deleted |
+| `bank_statements` | Idempotent intake registry for bank-statement candidates (FIN-001a) | Unique on `(user_id, source, external_id)` |
 | `preferences` | User settings (polling, notifications) | Key-value store |
 | `push_subscriptions` | Web push endpoints (MVP1.5 foundation) | Unique on `endpoint` |
 | `classification_feedback` | User corrections for eval loop | Links to `classifications` |
@@ -284,7 +295,7 @@ execution. *LLM decides; software guarantees.*
 These are explicitly deferred to future phases:
 
 - Multi-user / multi-tenant authentication and data isolation
-- Finance / bank statement processing pipeline
+- Full finance pipeline beyond FIN-001a foundation (PDF parsing, transaction extraction, conversational finance insights, finance dashboard)
 - Pharmaceutical ERP / sales management system integration
 - Deployed software monitoring and alerting
 - RAG / vector search over personal knowledge base

@@ -1,5 +1,10 @@
 import type { TokenProvider } from "./token-provider.js";
-import type { GmailListResponse, GmailMessageResource } from "./gmail.types.js";
+import type {
+  GmailListResponse,
+  GmailMessageAttachmentResource,
+  GmailMessageFullResource,
+  GmailMessageResource,
+} from "./gmail.types.js";
 import { fetchWithRetry } from "../http/fetch-with-retry.js";
 
 const BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -70,6 +75,26 @@ export class GmailHttpClient {
 
     const response = await this.request(url);
     return (await response.json()) as GmailMessageResource;
+  }
+
+  async getMessageFull(messageId: string): Promise<GmailMessageFullResource> {
+    const url = new URL(`${BASE_URL}/messages/${messageId}`);
+    url.searchParams.set("format", "full");
+
+    const response = await this.request(url);
+    return (await response.json()) as GmailMessageFullResource;
+  }
+
+  async getMessageAttachment(
+    messageId: string,
+    attachmentId: string,
+  ): Promise<GmailMessageAttachmentResource> {
+    const url = new URL(
+      `${BASE_URL}/messages/${messageId}/attachments/${attachmentId}`,
+    );
+
+    const response = await this.request(url);
+    return (await response.json()) as GmailMessageAttachmentResource;
   }
 
   private async request(url: URL): Promise<Response> {

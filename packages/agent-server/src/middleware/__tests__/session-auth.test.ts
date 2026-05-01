@@ -10,8 +10,12 @@ import {
 } from "../session-auth.js";
 
 const TEST_SECRET = "test-secret-that-is-long-enough-for-auth";
+const TEST_COOKIE_SALT = "authjs.session-token";
 
-async function deriveKey(secret: string): Promise<Uint8Array> {
+async function deriveKey(
+  secret: string,
+  salt: string = TEST_COOKIE_SALT,
+): Promise<Uint8Array> {
   const encoder = new TextEncoder();
   const ikm = await subtle.importKey(
     "raw",
@@ -24,8 +28,8 @@ async function deriveKey(secret: string): Promise<Uint8Array> {
     {
       name: "HKDF",
       hash: "SHA-256",
-      salt: new Uint8Array(0),
-      info: encoder.encode("Auth.js Generated Encryption Key"),
+      salt: encoder.encode(salt),
+      info: encoder.encode(`Auth.js Generated Encryption Key (${salt})`),
     },
     ikm,
     512,
@@ -36,8 +40,9 @@ async function deriveKey(secret: string): Promise<Uint8Array> {
 async function createSessionJWE(
   payload: Record<string, unknown>,
   secret: string = TEST_SECRET,
+  salt: string = TEST_COOKIE_SALT,
 ): Promise<string> {
-  const key = await deriveKey(secret);
+  const key = await deriveKey(secret, salt);
   return new EncryptJWT(payload)
     .setProtectedHeader({ alg: "dir", enc: "A256CBC-HS512" })
     .setIssuedAt()
@@ -49,7 +54,7 @@ describe("Session Auth Middleware", () => {
   describe("decryptSessionToken", () => {
     it("decrypts a valid Auth.js v5 JWE token", async () => {
       const jwe = await createSessionJWE({ email: "Alice@Test.com", name: "Alice" });
-      const result = await decryptSessionToken(jwe, TEST_SECRET);
+      const result = await decryptSessionToken(jwe, TEST_SECRET, TEST_COOKIE_SALT);
 
       expect(result).not.toBeNull();
       expect(result!.email).toBe("alice@test.com");
@@ -57,19 +62,33 @@ describe("Session Auth Middleware", () => {
     });
 
     it("returns null for garbled token", async () => {
-      const result = await decryptSessionToken("not.a.valid.jwe.token", TEST_SECRET);
+      const result = await decryptSessionToken("not.a.valid.jwe.token", TEST_SECRET, TEST_COOKIE_SALT);
       expect(result).toBeNull();
     });
 
     it("returns null when token has no email", async () => {
       const jwe = await createSessionJWE({ sub: "123" });
-      const result = await decryptSessionToken(jwe, TEST_SECRET);
+      const result = await decryptSessionToken(jwe, TEST_SECRET, TEST_COOKIE_SALT);
       expect(result).toBeNull();
     });
 
     it("returns null for wrong secret", async () => {
       const jwe = await createSessionJWE({ email: "test@test.com" }, TEST_SECRET);
-      const result = await decryptSessionToken(jwe, "different-secret-that-is-long-enough");
+      const result = await decryptSessionToken(
+        jwe,
+        "different-secret-that-is-long-enough",
+        TEST_COOKIE_SALT,
+      );
+      expect(result).toBeNull();
+    });
+
+    it("returns null for wrong salt", async () => {
+      const jwe = await createSessionJWE({ email: "test@test.com" }, TEST_SECRET, TEST_COOKIE_SALT);
+      const result = await decryptSessionToken(
+        jwe,
+        TEST_SECRET,
+        "__Secure-authjs.session-token",
+      );
       expect(result).toBeNull();
     });
   });
@@ -102,6 +121,32 @@ describe("Session Auth Middleware", () => {
       expect(res.body.userId).toBe("u1");
       expect(res.body.userEmail).toBe("alice@test.com");
       expect(findUser).toHaveBeenCalledWith("alice@test.com");
+    });
+
+    it("sets req.userId when session token is split into cookie chunks", async () => {
+      const jwe = await createSessionJWE({ email: "chunked@test.com" });
+      const chunkSize = Math.ceil(jwe.length / 3);
+      const chunks = [
+        jwe.slice(0, chunkSize),
+        jwe.slice(chunkSize, chunkSize * 2),
+        jwe.slice(chunkSize * 2),
+      ];
+
+      const findUser = vi.fn().mockReturnValue({ id: "u-chunk" });
+      const app = createApp(findUser);
+
+      const res = await request(app)
+        .get("/test")
+        .set("Cookie", [
+          `authjs.session-token.0=${chunks[0]}`,
+          `authjs.session-token.1=${chunks[1]}`,
+          `authjs.session-token.2=${chunks[2]}`,
+        ]);
+
+      expect(res.status).toBe(200);
+      expect(res.body.userId).toBe("u-chunk");
+      expect(res.body.userEmail).toBe("chunked@test.com");
+      expect(findUser).toHaveBeenCalledWith("chunked@test.com");
     });
 
     it("does not set userId when no cookie", async () => {

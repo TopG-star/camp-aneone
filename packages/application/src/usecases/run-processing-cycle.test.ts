@@ -466,6 +466,7 @@ describe("runProcessingCycle", () => {
         eventType: "urgent_item",
         title: "Urgent: Subject item-1",
         deepLink: "/items/item-1",
+        userId: "test-user",
       }),
     );
     expect(result.notificationsSent).toBeGreaterThanOrEqual(1);
@@ -545,6 +546,7 @@ describe("runProcessingCycle", () => {
         eventType: "action_proposed",
         title: "Action requires approval: archive",
         deepLink: "/actions/act-archive",
+        userId: "test-user",
       }),
     );
     expect(result.notificationsSent).toBeGreaterThanOrEqual(1);
@@ -575,6 +577,7 @@ describe("runProcessingCycle", () => {
     expect(notificationPort.send).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "deadline_approaching",
+        userId: "test-user",
       }),
     );
     expect(result.notificationsSent).toBeGreaterThanOrEqual(1);

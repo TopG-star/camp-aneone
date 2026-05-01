@@ -4,6 +4,7 @@ import type {
   PreferenceRepository,
   Logger,
 } from "@oneon/domain";
+import { getUserScopedPreference } from "@oneon/domain";
 
 export interface InAppNotificationAdapterConfig {
   notificationRepo: NotificationRepository;
@@ -37,10 +38,15 @@ export class InAppNotificationAdapter implements NotificationPort {
     title: string;
     body: string;
     deepLink?: string;
+    userId?: string | null;
   }): Promise<void> {
+    const userId = notification.userId ?? null;
+
     // ── 1. Check per-event-type toggle ────────────────────
     const enabledKey = `notification.enabled.${notification.eventType}`;
-    const enabledValue = this.preferenceRepo.get(enabledKey);
+    const enabledValue = userId
+      ? getUserScopedPreference(this.preferenceRepo, userId, enabledKey)
+      : this.preferenceRepo.get(enabledKey);
     // Default is enabled; only disabled if explicitly set to "false"
     if (enabledValue === "false") {
       this.logger.debug("Notification suppressed: event type disabled", {
@@ -50,7 +56,7 @@ export class InAppNotificationAdapter implements NotificationPort {
     }
 
     // ── 2. Check quiet hours ──────────────────────────────
-    if (this.isQuietHours()) {
+    if (this.isQuietHours(userId)) {
       this.logger.debug("Notification suppressed: quiet hours active", {
         eventType: notification.eventType,
       });
@@ -64,7 +70,7 @@ export class InAppNotificationAdapter implements NotificationPort {
       body: notification.body,
       deepLink: notification.deepLink ?? null,
       read: false,
-      userId: null,
+      userId,
     });
 
     this.logger.info("Notification created", {
@@ -83,8 +89,10 @@ export class InAppNotificationAdapter implements NotificationPort {
    * Quiet hours JSON: `{ start: "HH:mm", end: "HH:mm" }`
    * Supports both same-day (09:00–17:00) and overnight (22:00–07:00) ranges.
    */
-  private isQuietHours(): boolean {
-    const quietHoursJson = this.preferenceRepo.get("notification.quiet_hours");
+  private isQuietHours(userId: string | null): boolean {
+    const quietHoursJson = userId
+      ? getUserScopedPreference(this.preferenceRepo, userId, "notification.quiet_hours")
+      : this.preferenceRepo.get("notification.quiet_hours");
     if (!quietHoursJson) return false;
 
     try {
@@ -95,7 +103,9 @@ export class InAppNotificationAdapter implements NotificationPort {
       if (!start || !end) return false;
 
       // Resolve timezone: user preference → server-local
-      const tz = this.preferenceRepo.get("notification.timezone");
+      const tz = userId
+        ? getUserScopedPreference(this.preferenceRepo, userId, "notification.timezone")
+        : this.preferenceRepo.get("notification.timezone");
       const now = new Date();
       let currentMinutes: number;
 

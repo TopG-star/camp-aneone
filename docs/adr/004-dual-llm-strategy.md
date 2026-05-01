@@ -66,3 +66,86 @@ dependency injection.
 4. **Open-source model (Llama, Mistral) for classification** — would reduce API costs to
    zero for cheap tasks but requires hosting infrastructure. Not worth the complexity for
    MVP1. Rejected for now.
+
+---
+
+## Addendum: Multi-Provider Architecture (2026-04-25)
+
+### Status: Accepted (extends this ADR, does not supersede)
+
+### Context
+
+Following the original ADR, we added support for **DeepSeek** as an alternative LLM
+provider, a **shadow A/B harness**, and **premium routing** for synthesis.
+
+The changes were motivated by:
+- Cost reduction: DeepSeek `deepseek-chat` is materially cheaper than Claude Haiku for
+  structured output tasks.
+- Provider diversification: reduces lock-in to a single API.
+- A/B validation: shadow mode lets us compare provider outputs before fully switching,
+  without affecting users.
+
+### Additional Decisions
+
+#### 1. Tiny HTTP Client (no SDK)
+
+`DeepSeekHttpClient` uses `fetch` directly. No `openai` or `@deepseek/sdk` dependency.
+Rationale: DeepSeek's API is simple REST; an SDK adds ~0 value and +3MB+ to the bundle.
+
+#### 2. DeepSeek-Specific Error Taxonomy
+
+Three error classes map to observable behaviours:
+- `DeepSeekRateLimitError` (status=429): Do **not** retry. Throw immediately.
+- `DeepSeekApiError` (status=4xx/5xx other than 429): Surface to circuit breaker.
+- `DeepSeekEmptyResponseError`: Retryable (transient).
+
+#### 3. Shadow Mode (`LLM_SHADOW_PROVIDER`)
+
+`ShadowLlmAdapter` wraps primary + shadow. Shadow calls are **fire-and-forget**:
+- Primary result returned immediately to caller.
+- Shadow result is compared structurally (field names + types, never values — PII safety).
+- Shape differences are logged at WARN.
+- Shadow errors are swallowed with a WARN log; they never surface to callers.
+
+#### 4. Premium Routing (`LLM_REASONING_PROVIDER_PREMIUM`)
+
+`RoutingLlmAdapter` dispatches by method:
+- `classify()` / `extractIntents()` → `standard` LLM (fast, cheap structured output)
+- `synthesize()` → `reasoning` LLM (premium quality)
+
+When `LLM_REASONING_PROVIDER_PREMIUM=none` (default), routing is bypassed entirely — the
+primary adapter handles all three methods.
+
+#### 5. Separate Timeouts
+
+`LLM_CLASSIFIER_TIMEOUT_MS` (default: 15 s) and `LLM_SYNTHESIS_TIMEOUT_MS` (default: 30 s)
+replace the single `LLM_TIMEOUT_MS`. Each call creates its own `AbortController` and clears
+the timer in a `finally` block to prevent timer leaks.
+
+#### 6. Fail-Fast Validation
+
+`env.ts` `superRefine` enforces at startup:
+- If any `*_PROVIDER=deepseek` → `DEEPSEEK_API_KEY` must be present.
+- If any `*_PROVIDER=deepseek` → `DEEPSEEK_CLASSIFIER_MODEL` and `DEEPSEEK_SYNTHESIS_MODEL`
+  must be **explicitly set** (no defaults — DeepSeek model IDs are opaque and must be
+  intentional).
+
+#### 7. Structured Output
+
+DeepSeek's `response_format: {type: "json_object"}` is set **only** on `classify()` and
+`extractIntents()`. Not on `synthesize()` (free-form prose). Requires the word "json" in
+the system prompt — all classification/intent prompts already include it.
+
+### Env Variables Added
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `LLM_PROVIDER` | `anthropic` | Primary provider: `anthropic` or `deepseek` |
+| `LLM_SHADOW_PROVIDER` | `none` | Shadow harness provider (or `none`) |
+| `LLM_REASONING_PROVIDER_PREMIUM` | `none` | Premium synthesis provider (or `none`) |
+| `DEEPSEEK_API_KEY` | — | Required when any provider is `deepseek` |
+| `DEEPSEEK_CLASSIFIER_MODEL` | — | Required when any provider is `deepseek`. No default. |
+| `DEEPSEEK_SYNTHESIS_MODEL` | — | Required when any provider is `deepseek`. No default. |
+| `LLM_CLASSIFIER_TIMEOUT_MS` | `15000` | Timeout for classify / extractIntents |
+| `LLM_SYNTHESIS_TIMEOUT_MS` | `30000` | Timeout for synthesize |
+

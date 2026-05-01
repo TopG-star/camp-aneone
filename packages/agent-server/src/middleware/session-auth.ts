@@ -2,15 +2,24 @@ import type { RequestHandler } from "express";
 import { jwtDecrypt } from "jose";
 import { subtle, randomUUID } from "node:crypto";
 
-// Auth.js v5 derives the JWE encryption key using HKDF with this info string
-const HKDF_INFO = "Auth.js Generated Encryption Key";
+const AUTH_CONTENT_ENCRYPTION_ALGORITHMS = [
+  "A256CBC-HS512",
+  "A256GCM",
+] as const;
+
+type AuthContentEncryptionAlgorithm =
+  (typeof AUTH_CONTENT_ENCRYPTION_ALGORITHMS)[number];
 
 /**
  * Derives the same encryption key that Auth.js v5 uses internally.
- * Auth.js uses HKDF(SHA-256) with the user's NEXTAUTH_SECRET to derive a 64-byte key
- * for A256CBC-HS512 JWE encryption.
+ * Auth.js derives this via HKDF(secret, salt, `Auth.js Generated Encryption Key (${salt})`).
  */
-async function deriveEncryptionKey(secret: string): Promise<Uint8Array> {
+async function deriveEncryptionKey(
+  enc: AuthContentEncryptionAlgorithm,
+  secret: string,
+  salt: string,
+): Promise<Uint8Array> {
+  const lengthBits = enc === "A256CBC-HS512" ? 512 : 256;
   const encoder = new TextEncoder();
   const ikm = await subtle.importKey(
     "raw",
@@ -23,11 +32,11 @@ async function deriveEncryptionKey(secret: string): Promise<Uint8Array> {
     {
       name: "HKDF",
       hash: "SHA-256",
-      salt: new Uint8Array(0),
-      info: encoder.encode(HKDF_INFO),
+      salt: encoder.encode(salt),
+      info: encoder.encode(`Auth.js Generated Encryption Key (${salt})`),
     },
     ikm,
-    512, // 64 bytes for A256CBC-HS512
+    lengthBits,
   );
   return new Uint8Array(bits);
 }
@@ -45,12 +54,28 @@ export interface SessionPayload {
 export async function decryptSessionToken(
   token: string,
   secret: string,
+  salt: string,
 ): Promise<SessionPayload | null> {
   try {
-    const key = await deriveEncryptionKey(secret);
-    const { payload } = await jwtDecrypt(token, key, {
-      clockTolerance: 15,
-    });
+    const { payload } = await jwtDecrypt(
+      token,
+      async ({ enc }) => {
+        if (!AUTH_CONTENT_ENCRYPTION_ALGORITHMS.includes(enc as AuthContentEncryptionAlgorithm)) {
+          throw new Error("Unsupported JWT Content Encryption Algorithm");
+        }
+        return deriveEncryptionKey(
+          enc as AuthContentEncryptionAlgorithm,
+          secret,
+          salt,
+        );
+      },
+      {
+        clockTolerance: 15,
+        keyManagementAlgorithms: ["dir"],
+        contentEncryptionAlgorithms: [...AUTH_CONTENT_ENCRYPTION_ALGORITHMS],
+      },
+    );
+
     if (!payload.email || typeof payload.email !== "string") {
       return null;
     }
@@ -63,6 +88,43 @@ export async function decryptSessionToken(
   } catch {
     return null;
   }
+}
+
+function readSessionTokenCookie(
+  cookies: Record<string, string | undefined> | undefined,
+  cookieName: string,
+): string | undefined {
+  if (!cookies) {
+    return undefined;
+  }
+
+  const baseToken = cookies[cookieName];
+  if (baseToken) {
+    return baseToken;
+  }
+
+  const prefix = `${cookieName}.`;
+  const chunks = Object.entries(cookies)
+    .filter(([name, value]) => name.startsWith(prefix) && typeof value === "string")
+    .map(([name, value]) => ({
+      index: Number.parseInt(name.slice(prefix.length), 10),
+      value: value as string,
+    }))
+    .filter((chunk) => Number.isInteger(chunk.index) && chunk.index >= 0)
+    .sort((a, b) => a.index - b.index);
+
+  if (chunks.length === 0) {
+    return undefined;
+  }
+
+  // Auth.js chunked cookies are indexed from 0..n with no gaps.
+  for (let i = 0; i < chunks.length; i += 1) {
+    if (chunks[i].index !== i) {
+      return undefined;
+    }
+  }
+
+  return chunks.map((chunk) => chunk.value).join("");
 }
 
 /**
@@ -88,12 +150,12 @@ export function createSessionAuthMiddleware(
         ? "__Secure-authjs.session-token"
         : "authjs.session-token";
 
-    const token = req.cookies?.[cookieName];
+    const token = readSessionTokenCookie(req.cookies, cookieName);
     if (!token) {
       return next(); // No session — let composite middleware try next strategy
     }
 
-    const session = await decryptSessionToken(token, nextauthSecret);
+    const session = await decryptSessionToken(token, nextauthSecret, cookieName);
     if (!session) {
       return next(); // Invalid token — let composite middleware try next strategy
     }

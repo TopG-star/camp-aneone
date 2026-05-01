@@ -116,11 +116,50 @@ describe("InAppNotificationAdapter", () => {
         }),
       );
     });
+
+    it("persists notifications with user scope when userId is provided", async () => {
+      await adapter.send({
+        eventType: "urgent_item",
+        title: "Scoped",
+        body: "Should be user-scoped",
+        userId: "user-A",
+      });
+
+      expect(notificationRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: "user-A" }),
+      );
+    });
   });
 
   // ── Per-event-type toggle ───────────────────────────────
 
   describe("per-event-type toggle", () => {
+    it("uses user-scoped toggle when userId is provided", async () => {
+      (preferenceRepo.get as ReturnType<typeof vi.fn>).mockImplementation(
+        (key: string) => {
+          if (key === "user:user-A:notification.enabled.urgent_item") {
+            return "false";
+          }
+          if (key === "notification.enabled.urgent_item") {
+            return "true";
+          }
+          return null;
+        },
+      );
+
+      await adapter.send({
+        eventType: "urgent_item",
+        title: "Suppressed",
+        body: "Should not be created",
+        userId: "user-A",
+      });
+
+      expect(notificationRepo.create).not.toHaveBeenCalled();
+      expect(preferenceRepo.get).toHaveBeenCalledWith(
+        "user:user-A:notification.enabled.urgent_item",
+      );
+    });
+
     it("suppresses notification when event type is disabled", async () => {
       (preferenceRepo.get as ReturnType<typeof vi.fn>).mockImplementation(
         (key: string) =>

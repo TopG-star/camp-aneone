@@ -1,11 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
-import { useStatus, useNotificationPreferences } from "@/lib/hooks";
+import {
+  useStatus,
+  useNotificationPreferences,
+  useUserProfile,
+} from "@/lib/hooks";
 import { apiFetch } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { useThemeMode } from "@/components/theme-provider";
 import {
   Wifi,
   WifiOff,
@@ -17,7 +22,17 @@ import {
   ExternalLink,
   Trash2,
   Loader2,
+  Monitor,
+  Moon,
+  Sun,
 } from "lucide-react";
+import type {
+  CommunicationStyle,
+  SalutationMode,
+  UserProfileResponse,
+  UserProfileSettings,
+} from "@oneon/contracts";
+import { DEFAULT_USER_PROFILE_SETTINGS } from "@oneon/contracts";
 
 interface Integration {
   name: string;
@@ -32,6 +47,10 @@ interface StatusResponse {
   uptime: number;
 }
 
+interface NotificationPreferencesResponse {
+  preferences: Record<string, string>;
+}
+
 const integrationIcons: Record<string, typeof Mail> = {
   gmail: Mail,
   github: GitBranch,
@@ -42,18 +61,45 @@ const integrationIcons: Record<string, typeof Mail> = {
 
 export default function SettingsPage() {
   const { data: session } = useSession();
+  const { mode: themeMode, resolvedMode, setMode: setThemeMode } = useThemeMode();
   const userId = session?.user?.email ?? "";
   const { data: statusData, isLoading: statusLoading, mutate: mutateStatus } = useStatus();
   const { data: prefsData } = useNotificationPreferences();
+  const {
+    data: profileData,
+    isLoading: profileLoading,
+    mutate: mutateProfile,
+  } = useUserProfile();
   const status = statusData as StatusResponse | undefined;
+  const prefs =
+    (prefsData as NotificationPreferencesResponse | undefined)?.preferences ?? {};
+  const profile =
+    (profileData as UserProfileResponse | undefined)?.profile;
+  const prefEntries = Object.entries(prefs);
 
   const [githubPat, setGithubPat] = useState("");
+  const [profileForm, setProfileForm] = useState<UserProfileSettings>(
+    DEFAULT_USER_PROFILE_SETTINGS,
+  );
+  const [profileDirty, setProfileDirty] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  const themeOptions = [
+    { value: "light" as const, label: "Light", icon: Sun },
+    { value: "dark" as const, label: "Dark", icon: Moon },
+    { value: "system" as const, label: "System", icon: Monitor },
+  ];
+
   const gmail = status?.integrations.find((i) => i.name === "gmail");
   const github = status?.integrations.find((i) => i.name === "github");
+
+  useEffect(() => {
+    if (profile && !profileDirty) {
+      setProfileForm(profile);
+    }
+  }, [profile, profileDirty]);
 
   async function connectGoogle() {
     setBusy("google");
@@ -120,27 +166,70 @@ export default function SettingsPage() {
     }
   }
 
+  function updateProfileField<K extends keyof UserProfileSettings>(
+    key: K,
+    value: UserProfileSettings[K],
+  ) {
+    setProfileDirty(true);
+    setProfileForm((prev) => ({
+      ...prev,
+      [key]: value,
+    }));
+  }
+
+  async function saveProfile() {
+    if (
+      profileForm.salutationMode === "nickname" &&
+      (!profileForm.nickname || profileForm.nickname.trim().length === 0)
+    ) {
+      setError("Nickname is required when salutation mode is set to nickname.");
+      return;
+    }
+
+    setBusy("profile-save");
+    setError(null);
+
+    try {
+      const data = await apiFetch<UserProfileResponse>("/api/profile", {
+        method: "PUT",
+        body: JSON.stringify({ profile: profileForm }),
+      });
+
+      setProfileForm(data.profile);
+      setProfileDirty(false);
+      setSuccess("Profile preferences saved.");
+      await mutateProfile();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save profile settings");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 md:space-y-7 lg:space-y-8 motion-page-enter">
       {/* Header */}
-      <div className="space-y-2">
-        <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+      <div className="space-y-2 motion-rise-in">
+        <p className="page-eyebrow">
           Configuration
         </p>
-        <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
+        <h1 className="page-title">
           Settings
         </h1>
+        <p className="page-copy">
+          Manage integrations, notification behavior, and appearance preferences.
+        </p>
       </div>
 
       {/* Flash messages */}
       {error && (
-        <div className="rounded-eight border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400">
-          {error}
+        <div className="rounded-eight border border-red-500/30 bg-red-500/10 p-4">
+          <p className="state-error">{error}</p>
         </div>
       )}
       {success && (
-        <div className="rounded-eight border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-400">
-          {success}
+        <div className="rounded-eight border border-emerald-500/30 bg-emerald-500/10 p-4">
+          <p className="state-success">{success}</p>
         </div>
       )}
 
@@ -154,13 +243,13 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent>
           {statusLoading ? (
-            <div className="h-12 animate-pulse rounded-eight bg-surface-low dark:bg-dark-surface-low" />
+            <div className="state-skeleton h-12" />
           ) : gmail?.connected && gmail.source === "db" ? (
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <Badge variant="success">Connected via OAuth</Badge>
                 {gmail.connectedAs && (
-                  <p className="mt-1 text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                  <p className="mt-1 text-sm meta-copy">
                     {gmail.connectedAs}
                   </p>
                 )}
@@ -168,38 +257,38 @@ export default function SettingsPage() {
               <button
                 onClick={disconnectGoogle}
                 disabled={busy === "google-disconnect"}
-                className="flex items-center gap-2 rounded-eight px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+                className="flex w-full items-center justify-center gap-2 rounded-eight px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50 sm:w-auto"
               >
                 {busy === "google-disconnect" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                 Disconnect
               </button>
             </div>
           ) : gmail?.connected && gmail.source === "env" ? (
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <Badge variant="success">Connected via env</Badge>
-                <p className="mt-1 text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                <p className="mt-1 text-sm meta-copy">
                   Configured via environment variables. Connect via OAuth to manage from here.
                 </p>
               </div>
               <button
                 onClick={connectGoogle}
                 disabled={busy === "google"}
-                className="flex items-center gap-2 rounded-eight bg-surface-low px-4 py-2 text-sm font-medium text-on-surface hover:bg-surface-low/80 dark:bg-dark-surface-low dark:text-dark-on-surface dark:hover:bg-dark-surface-low/80 disabled:opacity-50"
+                className="flex w-full items-center justify-center gap-2 rounded-eight bg-surface-low px-4 py-2 text-sm font-medium text-on-surface hover:bg-surface-low/80 dark:bg-dark-surface-low dark:text-dark-on-surface dark:hover:bg-dark-surface-low/80 disabled:opacity-50 sm:w-auto"
               >
                 {busy === "google" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ExternalLink className="h-4 w-4" />}
                 Reconnect via OAuth
               </button>
             </div>
           ) : (
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm meta-copy">
                 Not connected. Sign in with Google to enable Gmail and Calendar.
               </p>
               <button
                 onClick={connectGoogle}
                 disabled={busy === "google"}
-                className="flex items-center gap-2 rounded-eight bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary/90 disabled:opacity-50"
+                className="flex w-full items-center justify-center gap-2 rounded-eight bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary/90 disabled:opacity-50 sm:w-auto"
               >
                 {busy === "google" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ExternalLink className="h-4 w-4" />}
                 Connect Google
@@ -219,13 +308,13 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent>
           {statusLoading ? (
-            <div className="h-12 animate-pulse rounded-eight bg-surface-low dark:bg-dark-surface-low" />
+            <div className="state-skeleton h-12" />
           ) : github?.connected && github.source === "db" ? (
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <Badge variant="success">Connected via PAT</Badge>
                 {github.connectedAs && (
-                  <p className="mt-1 text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                  <p className="mt-1 text-sm meta-copy">
                     {github.connectedAs}
                   </p>
                 )}
@@ -233,7 +322,7 @@ export default function SettingsPage() {
               <button
                 onClick={disconnectGithub}
                 disabled={busy === "github-disconnect"}
-                className="flex items-center gap-2 rounded-eight px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+                className="flex w-full items-center justify-center gap-2 rounded-eight px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50 sm:w-auto"
               >
                 {busy === "github-disconnect" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                 Disconnect
@@ -242,16 +331,16 @@ export default function SettingsPage() {
           ) : github?.connected && github.source === "env" ? (
             <div>
               <Badge variant="success">Connected via env</Badge>
-              <p className="mt-1 text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+              <p className="mt-1 text-sm meta-copy">
                 Configured via GITHUB_TOKEN environment variable.
               </p>
             </div>
           ) : (
             <div className="space-y-3">
-              <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+              <p className="text-sm meta-copy">
                 Enter a GitHub Personal Access Token to enable GitHub integration.
               </p>
-              <div className="flex gap-2">
+              <div className="flex flex-col gap-2 sm:flex-row">
                 <input
                   type="password"
                   placeholder="ghp_..."
@@ -262,7 +351,7 @@ export default function SettingsPage() {
                 <button
                   onClick={connectGithub}
                   disabled={busy === "github" || !githubPat.trim()}
-                  className="flex items-center gap-2 rounded-eight bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary/90 disabled:opacity-50"
+                  className="flex items-center justify-center gap-2 rounded-eight bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary/90 disabled:opacity-50"
                 >
                   {busy === "github" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                   Connect
@@ -280,9 +369,9 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent>
           {statusLoading ? (
-            <div className="animate-pulse space-y-4">
+            <div className="space-y-4">
               {[1, 2, 3].map((i) => (
-                <div key={i} className="h-12 rounded-eight bg-surface-low dark:bg-dark-surface-low" />
+                <div key={i} className="state-skeleton h-12" />
               ))}
             </div>
           ) : status ? (
@@ -301,7 +390,7 @@ export default function SettingsPage() {
                           {integration.name}
                         </p>
                         {integration.detail && (
-                          <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
+                          <p className="text-label-md meta-copy">
                             {integration.detail}
                             {integration.connectedAs ? ` · ${integration.connectedAs}` : ""}
                           </p>
@@ -325,15 +414,128 @@ export default function SettingsPage() {
                 );
               })}
               <div className="pt-2">
-                <p className="text-label-sm text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+                <p className="text-label-sm meta-copy">
                   Uptime: {formatUptime(status.uptime)}
                 </p>
               </div>
             </div>
           ) : (
-            <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+            <p className="state-subtext">
               Unable to load status
             </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Assistant Profile */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Assistant Personalization</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {profileLoading ? (
+            <div className="space-y-2 py-1">
+              <div className="state-skeleton h-4 w-56" />
+              <div className="state-skeleton h-4 w-40" />
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <p className="text-sm meta-copy">
+                Control how Oneon addresses you and the response style it uses.
+              </p>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="space-y-1">
+                  <span className="text-label-sm meta-copy">Preferred Name</span>
+                  <input
+                    type="text"
+                    value={profileForm.preferredName ?? ""}
+                    onChange={(e) =>
+                      updateProfileField(
+                        "preferredName",
+                        e.target.value.trim().length > 0 ? e.target.value : null,
+                      )
+                    }
+                    placeholder="Your first name"
+                    className="w-full rounded-eight border border-outline/20 bg-surface-low px-3 py-2 text-sm text-on-surface placeholder:text-on-surface-variant/40 focus:border-primary focus:outline-none dark:border-dark-outline/20 dark:bg-dark-surface-low dark:text-dark-on-surface dark:placeholder:text-dark-on-surface-variant/40 dark:focus:border-dark-primary"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-label-sm meta-copy">Nickname</span>
+                  <input
+                    type="text"
+                    value={profileForm.nickname ?? ""}
+                    onChange={(e) =>
+                      updateProfileField(
+                        "nickname",
+                        e.target.value.trim().length > 0 ? e.target.value : null,
+                      )
+                    }
+                    placeholder="How you like to be called"
+                    className="w-full rounded-eight border border-outline/20 bg-surface-low px-3 py-2 text-sm text-on-surface placeholder:text-on-surface-variant/40 focus:border-primary focus:outline-none dark:border-dark-outline/20 dark:bg-dark-surface-low dark:text-dark-on-surface dark:placeholder:text-dark-on-surface-variant/40 dark:focus:border-dark-primary"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-label-sm meta-copy">Salutation</span>
+                  <select
+                    value={profileForm.salutationMode}
+                    onChange={(e) =>
+                      updateProfileField("salutationMode", e.target.value as SalutationMode)
+                    }
+                    className="w-full rounded-eight border border-outline/20 bg-surface-low px-3 py-2 text-sm text-on-surface focus:border-primary focus:outline-none dark:border-dark-outline/20 dark:bg-dark-surface-low dark:text-dark-on-surface dark:focus:border-dark-primary"
+                  >
+                    <option value="sir">Sir</option>
+                    <option value="sir_with_name">Sir + preferred name</option>
+                    <option value="nickname">Nickname</option>
+                  </select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-label-sm meta-copy">Communication Style</span>
+                  <select
+                    value={profileForm.communicationStyle}
+                    onChange={(e) =>
+                      updateProfileField(
+                        "communicationStyle",
+                        e.target.value as CommunicationStyle,
+                      )
+                    }
+                    className="w-full rounded-eight border border-outline/20 bg-surface-low px-3 py-2 text-sm text-on-surface focus:border-primary focus:outline-none dark:border-dark-outline/20 dark:bg-dark-surface-low dark:text-dark-on-surface dark:focus:border-dark-primary"
+                  >
+                    <option value="formal">Formal</option>
+                    <option value="friendly">Friendly</option>
+                    <option value="concise">Concise</option>
+                    <option value="technical">Technical</option>
+                  </select>
+                </label>
+              </div>
+
+              <label className="space-y-1">
+                <span className="text-label-sm meta-copy">Timezone</span>
+                <input
+                  type="text"
+                  value={profileForm.timezone}
+                  onChange={(e) => updateProfileField("timezone", e.target.value)}
+                  placeholder="UTC"
+                  className="w-full rounded-eight border border-outline/20 bg-surface-low px-3 py-2 text-sm text-on-surface placeholder:text-on-surface-variant/40 focus:border-primary focus:outline-none dark:border-dark-outline/20 dark:bg-dark-surface-low dark:text-dark-on-surface dark:placeholder:text-dark-on-surface-variant/40 dark:focus:border-dark-primary"
+                />
+              </label>
+
+              <div className="flex justify-end">
+                <button
+                  onClick={saveProfile}
+                  disabled={busy === "profile-save" || !profileDirty}
+                  className="flex items-center justify-center gap-2 rounded-eight bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {busy === "profile-save" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : null}
+                  Save profile
+                </button>
+              </div>
+            </div>
           )}
         </CardContent>
       </Card>
@@ -344,14 +546,34 @@ export default function SettingsPage() {
           <CardTitle>Notification Preferences</CardTitle>
         </CardHeader>
         <CardContent>
-          {prefsData ? (
-            <pre className="rounded-eight bg-surface-low p-4 text-sm text-on-surface-variant overflow-x-auto dark:bg-dark-surface-low dark:text-dark-on-surface-variant">
-              {JSON.stringify(prefsData, null, 2)}
-            </pre>
+          {!prefsData ? (
+            <div className="space-y-2 py-1">
+              <div className="state-skeleton h-4 w-40" />
+              <div className="state-skeleton h-4 w-56" />
+            </div>
+          ) : prefEntries.length === 0 ? (
+            <div className="state-content rounded-eight bg-surface-low p-4 dark:bg-dark-surface-low">
+              <p className="state-title">
+                No custom preferences yet.
+              </p>
+              <p className="state-subtext">
+                Defaults are active: notification events are enabled until you set an override.
+              </p>
+            </div>
           ) : (
-            <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
-              Loading preferences...
-            </p>
+            <div className="space-y-2">
+              {prefEntries.map(([key, value]) => (
+                <div
+                  key={key}
+                  className="flex items-start justify-between gap-4 rounded-eight bg-surface-low px-3 py-2 dark:bg-dark-surface-low"
+                >
+                  <p className="text-sm text-on-surface dark:text-dark-on-surface">{key}</p>
+                  <p className="text-sm meta-copy break-all">
+                    {value}
+                  </p>
+                </div>
+              ))}
+            </div>
           )}
         </CardContent>
       </Card>
@@ -362,9 +584,34 @@ export default function SettingsPage() {
           <CardTitle>Theme</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant">
-            Dark mode is currently the default. Theme switching will be available in a future update.
-          </p>
+          <div className="space-y-4">
+            <div className="grid grid-cols-3 gap-2 rounded-eight bg-surface-low p-1 dark:bg-dark-surface-low">
+              {themeOptions.map(({ value, label, icon: Icon }) => {
+                const active = themeMode === value;
+
+                return (
+                  <button
+                    key={value}
+                    onClick={() => setThemeMode(value)}
+                    className={
+                      active
+                        ? "flex items-center justify-center gap-2 rounded-eight bg-surface-lowest px-3 py-2 text-xs font-medium text-on-surface shadow-ambient sm:text-sm dark:bg-dark-surface-container dark:text-dark-on-surface"
+                        : "flex items-center justify-center gap-2 rounded-eight px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-high hover:text-on-surface sm:text-sm dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high dark:hover:text-dark-on-surface"
+                    }
+                    aria-label={`Set ${label.toLowerCase()} theme mode`}
+                  >
+                    <Icon className="h-4 w-4" />
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <p className="text-sm meta-copy">
+              Current appearance: {resolvedMode === "dark" ? "Dark" : "Light"}
+              {themeMode === "system" ? " (following your system preference)." : "."}
+            </p>
+          </div>
         </CardContent>
       </Card>
     </div>

@@ -6,8 +6,9 @@ import { apiFetch } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Zap, Check, X } from "lucide-react";
+import { Zap, Check, X, AlertTriangle } from "lucide-react";
 import type { ActionsListResponse } from "@oneon/contracts";
+import { getMotionDelayClass } from "@/lib/motion-utils";
 
 const STATUS_OPTIONS = ["all", "proposed", "approved", "executed", "rejected"] as const;
 
@@ -47,43 +48,45 @@ export default function ActionsPage() {
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 md:space-y-7 lg:space-y-8 motion-page-enter">
       {/* Header */}
-      <div className="space-y-2">
-        <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+      <div className="space-y-2 motion-rise-in">
+        <p className="page-eyebrow">
           Operational Hub
         </p>
-        <h1 className="text-display-md font-bold text-on-surface dark:text-dark-on-surface">
+        <h1 className="page-title">
           Action Center
         </h1>
-        <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+        <p className="page-copy">
           Review, validate, and execute agent-proposed actions.
         </p>
       </div>
 
       {/* Status filter */}
-      <div className="flex gap-1">
-        {STATUS_OPTIONS.map((s) => (
-          <button
-            key={s}
-            onClick={() => { setStatusFilter(s); setOffset(0); }}
-            className={`rounded-full px-3 py-1 text-label-md font-medium transition-colors ${
-              statusFilter === s
-                ? "bg-primary text-on-primary dark:bg-dark-primary dark:text-dark-on-primary"
-                : "text-on-surface-variant hover:bg-surface-high dark:text-dark-on-surface-variant dark:hover:bg-dark-surface-high"
-            }`}
-          >
-            {s === "all" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
-          </button>
-        ))}
+      <div className={`motion-rise-in-soft overflow-x-auto pb-1 ${getMotionDelayClass(1)}`}>
+        <div className="flex gap-1">
+          {STATUS_OPTIONS.map((s) => (
+            <button
+              key={s}
+              onClick={() => { setStatusFilter(s); setOffset(0); }}
+              className={`filter-chip ${
+                statusFilter === s
+                  ? "filter-chip-active"
+                  : "filter-chip-idle"
+              }`}
+            >
+              {s === "all" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* List */}
       {isLoading && (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
-            <Card key={i} className="animate-pulse">
-              <div className="h-24" />
+            <Card key={i}>
+              <div className="state-skeleton h-24" />
             </Card>
           ))}
         </div>
@@ -91,8 +94,9 @@ export default function ActionsPage() {
 
       {error && (
         <Card>
-          <CardContent>
-            <p className="text-red-500">Failed to load actions.</p>
+          <CardContent className="state-content state-content-center py-8">
+            <AlertTriangle className="h-8 w-8 text-red-500/80 dark:text-red-400/80" />
+            <p className="state-error">Failed to load actions.</p>
           </CardContent>
         </Card>
       )}
@@ -101,23 +105,27 @@ export default function ActionsPage() {
         <>
           {response.actions.length === 0 ? (
             <Card>
-              <CardContent>
-                <p className="text-on-surface-variant dark:text-dark-on-surface-variant">
+              <CardContent className="state-content state-content-center py-10">
+                <Zap className="state-icon" />
+                <p className="state-title">
                   No actions match your filters.
                 </p>
               </CardContent>
             </Card>
           ) : (
-            <div className="space-y-4">
-              {response.actions.map((action) => (
-                <Card key={action.id}>
+            <div className="space-y-3 md:space-y-4">
+              {response.actions.map((action, index) => (
+                <Card
+                  key={action.id}
+                  className={`motion-rise-in-soft ${getMotionDelayClass(index + 2)}`}
+                >
                   <CardHeader>
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                       <CardTitle className="flex items-center gap-2">
                         <Zap className="h-4 w-4" />
                         {action.actionType.replace(/_/g, " ")}
                       </CardTitle>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <Badge variant={statusVariant(action.status)}>
                           {action.status}
                         </Badge>
@@ -134,15 +142,15 @@ export default function ActionsPage() {
                       </p>
                     )}
                     <div className="rounded-eight bg-surface-low p-4 dark:bg-dark-surface-low">
-                      <p className="text-label-md uppercase tracking-wider text-on-surface-variant/50 dark:text-dark-on-surface-variant/50 mb-2">
+                      <p className="panel-eyebrow">
                         Payload
                       </p>
-                      <pre className="text-sm text-on-surface-variant dark:text-dark-on-surface-variant overflow-x-auto whitespace-pre-wrap">
+                      <pre className="text-sm meta-copy overflow-x-auto whitespace-pre-wrap">
                         {formatPayload(action.payloadJson)}
                       </pre>
                     </div>
-                    <div className="flex items-center justify-between">
-                      <p className="text-label-sm text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <p className="text-label-sm meta-copy">
                         Created{" "}
                         {new Date(action.createdAt).toLocaleString("en-US", {
                           month: "short",
@@ -152,10 +160,11 @@ export default function ActionsPage() {
                         })}
                       </p>
                       {action.status === "proposed" && (
-                        <div className="flex gap-2">
+                        <div className="flex w-full gap-2 sm:w-auto">
                           <Button
                             variant="secondary"
                             size="sm"
+                            className="flex-1 sm:flex-none"
                             onClick={() => handleAction(action.id, "reject")}
                           >
                             <X className="h-4 w-4" />
@@ -164,6 +173,7 @@ export default function ActionsPage() {
                           <Button
                             variant="primary"
                             size="sm"
+                            className="flex-1 sm:flex-none"
                             onClick={() => handleAction(action.id, "approve")}
                           >
                             <Check className="h-4 w-4" />
@@ -179,15 +189,18 @@ export default function ActionsPage() {
           )}
 
           {/* Pagination */}
-          <div className="flex items-center justify-between pt-4">
-            <p className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
+          <div
+            className={`motion-rise-in-soft flex flex-col gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between ${getMotionDelayClass(3)}`}
+          >
+            <p className="text-label-md meta-copy">
               Showing {offset + 1}–{Math.min(offset + limit, response.pagination.total)} of{" "}
               {response.pagination.total}
             </p>
-            <div className="flex gap-2">
+            <div className="flex w-full gap-2 sm:w-auto">
               <Button
                 variant="secondary"
                 size="sm"
+                className="flex-1 sm:flex-none"
                 disabled={offset === 0}
                 onClick={() => setOffset(Math.max(0, offset - limit))}
               >
@@ -196,6 +209,7 @@ export default function ActionsPage() {
               <Button
                 variant="secondary"
                 size="sm"
+                className="flex-1 sm:flex-none"
                 disabled={!response.pagination.hasMore}
                 onClick={() => setOffset(offset + limit)}
               >

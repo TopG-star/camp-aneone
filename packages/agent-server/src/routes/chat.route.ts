@@ -1,10 +1,17 @@
 import { Router, type Request, type Response } from "express";
-import type { ConversationRepository, IntentExtractionPort, SynthesisPort, Logger } from "@oneon/domain";
+import type {
+  ConversationRepository,
+  IntentExtractionPort,
+  SynthesisPort,
+  UserProfileRepository,
+  Logger,
+} from "@oneon/domain";
 import { sendChatMessage, type ToolRegistry } from "@oneon/application";
 
 export interface ChatRouteDeps {
   conversationRepo: ConversationRepository;
   logger: Logger;
+  userProfileRepo?: Pick<UserProfileRepository, "findByUserId"> | null;
   intentExtractor?: IntentExtractionPort | null;
   synthesizer?: SynthesisPort | null;
   toolRegistry?: ToolRegistry | null;
@@ -12,7 +19,14 @@ export interface ChatRouteDeps {
 
 export function createChatRouter(deps: ChatRouteDeps): Router {
   const router = Router();
-  const { conversationRepo, logger, intentExtractor, synthesizer, toolRegistry } = deps;
+  const {
+    conversationRepo,
+    logger,
+    userProfileRepo,
+    intentExtractor,
+    synthesizer,
+    toolRegistry,
+  } = deps;
 
   router.post("/", (req: Request, res: Response) => {
     // ── 1. Validate input ─────────────────────────────────
@@ -28,13 +42,37 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
       return;
     }
 
-    // ── 2. Delegate to use case ───────────────────────────
+    // ── 2. Resolve user profile preferences ───────────────
+    const userId = req.userId!;
+    let profile = null;
+
+    try {
+      profile = userProfileRepo?.findByUserId(userId) ?? null;
+    } catch (error) {
+      logger.error("Chat route: failed to load user profile", {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      res.status(500).json({ error: "Internal server error" });
+      return;
+    }
+
+    // ── 3. Delegate to use case ───────────────────────────
     sendChatMessage(
       { conversationRepo, logger, intentExtractor, synthesizer, toolRegistry },
       {
         message: message.trim(),
         conversationId: conversationId || undefined,
-        userId: req.userId!,
+        userId,
+        timezone: profile?.timezone ?? "UTC",
+        persona: profile
+          ? {
+              preferredName: profile.preferredName,
+              nickname: profile.nickname,
+              salutationMode: profile.salutationMode,
+              communicationStyle: profile.communicationStyle,
+            }
+          : null,
       }
     )
       .then((result) => {

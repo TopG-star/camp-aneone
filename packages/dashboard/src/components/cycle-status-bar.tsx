@@ -44,9 +44,16 @@ export function CycleStatusBar() {
   }
 
   const hasError = status.consecutiveErrors > 0;
+  const statusLabel = !status.enabled
+    ? "Agent disabled"
+    : hasError
+      ? `${status.consecutiveErrors} error${status.consecutiveErrors > 1 ? "s" : ""}`
+      : status.running
+        ? "Agent active"
+        : "Agent idle";
 
   return (
-    <div className="glass dark:glass flex items-center gap-3 rounded-full px-4 py-1.5">
+    <div className="glass flex items-center gap-2 rounded-full px-3 py-1.5 sm:gap-3 sm:px-4">
       <span
         className={cn(
           "h-2 w-2 rounded-full",
@@ -58,21 +65,17 @@ export function CycleStatusBar() {
         )}
       />
       <span className="text-label-md text-on-surface-variant dark:text-dark-on-surface-variant">
-        {hasError
-          ? `${status.consecutiveErrors} error${status.consecutiveErrors > 1 ? "s" : ""}`
-          : status.running
-            ? "Agent active"
-            : "Agent idle"}
+        {statusLabel}
       </span>
       {status.lastCycleAt && (
-        <span className="text-label-sm text-on-surface-variant/50 dark:text-dark-on-surface-variant/50">
+        <span className="hidden text-label-sm text-on-surface-variant/50 sm:inline dark:text-dark-on-surface-variant/50">
           {formatRelative(status.lastCycleAt)}
         </span>
       )}
       {status.running && (
         <button
           onClick={handleTrigger}
-          className="ml-1 text-label-sm font-medium text-on-surface hover:underline dark:text-dark-on-surface"
+          className="ml-1 hidden text-label-sm font-medium text-on-surface hover:underline sm:inline dark:text-dark-on-surface"
         >
           Run now
         </button>

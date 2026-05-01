@@ -35,7 +35,7 @@ export function createCycleRouter(deps: CycleRouteDeps): Router {
         lastCycleAt: loop.lastCycleAt,
         lastError: loop.lastError,
         consecutiveErrors: loop.errorCount,
-        enabled: loop.isRunning(),
+        enabled: true,
       });
     } catch (error) {
       logger.error("Failed to fetch cycle status", {

@@ -1,5 +1,10 @@
 import { Router, type Request, type Response } from "express";
-import type { PreferenceRepository, Logger } from "@oneon/domain";
+import {
+  listUserScopedPreferencesByPrefix,
+  setUserScopedPreference,
+  type PreferenceRepository,
+  type Logger,
+} from "@oneon/domain";
 
 export interface NotificationPreferencesRouteDeps {
   preferenceRepo: PreferenceRepository;
@@ -17,16 +22,11 @@ export function createNotificationPreferencesRouter(
   // GET / — list all notification-related preferences
   router.get("/", (req: Request, res: Response) => {
     try {
-      const userPrefix = `user:${req.userId!}:${NOTIFICATION_PREFIX}`;
-      const all = preferenceRepo.getAll();
-      const notifPrefs: Record<string, string> = {};
-      for (const pref of all) {
-        if (pref.key.startsWith(userPrefix)) {
-          // Strip the user prefix so the client sees "notification.X" keys
-          const clientKey = pref.key.slice(`user:${req.userId!}:`.length);
-          notifPrefs[clientKey] = pref.value;
-        }
-      }
+      const notifPrefs = listUserScopedPreferencesByPrefix(
+        preferenceRepo,
+        req.userId!,
+        NOTIFICATION_PREFIX,
+      );
       res.status(200).json({ preferences: notifPrefs });
     } catch (error) {
       logger.error("Failed to list notification preferences", {
@@ -70,7 +70,7 @@ export function createNotificationPreferencesRouter(
       for (const [key, value] of Object.entries(
         preferences as Record<string, string>,
       )) {
-        preferenceRepo.set(`user:${userId}:${key}`, value);
+        setUserScopedPreference(preferenceRepo, userId, key, value);
       }
 
       res.status(200).json({ success: true });

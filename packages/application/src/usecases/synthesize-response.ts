@@ -1,6 +1,9 @@
 import { z } from "zod";
 import type { SynthesisPort, ConversationMessage, Logger } from "@oneon/domain";
-import type { ToolCallRecord } from "./build-chat-context.js";
+import type {
+  ChatPersonaProfile,
+  ToolCallRecord,
+} from "./build-chat-context.js";
 
 // ── Constants ────────────────────────────────────────────────
 
@@ -23,6 +26,7 @@ export interface BuildSynthesisPromptInput {
   userMessage: string;
   toolCalls: ToolCallRecord[];
   history: ConversationMessage[];
+  persona?: ChatPersonaProfile | null;
 }
 
 export interface SynthesizeResponseDeps {
@@ -112,6 +116,17 @@ export function buildSynthesisPrompt(input: BuildSynthesisPromptInput): string {
     blocks.push(["[CONVERSATION CONTEXT]", ...lines].join("\n"));
   }
 
+  // ── USER PREFERENCES block ──
+  if (input.persona) {
+    blocks.push(
+      [
+        "[USER PREFERENCES]",
+        `Address the user as: ${resolvePreferredSalutation(input.persona)}`,
+        `Communication style: ${input.persona.communicationStyle}`,
+      ].join("\n"),
+    );
+  }
+
   // ── TOOL RESULTS block ──
   const successCalls = input.toolCalls.filter((tc) => tc.result !== null);
   const failedCalls = input.toolCalls.filter((tc) => tc.error !== null);
@@ -139,6 +154,18 @@ export function buildSynthesisPrompt(input: BuildSynthesisPromptInput): string {
   blocks.push(`[USER QUESTION]\n${input.userMessage}`);
 
   return blocks.join("\n\n");
+}
+
+function resolvePreferredSalutation(persona: ChatPersonaProfile): string {
+  if (persona.salutationMode === "sir") {
+    return "Sir";
+  }
+
+  if (persona.salutationMode === "sir_with_name") {
+    return persona.preferredName ? `Sir ${persona.preferredName}` : "Sir";
+  }
+
+  return persona.nickname ?? persona.preferredName ?? "Sir";
 }
 
 // ── synthesizeResponse ───────────────────────────────────────
