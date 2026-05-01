@@ -107,6 +107,13 @@ export {
 } from "./ingest-gmail.js";
 
 export {
+  parseBankStatements,
+  type ParseBankStatementsDeps,
+  type ParseBankStatementsOptions,
+  type ParseBankStatementsSummary,
+} from "./parse-bank-statements.js";
+
+export {
   ingestGitHubWebhook,
   type GitHubWebhookPayload,
   type IngestGitHubWebhookResult,

@@ -126,6 +126,49 @@ export interface BankStatement {
   updatedAt: string;
 }
 
+export interface BankStatementParsedMetadata {
+  id: string;
+  statementId: string;
+  userId: string;
+  accountLast4: string;
+  statementDate: string;
+  periodStart: string;
+  periodEnd: string;
+  currency: string;
+  openingBalanceMinor: number;
+  closingBalanceMinor: number;
+  parserId: string;
+  parserVersion: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BankStatementParsedTransaction {
+  id: string;
+  statementId: string;
+  userId: string;
+  postedAt: string;
+  description: string;
+  amountMinor: number;
+  balanceMinor: number | null;
+  dedupeKey: string;
+  createdAt: string;
+}
+
+export interface BankStatementParseRun {
+  id: string;
+  statementId: string;
+  userId: string;
+  stage: "metadata" | "transactions";
+  outcome: "success" | "error";
+  parserId: string | null;
+  parserVersion: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  durationMs: number;
+  createdAt: string;
+}
+
 export interface User {
   id: string;
   email: string;
