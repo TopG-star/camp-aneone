@@ -42,6 +42,10 @@ import {
   createListNotificationsTool,
   createListUrgentItemsTool,
   createSearchTeamsMessagesTool,
+  createFinanceStatementStatusTool,
+  createSearchFinanceTransactionsTool,
+  createTopFinanceTransactionsTool,
+  createSummarizeFinanceSpendTool,
 } from "@oneon/application";
 
 export function registerRoutes(app: Express, container: AppContainer): void {
@@ -171,6 +175,26 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     toolRegistry.register(createListNotificationsTool({
       notificationRepo: container.notificationRepo,
     }));
+
+    // Finance tools (only when finance intake feature is enabled)
+    if (env.FEATURE_FINANCE_STATEMENT_INTAKE) {
+      toolRegistry.register(createFinanceStatementStatusTool({
+        bankStatementRepo: container.bankStatementRepo,
+      }));
+      toolRegistry.register(createSearchFinanceTransactionsTool({
+        bankStatementRepo: container.bankStatementRepo,
+        bankStatementParseRepo: container.bankStatementParseRepo,
+      }));
+      toolRegistry.register(createTopFinanceTransactionsTool({
+        bankStatementRepo: container.bankStatementRepo,
+        bankStatementParseRepo: container.bankStatementParseRepo,
+      }));
+      toolRegistry.register(createSummarizeFinanceSpendTool({
+        bankStatementRepo: container.bankStatementRepo,
+        bankStatementParseRepo: container.bankStatementParseRepo,
+      }));
+    }
+
 
     // Calendar tools (only if calendarPort available)
     if (container.calendarPort) {

@@ -369,6 +369,38 @@ describe("sendChatMessage", () => {
     expect(result.response).toContain("5 emails found");
   });
 
+  it("returns finance tool summaries for finance intents", async () => {
+    const extractor = createMockExtractor([
+      [{ tool: "search_finance_transactions", parameters: { q: "uber" } }],
+      [{ tool: "none", parameters: {} }],
+    ]);
+    const registry = createMockToolRegistry({
+      search_finance_transactions: makeToolResult(
+        "search_finance_transactions",
+        'Found 2 transactions for "uber".'
+      ),
+    });
+
+    const result = await sendChatMessage(
+      {
+        conversationRepo,
+        logger,
+        intentExtractor: extractor,
+        toolRegistry: registry,
+      },
+      { message: "Show my uber transactions", now: NOW, userId: "user-A" }
+    );
+
+    expect(result.response).toContain('Found 2 transactions for "uber".');
+
+    const appendCalls = (conversationRepo.append as ReturnType<typeof vi.fn>).mock.calls;
+    const assistantCall = appendCalls[1][0];
+    const parsedToolCalls = JSON.parse(assistantCall.toolCalls as string) as Array<{
+      tool: string;
+    }>;
+    expect(parsedToolCalls[0].tool).toBe("search_finance_transactions");
+  });
+
   it("returns fallback when loop produces no tool calls", async () => {
     const extractor = createMockExtractor([
       [], // empty intents → stops immediately
