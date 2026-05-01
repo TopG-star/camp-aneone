@@ -3,6 +3,7 @@ export type { ClassificationRepository, ClassificationFeedbackRepository } from 
 export type { DeadlineRepository } from "./deadline-repository.port.js";
 export type { ActionLogRepository } from "./action-log-repository.port.js";
 export type { NotificationRepository } from "./notification-repository.port.js";
+export type { PushSubscriptionRepository } from "./push-subscription-repository.port.js";
 export type { ConversationRepository } from "./conversation-repository.port.js";
 export type { PreferenceRepository } from "./preference-repository.port.js";
 export type { BankStatementRepository } from "./bank-statement-repository.port.js";

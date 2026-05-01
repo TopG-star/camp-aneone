@@ -18,6 +18,7 @@ import { createCycleRouter } from "./cycle.route.js";
 import { createStatusRouter } from "./status.route.js";
 import { createOAuthRouter } from "./oauth.route.js";
 import { createIntegrationsRouter } from "./integrations.route.js";
+import { createPushSubscriptionsRouter } from "./push-subscriptions.route.js";
 import { createUsersRouter } from "./users.route.js";
 import { createTokenAuthMiddleware } from "../middleware/auth.js";
 import { createSessionAuthMiddleware } from "../middleware/session-auth.js";
@@ -268,6 +269,19 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     }),
   );
   prefLogger.info("Notification preferences routes registered at /api/notification-preferences");
+  if (env.FEATURE_PUSH_NOTIFICATIONS) {
+    const pushLogger = new StructuredLogger("push-subscriptions", env.LOG_LEVEL);
+    app.use(
+      "/api/push",
+      ...userAuth,
+      createPushSubscriptionsRouter({
+        pushSubscriptionRepo: container.pushSubscriptionRepo,
+        logger: pushLogger,
+        vapidPublicKey: env.VAPID_PUBLIC_KEY ?? null,
+      }),
+    );
+    pushLogger.info("Push subscription routes registered at /api/push");
+  }
 
   // ── User Profile Preferences ─────────────────────────────
   const profileLogger = new StructuredLogger("profile", env.LOG_LEVEL);
