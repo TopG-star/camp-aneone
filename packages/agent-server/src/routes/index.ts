@@ -288,6 +288,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       ...userAuth,
       createFinanceStatementsRouter({
         bankStatementRepo: container.bankStatementRepo,
+        bankStatementParseRepo: container.bankStatementParseRepo,
         logger: financeLogger,
       }),
     );

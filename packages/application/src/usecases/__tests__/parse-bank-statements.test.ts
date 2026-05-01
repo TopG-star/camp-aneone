@@ -86,6 +86,9 @@ describe("parseBankStatements", () => {
       replaceTransactions: vi.fn(),
       recordParseRun: vi.fn(),
       countFailedRuns: vi.fn().mockReturnValue(0),
+      findMetadataByStatementId: vi.fn(),
+      findTransactions: vi.fn().mockReturnValue([]),
+      findParseRuns: vi.fn().mockReturnValue([]),
     };
 
     const parserRegistry = {
@@ -137,6 +140,9 @@ describe("parseBankStatements", () => {
       replaceTransactions: vi.fn(),
       recordParseRun: vi.fn(),
       countFailedRuns: vi.fn().mockReturnValue(0),
+      findMetadataByStatementId: vi.fn(),
+      findTransactions: vi.fn().mockReturnValue([]),
+      findParseRuns: vi.fn().mockReturnValue([]),
     };
 
     const result = await parseBankStatements(
@@ -186,6 +192,9 @@ describe("parseBankStatements", () => {
       replaceTransactions: vi.fn(),
       recordParseRun: vi.fn(),
       countFailedRuns: vi.fn().mockReturnValue(0),
+      findMetadataByStatementId: vi.fn(),
+      findTransactions: vi.fn().mockReturnValue([]),
+      findParseRuns: vi.fn().mockReturnValue([]),
     };
 
     await parseBankStatements(

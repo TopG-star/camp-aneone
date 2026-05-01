@@ -81,6 +81,11 @@ describe("SqliteBankStatementParseRepository", () => {
       .get("s1") as { count: number };
 
     expect(count.count).toBe(1);
+
+    const fetched = repo.findMetadataByStatementId("s1", "u1");
+    expect(fetched).not.toBeNull();
+    expect(fetched?.closingBalanceMinor).toBe(98500);
+    expect(repo.findMetadataByStatementId("s1", "missing-user")).toBeNull();
   });
 
   it("replaces transactions for a statement deterministically", () => {
@@ -164,5 +169,95 @@ describe("SqliteBankStatementParseRepository", () => {
 
     expect(repo.countFailedRuns("s1", "metadata")).toBe(0);
     expect(repo.countFailedRuns("s1", "transactions")).toBe(2);
+  });
+
+  it("queries transactions with statement, date, and text filters", () => {
+    repo.replaceTransactions("s1", [
+      {
+        userId: "u1",
+        postedAt: "2026-04-20",
+        description: "Coffee Shop",
+        amountMinor: -450,
+        balanceMinor: 99100,
+        dedupeKey: "2026-04-20|coffee shop|-450",
+      },
+      {
+        userId: "u1",
+        postedAt: "2026-04-21",
+        description: "Salary",
+        amountMinor: 250000,
+        balanceMinor: 349100,
+        dedupeKey: "2026-04-21|salary|250000",
+      },
+      {
+        userId: "u1",
+        postedAt: "2026-03-31",
+        description: "Older Charge",
+        amountMinor: -1200,
+        balanceMinor: 98000,
+        dedupeKey: "2026-03-31|older charge|-1200",
+      },
+    ]);
+
+    const filtered = repo.findTransactions({
+      userId: "u1",
+      statementId: "s1",
+      searchText: "coffee",
+      postedAtFrom: "2026-04-01",
+      postedAtTo: "2026-04-30",
+      limit: 10,
+    });
+
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].description).toBe("Coffee Shop");
+
+    const latestTwo = repo.findTransactions({
+      userId: "u1",
+      limit: 2,
+    });
+
+    expect(latestTwo).toHaveLength(2);
+    expect(latestTwo[0].postedAt >= latestTwo[1].postedAt).toBe(true);
+  });
+
+  it("returns parse runs newest first with user scoping", () => {
+    repo.recordParseRun({
+      statementId: "s1",
+      userId: "u1",
+      stage: "metadata",
+      outcome: "success",
+      parserId: "chase_pdf",
+      parserVersion: 1,
+      errorCode: null,
+      errorMessage: null,
+      durationMs: 15,
+    });
+    repo.recordParseRun({
+      statementId: "s1",
+      userId: "u1",
+      stage: "transactions",
+      outcome: "success",
+      parserId: "chase_pdf",
+      parserVersion: 1,
+      errorCode: null,
+      errorMessage: null,
+      durationMs: 26,
+    });
+
+    const runs = repo.findParseRuns({
+      statementId: "s1",
+      userId: "u1",
+      limit: 10,
+    });
+
+    expect(runs).toHaveLength(2);
+    expect(runs[0].createdAt >= runs[1].createdAt).toBe(true);
+
+    const none = repo.findParseRuns({
+      statementId: "s1",
+      userId: "missing-user",
+      limit: 10,
+    });
+    expect(none).toHaveLength(0);
   });
 });

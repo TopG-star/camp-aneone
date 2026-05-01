@@ -66,7 +66,7 @@ export class SqliteBankStatementParseRepository
         now,
       );
 
-    return this.findMetadataByStatementId(metadata.statementId)!;
+    return this.findMetadataByStatementId(metadata.statementId, metadata.userId)!;
   }
 
   replaceTransactions(
@@ -195,14 +195,85 @@ export class SqliteBankStatementParseRepository
     return row.count;
   }
 
-  private findMetadataByStatementId(
+  findMetadataByStatementId(
     statementId: string,
+    userId: string,
   ): BankStatementParsedMetadata | null {
     const row = this.db
-      .prepare("SELECT * FROM bank_statement_metadata WHERE statement_id = ?")
-      .get(statementId) as RawBankStatementParsedMetadata | undefined;
+      .prepare(
+        "SELECT * FROM bank_statement_metadata WHERE statement_id = ? AND user_id = ?",
+      )
+      .get(statementId, userId) as RawBankStatementParsedMetadata | undefined;
 
     return row ? mapMetadataRow(row) : null;
+  }
+
+  findTransactions(options: {
+    userId: string;
+    statementId?: string;
+    searchText?: string;
+    postedAtFrom?: string;
+    postedAtTo?: string;
+    limit: number;
+  }): BankStatementParsedTransaction[] {
+    const clauses: string[] = ["user_id = ?"];
+    const params: unknown[] = [options.userId];
+
+    if (options.statementId) {
+      clauses.push("statement_id = ?");
+      params.push(options.statementId);
+    }
+
+    if (options.searchText) {
+      clauses.push("LOWER(description) LIKE ?");
+      params.push(`%${options.searchText.toLowerCase()}%`);
+    }
+
+    if (options.postedAtFrom) {
+      clauses.push("posted_at >= ?");
+      params.push(options.postedAtFrom);
+    }
+
+    if (options.postedAtTo) {
+      clauses.push("posted_at <= ?");
+      params.push(options.postedAtTo);
+    }
+
+    params.push(options.limit);
+
+    const rows = this.db
+      .prepare(
+        `SELECT *
+         FROM bank_statement_transactions
+         WHERE ${clauses.join(" AND ")}
+         ORDER BY posted_at DESC, created_at DESC
+         LIMIT ?`,
+      )
+      .all(...params) as RawBankStatementParsedTransaction[];
+
+    return rows.map(mapTransactionRow);
+  }
+
+  findParseRuns(options: {
+    statementId: string;
+    userId: string;
+    limit: number;
+  }): BankStatementParseRun[] {
+    const rows = this.db
+      .prepare(
+        `SELECT *
+         FROM bank_statement_parse_runs
+         WHERE statement_id = ? AND user_id = ?
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(
+        options.statementId,
+        options.userId,
+        options.limit,
+      ) as RawBankStatementParseRun[];
+
+    return rows.map(mapParseRunRow);
   }
 }
 
@@ -223,6 +294,32 @@ interface RawBankStatementParsedMetadata {
   updated_at: string;
 }
 
+interface RawBankStatementParsedTransaction {
+  id: string;
+  statement_id: string;
+  user_id: string;
+  posted_at: string;
+  description: string;
+  amount_minor: number;
+  balance_minor: number | null;
+  dedupe_key: string;
+  created_at: string;
+}
+
+interface RawBankStatementParseRun {
+  id: string;
+  statement_id: string;
+  user_id: string;
+  stage: "metadata" | "transactions";
+  outcome: "success" | "error";
+  parser_id: string | null;
+  parser_version: number | null;
+  error_code: string | null;
+  error_message: string | null;
+  duration_ms: number;
+  created_at: string;
+}
+
 function mapMetadataRow(
   row: RawBankStatementParsedMetadata,
 ): BankStatementParsedMetadata {
@@ -241,5 +338,39 @@ function mapMetadataRow(
     parserVersion: row.parser_version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function mapTransactionRow(
+  row: RawBankStatementParsedTransaction,
+): BankStatementParsedTransaction {
+  return {
+    id: row.id,
+    statementId: row.statement_id,
+    userId: row.user_id,
+    postedAt: row.posted_at,
+    description: row.description,
+    amountMinor: row.amount_minor,
+    balanceMinor: row.balance_minor,
+    dedupeKey: row.dedupe_key,
+    createdAt: row.created_at,
+  };
+}
+
+function mapParseRunRow(
+  row: RawBankStatementParseRun,
+): BankStatementParseRun {
+  return {
+    id: row.id,
+    statementId: row.statement_id,
+    userId: row.user_id,
+    stage: row.stage,
+    outcome: row.outcome,
+    parserId: row.parser_id,
+    parserVersion: row.parser_version,
+    errorCode: row.error_code,
+    errorMessage: row.error_message,
+    durationMs: row.duration_ms,
+    createdAt: row.created_at,
   };
 }

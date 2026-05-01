@@ -49,4 +49,21 @@ export interface BankStatementParseRepository {
     run: Omit<BankStatementParseRun, "id" | "createdAt">,
   ): BankStatementParseRun;
   countFailedRuns(statementId: string, stage: BankStatementParseRun["stage"]): number;
+  findMetadataByStatementId(
+    statementId: string,
+    userId: string,
+  ): BankStatementParsedMetadata | null;
+  findTransactions(options: {
+    userId: string;
+    statementId?: string;
+    searchText?: string;
+    postedAtFrom?: string;
+    postedAtTo?: string;
+    limit: number;
+  }): BankStatementParsedTransaction[];
+  findParseRuns(options: {
+    statementId: string;
+    userId: string;
+    limit: number;
+  }): BankStatementParseRun[];
 }
