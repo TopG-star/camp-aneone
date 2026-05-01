@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   Inbox,
+  Banknote,
   Zap,
   Bell,
   Settings,
@@ -18,6 +19,7 @@ import { cn } from "@/lib/utils";
 const navItems = [
   { href: "/today", label: "Today", icon: LayoutDashboard },
   { href: "/inbox", label: "Inbox", icon: Inbox },
+  { href: "/finance", label: "Finance", icon: Banknote },
   { href: "/actions", label: "Actions", icon: Zap },
   { href: "/deadlines", label: "Deadlines", icon: CalendarClock },
   { href: "/chat", label: "Chat", icon: MessageSquare },
