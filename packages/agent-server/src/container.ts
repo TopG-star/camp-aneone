@@ -9,6 +9,8 @@ import type {
   ConversationRepository,
   PreferenceRepository,
   BankStatementRepository,
+  BankStatementParseRepository,
+  BankStatementParserRegistry,
   UserRepository,
   UserProfileRepository,
   OAuthTokenRepository,
@@ -33,6 +35,7 @@ import {
   SqliteConversationRepository,
   SqlitePreferenceRepository,
   SqliteBankStatementRepository,
+  SqliteBankStatementParseRepository,
   SqliteUserRepository,
   SqliteUserProfileRepository,
   SqliteOAuthTokenRepository,
@@ -52,6 +55,8 @@ import {
   GitHubAdapter,
   InAppNotificationAdapter,
   TokenCipher,
+  StaticBankStatementParserRegistry,
+  ChaseBankStatementParser,
 } from "@oneon/infrastructure";
 
 import type { Env } from "./config/env.js";
@@ -77,6 +82,8 @@ export interface AppContainer {
   conversationRepo: ConversationRepository;
   preferenceRepo: PreferenceRepository;
   bankStatementRepo: BankStatementRepository;
+  bankStatementParseRepo: BankStatementParseRepository;
+  bankStatementParserRegistry: BankStatementParserRegistry;
   userRepo: UserRepository | null;
   userProfileRepo: UserProfileRepository;
   oauthTokenRepo: OAuthTokenRepository | null;
@@ -129,6 +136,14 @@ export function createContainer(env: Env): AppContainer {
   const conversationRepo = new SqliteConversationRepository(db);
   const preferenceRepo = new SqlitePreferenceRepository(db);
   const bankStatementRepo = new SqliteBankStatementRepository(db);
+  const bankStatementParseRepo = new SqliteBankStatementParseRepository(db);
+  const bankStatementParserRegistry = new StaticBankStatementParserRegistry([
+    {
+      senderDomains: ["chase.com"],
+      sources: ["gmail"],
+      parser: new ChaseBankStatementParser(),
+    },
+  ]);
   const userProfileRepo = new SqliteUserProfileRepository(db);
 
   // ── OAuth Repositories (requires OAUTH_TOKEN_ENCRYPTION_KEY) ──
@@ -407,6 +422,8 @@ export function createContainer(env: Env): AppContainer {
     conversationRepo,
     preferenceRepo,
     bankStatementRepo,
+    bankStatementParseRepo,
+    bankStatementParserRegistry,
     userRepo,
     userProfileRepo,
     oauthTokenRepo,

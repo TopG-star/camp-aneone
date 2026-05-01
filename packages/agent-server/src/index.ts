@@ -13,11 +13,16 @@ import { loadEnv } from "./config/env.js";
 import { createContainer } from "./container.js";
 import { registerRoutes } from "./routes/index.js";
 import { BackgroundLoop } from "./background-loop.js";
-import { ingestGmail, runProcessingCycle } from "@oneon/application";
+import {
+  ingestGmail,
+  parseBankStatements,
+  runProcessingCycle,
+} from "@oneon/application";
 import type { CycleSummary, DailyCallCounter } from "@oneon/application";
 import {
   GmailHttpClient,
   GmailPollingAdapter,
+  GmailStatementDocumentProvider,
 } from "@oneon/infrastructure";
 
 function emptyCycleSummary(): CycleSummary {
@@ -82,6 +87,7 @@ app.get("/health", (_req, res) => {
       calendar: container.calendarPort !== null,
       github: container.githubPort !== null,
       notifications: container.notificationPort !== null,
+      financeStatementParser: env.FEATURE_FINANCE_STATEMENT_PARSER,
     },
   };
   res.json(health);
@@ -121,6 +127,7 @@ logger.info("Camp-Aneone (Oneon) agent-server starting", {
     chat: env.FEATURE_CHAT,
     backgroundLoop: env.FEATURE_BACKGROUND_LOOP,
     financeStatementIntake: env.FEATURE_FINANCE_STATEMENT_INTAKE,
+    financeStatementParser: env.FEATURE_FINANCE_STATEMENT_PARSER,
   },
 });
 
@@ -161,6 +168,15 @@ if (env.FEATURE_BACKGROUND_LOOP) {
     );
   }
 
+  if (
+    env.FEATURE_FINANCE_STATEMENT_PARSER &&
+    !env.FEATURE_FINANCE_STATEMENT_INTAKE
+  ) {
+    logger.warn(
+      "Finance statement parser is enabled while intake is disabled; only existing discovered statements can be parsed",
+    );
+  }
+
   const userCycleRunner = async (userId: string) => {
     // 1. Create per-user Google token provider
     const tokenProvider = container.createGoogleTokenProvider(userId);
@@ -188,6 +204,31 @@ if (env.FEATURE_BACKGROUND_LOOP) {
       userId,
       bankStatementIntake,
     });
+
+    if (env.FEATURE_FINANCE_STATEMENT_PARSER) {
+      const parseSummary = await parseBankStatements(
+        {
+          bankStatementRepo: container.bankStatementRepo,
+          parseRepo: container.bankStatementParseRepo,
+          parserRegistry: container.bankStatementParserRegistry,
+          documentProvider: new GmailStatementDocumentProvider({
+            client: gmailClient,
+            logger,
+          }),
+          logger,
+        },
+        {
+          userId,
+          batchSize: env.FINANCE_STATEMENT_PARSE_BATCH_SIZE,
+          maxTransactionRetries: env.FINANCE_STATEMENT_MAX_TRANSACTION_RETRIES,
+        },
+      );
+
+      logger.info("Finance statement parse cycle complete", {
+        userId,
+        ...parseSummary,
+      });
+    }
 
     if (!container.llmPort) {
       // Ingest-first fallback: keep Inbox/TODAY counts flowing even without LLM.

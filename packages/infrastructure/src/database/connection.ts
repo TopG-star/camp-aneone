@@ -128,6 +128,16 @@ function migrationAlreadyAppliedInSchema(
 
       return row.count === 0;
     }
+    case 10:
+      return (
+        hasTable(db, "bank_statement_metadata") &&
+        hasColumn(db, "bank_statement_metadata", "statement_id") &&
+        hasColumn(db, "bank_statement_metadata", "parser_version") &&
+        hasTable(db, "bank_statement_transactions") &&
+        hasColumn(db, "bank_statement_transactions", "dedupe_key") &&
+        hasTable(db, "bank_statement_parse_runs") &&
+        hasColumn(db, "bank_statement_parse_runs", "outcome")
+      );
     default:
       return false;
   }
@@ -184,6 +194,7 @@ export function runMigrations(db: Database.Database): void {
     { version: 7, name: "user_profiles", file: "007_user_profiles.sql" },
     { version: 8, name: "bank_statement_intake", file: "008_bank_statement_intake.sql" },
     { version: 9, name: "bank_statement_status_canonicalization", file: "009_bank_statement_status_canonicalization.sql" },
+    { version: 10, name: "bank_statement_parser_framework", file: "010_bank_statement_parser_framework.sql" },
   ];
 
   const migrationsDir = getMigrationsDir();

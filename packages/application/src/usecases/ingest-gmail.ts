@@ -73,14 +73,7 @@ export async function ingestGmail(
         isBankStatementCandidate(item.from, item.subject, bankStatementIntake)
       ) {
         try {
-          const existingStatement =
-            bankStatementIntake.repository.findBySourceAndExternalId(
-              item.source,
-              item.externalId,
-              userId,
-            );
-
-          const statement = bankStatementIntake.repository.upsert({
+          bankStatementIntake.repository.upsert({
             userId,
             source: item.source,
             externalId: item.externalId,
@@ -93,12 +86,6 @@ export async function ingestGmail(
             status: "discovered",
             detectionRuleVersion: bankStatementIntake.detectionRuleVersion,
           });
-
-          if (existingStatement) {
-            bankStatementIntake.repository.markErrorMetadata(existingStatement.id);
-          } else {
-            bankStatementIntake.repository.markMetadataParsed(statement.id);
-          }
         } catch (error) {
           logger.error("Gmail ingestion: bank statement intake failed", {
             externalId: item.externalId,

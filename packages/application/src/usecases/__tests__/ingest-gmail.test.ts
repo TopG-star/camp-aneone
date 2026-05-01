@@ -287,7 +287,7 @@ describe("ingestGmail", () => {
     );
   });
 
-  it("stores finance candidate and transitions to metadata_parsed", async () => {
+  it("stores finance candidate as discovered for parser pipeline", async () => {
     const items = [makeCandidateItem("fin-ext-1")];
     (ingestionPort.fetchNew as ReturnType<typeof vi.fn>).mockResolvedValue(items);
 
@@ -315,18 +315,16 @@ describe("ingestGmail", () => {
       })
     );
 
-    expect(bankRepo.markMetadataParsed).toHaveBeenCalledWith("bank-fin-ext-1");
+    expect(bankRepo.findBySourceAndExternalId).not.toHaveBeenCalled();
+    expect(bankRepo.markMetadataParsed).not.toHaveBeenCalled();
     expect(bankRepo.markErrorMetadata).not.toHaveBeenCalled();
   });
 
-  it("marks duplicate finance candidate as error_metadata", async () => {
+  it("upserts duplicate finance candidate idempotently without transitions", async () => {
     const items = [makeCandidateItem("fin-ext-dup")];
     (ingestionPort.fetchNew as ReturnType<typeof vi.fn>).mockResolvedValue(items);
 
     const bankRepo = mockBankStatementRepo();
-    bankRepo.findBySourceAndExternalId.mockReturnValue(
-      makeBankStatement("bank-existing", "fin-ext-dup", "discovered")
-    );
 
     await run({
       repository: bankRepo,
@@ -335,13 +333,15 @@ describe("ingestGmail", () => {
       detectionRuleVersion: "fin-001a-v1",
     });
 
-    expect(bankRepo.findBySourceAndExternalId).toHaveBeenCalledWith(
-      "gmail",
-      "fin-ext-dup",
-      "test-user"
+    expect(bankRepo.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        externalId: "fin-ext-dup",
+        status: "discovered",
+      }),
     );
-    expect(bankRepo.markErrorMetadata).toHaveBeenCalledWith("bank-existing");
+    expect(bankRepo.findBySourceAndExternalId).not.toHaveBeenCalled();
     expect(bankRepo.markMetadataParsed).not.toHaveBeenCalled();
+    expect(bankRepo.markErrorMetadata).not.toHaveBeenCalled();
   });
 
   it("does not store non-candidate messages in finance intake", async () => {

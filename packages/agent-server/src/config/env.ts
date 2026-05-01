@@ -115,6 +115,10 @@ const envSchema = z.object({
     .string()
     .transform((v) => v === "true")
     .default("false"),
+  FEATURE_FINANCE_STATEMENT_PARSER: z
+    .string()
+    .transform((v) => v === "true")
+    .default("false"),
 
   // ── Finance Statement Intake (FIN-001a) ─────────────────
   FINANCE_STATEMENT_SENDER_ALLOWLIST: z
@@ -138,6 +142,8 @@ const envSchema = z.object({
   FINANCE_STATEMENT_DETECTION_RULE_VERSION: z
     .string()
     .default("fin-001a-v1"),
+  FINANCE_STATEMENT_PARSE_BATCH_SIZE: z.coerce.number().default(10),
+  FINANCE_STATEMENT_MAX_TRANSACTION_RETRIES: z.coerce.number().default(3),
 
   // ── Processing Loop ──────────────────────────────────────
   PROCESSING_BATCH_SIZE: z.coerce.number().default(10),
