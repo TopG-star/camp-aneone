@@ -55,6 +55,7 @@ import {
   GCAL_REQUIRED_SCOPES,
   GitHubHttpClient,
   GitHubAdapter,
+  TeamsInboundAdapter,
   InAppNotificationAdapter,
   WebPushNotificationAdapter,
   TokenCipher,
@@ -388,6 +389,11 @@ export function createContainer(env: Env): AppContainer {
     logger.warn("GitHub: ✗ disabled (no DB token and no GITHUB_TOKEN env var)");
   }
 
+  const teamsPort: TeamsPort = new TeamsInboundAdapter({
+    inboundItemRepo,
+  });
+  logger.info("Teams: ✓ local search active (inbound_items-backed)");
+
   const inAppNotificationPort: NotificationPort = new InAppNotificationAdapter({
     notificationRepo,
     preferenceRepo,
@@ -469,7 +475,7 @@ export function createContainer(env: Env): AppContainer {
     llmPort,
     calendarPort,
     githubPort,
-    teamsPort: null, // No Teams adapter yet — will be wired when Graph API integration is added
+    teamsPort,
     notificationPort,
     transactionRunner,
     backgroundLoop: null,

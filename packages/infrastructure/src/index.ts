@@ -6,6 +6,7 @@ export * from "./gmail/index.js";
 export * from "./cache/index.js";
 export * from "./calendar/index.js";
 export * from "./github/index.js";
+export * from "./teams/index.js";
 export * from "./notifications/index.js";
 export * from "./crypto/index.js";
 export * from "./http/fetch-with-retry.js";
