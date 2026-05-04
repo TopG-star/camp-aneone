@@ -40,24 +40,15 @@ export class WebPushNotificationAdapter implements NotificationPort {
     deepLink?: string;
     userId?: string | null;
   }): Promise<void> {
-    const userId = notification.userId ?? null;
-
-    if (!this.isPushEnabledForEvent(notification.eventType, userId)) {
+    if (!this.isPushEnabledForEvent(notification.eventType, notification.userId ?? null)) {
       this.logger.debug("Web push suppressed: event type disabled", {
         eventType: notification.eventType,
       });
       return;
     }
 
-    if (this.isQuietHours(userId)) {
-      this.logger.debug("Web push suppressed: quiet hours active", {
-        eventType: notification.eventType,
-      });
-      return;
-    }
-
-    const subscriptions = userId
-      ? this.pushSubscriptionRepo.findByUserId(userId)
+    const subscriptions = notification.userId
+      ? this.pushSubscriptionRepo.findByUserId(notification.userId)
       : this.pushSubscriptionRepo.findAll();
 
     if (subscriptions.length === 0) {
@@ -141,72 +132,6 @@ export class WebPushNotificationAdapter implements NotificationPort {
 
     // Default remains enabled when no preference exists.
     return fallbackValue !== "false";
-  }
-
-  private isQuietHours(userId: string | null): boolean {
-    const quietHoursJson = userId
-      ? getUserScopedPreference(this.preferenceRepo, userId, "notification.quiet_hours")
-      : this.preferenceRepo.get("notification.quiet_hours");
-
-    if (!quietHoursJson) {
-      return false;
-    }
-
-    try {
-      const { start, end } = JSON.parse(quietHoursJson) as {
-        start?: string;
-        end?: string;
-      };
-
-      if (!start || !end) {
-        return false;
-      }
-
-      const timezone = userId
-        ? getUserScopedPreference(this.preferenceRepo, userId, "notification.timezone")
-        : this.preferenceRepo.get("notification.timezone");
-
-      const now = new Date();
-      let currentMinutes: number;
-
-      if (timezone) {
-        try {
-          const parts = new Intl.DateTimeFormat("en-US", {
-            timeZone: timezone,
-            hour: "numeric",
-            minute: "numeric",
-            hour12: false,
-          }).formatToParts(now);
-
-          const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
-          const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
-          currentMinutes = hour * 60 + minute;
-        } catch {
-          this.logger.warn("Invalid notification.timezone, falling back to server time", {
-            timezone,
-          });
-          currentMinutes = now.getHours() * 60 + now.getMinutes();
-        }
-      } else {
-        currentMinutes = now.getHours() * 60 + now.getMinutes();
-      }
-
-      const [startHour, startMinute] = start.split(":").map(Number);
-      const [endHour, endMinute] = end.split(":").map(Number);
-      const startMinutes = startHour * 60 + startMinute;
-      const endMinutes = endHour * 60 + endMinute;
-
-      if (startMinutes <= endMinutes) {
-        return currentMinutes >= startMinutes && currentMinutes < endMinutes;
-      }
-
-      return currentMinutes >= startMinutes || currentMinutes < endMinutes;
-    } catch {
-      this.logger.warn("Invalid quiet hours preference, ignoring", {
-        raw: quietHoursJson,
-      });
-      return false;
-    }
   }
 }
 
