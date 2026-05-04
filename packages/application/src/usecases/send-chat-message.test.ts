@@ -401,6 +401,45 @@ describe("sendChatMessage", () => {
     expect(parsedToolCalls[0].tool).toBe("search_finance_transactions");
   });
 
+  it("returns teams tool summaries for teams intents", async () => {
+    const extractor = createMockExtractor([
+      [
+        {
+          tool: "search_teams_messages",
+          parameters: { query: "release" },
+        },
+      ],
+      [{ tool: "none", parameters: {} }],
+    ]);
+    const registry = createMockToolRegistry({
+      search_teams_messages: makeToolResult(
+        "search_teams_messages",
+        'Found 1 Teams message(s) matching "release".',
+      ),
+    });
+
+    const result = await sendChatMessage(
+      {
+        conversationRepo,
+        logger,
+        intentExtractor: extractor,
+        toolRegistry: registry,
+      },
+      { message: "Find Teams updates about release", now: NOW, userId: "user-A" },
+    );
+
+    expect(result.response).toContain(
+      'Found 1 Teams message(s) matching "release".',
+    );
+
+    const appendCalls = (conversationRepo.append as ReturnType<typeof vi.fn>).mock.calls;
+    const assistantCall = appendCalls[1][0];
+    const parsedToolCalls = JSON.parse(assistantCall.toolCalls as string) as Array<{
+      tool: string;
+    }>;
+    expect(parsedToolCalls[0].tool).toBe("search_teams_messages");
+  });
+
   it("returns fallback when loop produces no tool calls", async () => {
     const extractor = createMockExtractor([
       [], // empty intents → stops immediately
