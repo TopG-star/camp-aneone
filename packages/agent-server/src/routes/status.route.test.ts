@@ -184,4 +184,60 @@ describe("GET /api/status", () => {
     expect(llm.connected).toBe(false);
     expect(llm.detail).toBe("not configured");
   });
+
+  it("shows notifications detail as in-app + web-push when push is fully configured", async () => {
+    container = {
+      env: {
+        LLM_PROVIDER: "anthropic",
+        FEATURE_PUSH_NOTIFICATIONS: true,
+        VAPID_PUBLIC_KEY: "public-key",
+        VAPID_PRIVATE_KEY: "private-key",
+        VAPID_SUBJECT: "mailto:test@example.com",
+      },
+      calendarPort: null,
+      teamsPort: null,
+      oauthTokenRepo: null,
+      userRepo: null,
+    } as unknown as AppContainer;
+
+    app = express();
+    app.use((req, _res, next) => {
+      req.userId = "user-A";
+      next();
+    });
+    app.use("/api/status", createStatusRouter({ container, logger }));
+
+    const res = await request(app).get("/api/status");
+    const notifications = res.body.integrations.find((i: any) => i.name === "notifications");
+
+    expect(notifications.connected).toBe(true);
+    expect(notifications.detail).toBe("in-app + web-push");
+  });
+
+  it("shows notifications detail as misconfigured when push feature is on but VAPID is incomplete", async () => {
+    container = {
+      env: {
+        LLM_PROVIDER: "anthropic",
+        FEATURE_PUSH_NOTIFICATIONS: true,
+        VAPID_PUBLIC_KEY: "public-key",
+      },
+      calendarPort: null,
+      teamsPort: null,
+      oauthTokenRepo: null,
+      userRepo: null,
+    } as unknown as AppContainer;
+
+    app = express();
+    app.use((req, _res, next) => {
+      req.userId = "user-A";
+      next();
+    });
+    app.use("/api/status", createStatusRouter({ container, logger }));
+
+    const res = await request(app).get("/api/status");
+    const notifications = res.body.integrations.find((i: any) => i.name === "notifications");
+
+    expect(notifications.connected).toBe(true);
+    expect(notifications.detail).toBe("in-app (push misconfigured)");
+  });
 });

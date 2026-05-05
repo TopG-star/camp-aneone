@@ -96,10 +96,23 @@ export function createStatusRouter(deps: StatusRouteDeps): Router {
       });
 
       // Notifications
+      const pushFeatureEnabled = !!container.env.FEATURE_PUSH_NOTIFICATIONS;
+      const hasCompleteVapidConfig =
+        !!container.env.VAPID_PUBLIC_KEY &&
+        !!container.env.VAPID_PRIVATE_KEY &&
+        !!container.env.VAPID_SUBJECT;
+
+      let notificationsDetail = "in-app";
+      if (pushFeatureEnabled && hasCompleteVapidConfig) {
+        notificationsDetail = "in-app + web-push";
+      } else if (pushFeatureEnabled) {
+        notificationsDetail = "in-app (push misconfigured)";
+      }
+
       integrations.push({
         name: "notifications",
         connected: true,
-        detail: "in-app",
+        detail: notificationsDetail,
       });
 
       res.json({
