@@ -10,7 +10,7 @@ import { Zap, Check, X, AlertTriangle } from "lucide-react";
 import type { ActionsListResponse } from "@oneon/contracts";
 import { getMotionDelayClass } from "@/lib/motion-utils";
 
-const STATUS_OPTIONS = ["all", "proposed", "approved", "executed", "rejected"] as const;
+const STATUS_OPTIONS = ["all", "proposed", "approved", "executed", "rejected", "rolled_back"] as const;
 
 function statusVariant(s: string) {
   switch (s) {
@@ -21,9 +21,28 @@ function statusVariant(s: string) {
       return "success" as const;
     case "rejected":
       return "error" as const;
+    case "rolled_back":
+      return "default" as const;
     default:
       return "default" as const;
   }
+}
+
+function executionStatusVariant(s: string) {
+  switch (s) {
+    case "failed":
+      return "error" as const;
+    case "succeeded":
+      return "success" as const;
+    case "running":
+      return "warning" as const;
+    default:
+      return "default" as const;
+  }
+}
+
+function toLabel(value: string): string {
+  return value.replace(/_/g, " ");
 }
 
 export default function ActionsPage() {
@@ -38,7 +57,7 @@ export default function ActionsPage() {
   const { data, error, isLoading, mutate } = useActions(query);
   const response = data as ActionsListResponse | undefined;
 
-  const handleAction = async (id: string, type: "approve" | "reject") => {
+  const handleAction = async (id: string, type: "approve" | "reject" | "retry-execution") => {
     try {
       await apiFetch(`/api/actions/${id}/${type}`, { method: "POST" });
       mutate();
@@ -58,7 +77,7 @@ export default function ActionsPage() {
           Action Center
         </h1>
         <p className="page-copy">
-          Review, validate, and execute agent-proposed actions.
+          Review and authorize agent-proposed actions.
         </p>
       </div>
 
@@ -123,14 +142,17 @@ export default function ActionsPage() {
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                       <CardTitle className="flex items-center gap-2">
                         <Zap className="h-4 w-4" />
-                        {action.actionType.replace(/_/g, " ")}
+                        {toLabel(action.actionType)}
                       </CardTitle>
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge variant={statusVariant(action.status)}>
-                          {action.status}
+                          Lifecycle: {toLabel(action.status)}
+                        </Badge>
+                        <Badge variant={executionStatusVariant(action.executionStatus)}>
+                          Execution: {toLabel(action.executionStatus)}
                         </Badge>
                         {action.riskLevel === "approval_required" && (
-                          <Badge variant="warning">Approval Required</Badge>
+                          <Badge variant="warning">Risk: Approval Required</Badge>
                         )}
                       </div>
                     </div>
@@ -149,6 +171,16 @@ export default function ActionsPage() {
                         {formatPayload(action.payloadJson)}
                       </pre>
                     </div>
+                    {action.executionStatus === "failed" && action.errorJson && (
+                      <div className="rounded-eight border border-red-500/20 bg-red-500/10 p-4 dark:border-red-400/25 dark:bg-red-500/15">
+                        <p className="panel-eyebrow text-red-700 dark:text-red-300">
+                          Execution Error
+                        </p>
+                        <pre className="text-sm text-red-700/90 dark:text-red-200 overflow-x-auto whitespace-pre-wrap">
+                          {formatPayload(action.errorJson)}
+                        </pre>
+                      </div>
+                    )}
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <p className="text-label-sm meta-copy">
                         Created{" "}
@@ -177,7 +209,19 @@ export default function ActionsPage() {
                             onClick={() => handleAction(action.id, "approve")}
                           >
                             <Check className="h-4 w-4" />
-                            Confirm Execution
+                            Approve
+                          </Button>
+                        </div>
+                      )}
+                      {action.status === "approved" && action.executionStatus === "failed" && (
+                        <div className="flex w-full gap-2 sm:w-auto">
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            className="flex-1 sm:flex-none"
+                            onClick={() => handleAction(action.id, "retry-execution")}
+                          >
+                            Retry Execution
                           </Button>
                         </div>
                       )}
