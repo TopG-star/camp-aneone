@@ -68,6 +68,7 @@ export function createCycleRouter(deps: CycleRouteDeps): Router {
             userId: e.userId,
             message: e.message,
             actionId: null,
+            actionHref: null,
           }))
         : [];
 
@@ -83,6 +84,7 @@ export function createCycleRouter(deps: CycleRouteDeps): Router {
           userId: a.userId,
           message: readErrorMessage(a.errorJson),
           actionId: a.id,
+          actionHref: `/actions#action-${a.id}`,
         }));
 
       const combined = [...failedActionErrors, ...loopErrors]

@@ -126,12 +126,14 @@ describe("GET /api/cycle/errors", () => {
       scope: "action",
       actionId: "act-1",
       message: "SMTP timeout",
+      actionHref: "/actions#action-act-1",
     });
     expect(res.body.errors[1]).toMatchObject({
       component: "classifier",
       stage: "classify",
       scope: "global",
       actionId: null,
+      actionHref: null,
     });
   });
 

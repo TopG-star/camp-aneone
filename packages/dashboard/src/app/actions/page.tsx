@@ -136,6 +136,7 @@ export default function ActionsPage() {
               {response.actions.map((action, index) => (
                 <Card
                   key={action.id}
+                  id={`action-${action.id}`}
                   className={`motion-rise-in-soft ${getMotionDelayClass(index + 2)}`}
                 >
                   <CardHeader>

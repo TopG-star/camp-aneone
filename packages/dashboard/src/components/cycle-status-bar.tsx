@@ -22,6 +22,7 @@ interface CycleErrorItem {
   userId: string | null;
   message: string;
   actionId: string | null;
+  actionHref: string | null;
 }
 
 interface CycleErrorsResponse {
@@ -183,7 +184,7 @@ export function CycleStatusBar() {
                       {entry.scope === "action" && entry.actionId && (
                         <div className="mt-2 flex flex-wrap items-center gap-2">
                           <a
-                            href={`/actions#action-${entry.actionId}`}
+                            href={entry.actionHref ?? `/actions#action-${entry.actionId}`}
                             className="text-label-sm font-medium text-on-surface underline-offset-4 hover:underline dark:text-dark-on-surface"
                           >
                             Open action
