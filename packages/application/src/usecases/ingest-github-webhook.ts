@@ -39,14 +39,13 @@ export function ingestGitHubWebhook(
 ): IngestGitHubWebhookResult {
   const { inboundItemRepo, logger } = deps;
 
-  const existing = inboundItemRepo.findBySourceAndExternalId(
-    "github",
-    payload.externalId,
-  );
+  const userId = deps.resolveUserId?.() ?? null;
+
+  const existing = userId
+    ? inboundItemRepo.findBySourceAndExternalId("github", payload.externalId, userId)
+    : inboundItemRepo.findBySourceAndExternalId("github", payload.externalId);
 
   const subject = `[${payload.repo}] ${payload.eventType === "pull_request" ? "PR" : "Issue"} #${payload.number}: ${payload.title}`;
-
-  const userId = deps.resolveUserId?.() ?? null;
 
   const item = inboundItemRepo.upsert({
     userId,

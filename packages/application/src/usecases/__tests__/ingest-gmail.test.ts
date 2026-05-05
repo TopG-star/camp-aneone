@@ -248,6 +248,19 @@ describe("ingestGmail", () => {
     expect(inboundItemRepo.upsert).toHaveBeenCalledTimes(1);
   });
 
+  it("uses userId in duplicate existence lookup", async () => {
+    const items = [makeInboundItemCreate("ext-1")];
+    (ingestionPort.fetchNew as ReturnType<typeof vi.fn>).mockResolvedValue(items);
+
+    await run();
+
+    expect(inboundItemRepo.findBySourceAndExternalId).toHaveBeenCalledWith(
+      "gmail",
+      "ext-1",
+      "test-user"
+    );
+  });
+
   it("counts and logs individual upsert errors", async () => {
     const items = [makeInboundItemCreate("ext-1"), makeInboundItemCreate("ext-2")];
     (ingestionPort.fetchNew as ReturnType<typeof vi.fn>).mockResolvedValue(items);
