@@ -8,11 +8,7 @@ export interface ActionLogRepository {
   updateStatus(
     id: string,
     status: ActionStatus,
-    data?: {
-      resultJson?: string | null;
-      errorJson?: string | null;
-      rollbackJson?: string | null;
-    }
+    data?: { resultJson?: string; errorJson?: string; rollbackJson?: string }
   ): void;
   findAll(options: {
     status?: ActionStatus;

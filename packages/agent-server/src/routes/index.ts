@@ -358,7 +358,6 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       actionLogRepo: container.actionLogRepo,
       inboundItemRepo: container.inboundItemRepo,
       logger: actionsLogger,
-      manualExecuteRequired: env.FEATURE_MANUAL_EXECUTE_REQUIRED,
     }),
   );
   actionsLogger.info("Actions routes registered at /api/actions");
@@ -400,7 +399,6 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     ...userAuth,
     createCycleRouter({
       getBackgroundLoop: () => container.backgroundLoop ?? null,
-      actionLogRepo: container.actionLogRepo,
       logger: cycleLogger,
     }),
   );

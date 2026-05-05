@@ -87,9 +87,9 @@ export class SqliteActionLogRepository implements ActionLogRepository {
     id: string,
     status: ActionStatus,
     data?: {
-      resultJson?: string | null;
-      errorJson?: string | null;
-      rollbackJson?: string | null;
+      resultJson?: string;
+      errorJson?: string;
+      rollbackJson?: string;
     }
   ): void {
     // Enforce state machine: fetch current status and validate transition
@@ -98,20 +98,12 @@ export class SqliteActionLogRepository implements ActionLogRepository {
       throw new Error(`ActionLogEntry not found: ${id}`);
     }
 
-    const isMetadataOnlyUpdate =
-      current.status === status &&
-      (data?.resultJson !== undefined ||
-        data?.errorJson !== undefined ||
-        data?.rollbackJson !== undefined);
-
-    if (!isMetadataOnlyUpdate) {
-      const allowed =
-        SqliteActionLogRepository.VALID_TRANSITIONS[current.status] ?? [];
-      if (!allowed.includes(status)) {
-        throw new Error(
-          `Invalid status transition: ${current.status} → ${status} (allowed: ${allowed.join(", ") || "none"})`
-        );
-      }
+    const allowed =
+      SqliteActionLogRepository.VALID_TRANSITIONS[current.status] ?? [];
+    if (!allowed.includes(status)) {
+      throw new Error(
+        `Invalid status transition: ${current.status} → ${status} (allowed: ${allowed.join(", ") || "none"})`
+      );
     }
 
     const sets = ["status = ?", "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"];

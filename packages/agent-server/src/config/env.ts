@@ -99,10 +99,6 @@ const envSchema = z.object({
     .string()
     .transform((v) => v === "true")
     .default("false"),
-  FEATURE_MANUAL_EXECUTE_REQUIRED: z
-    .string()
-    .transform((v) => v === "true")
-    .default("false"),
   FEATURE_PUSH_NOTIFICATIONS: z
     .string()
     .transform((v) => v === "true")

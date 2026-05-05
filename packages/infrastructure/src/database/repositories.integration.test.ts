@@ -692,29 +692,6 @@ describe("SqliteActionLogRepository", () => {
     expect(found!.resultJson).toBe('{"ok":true}');
   });
 
-  it("allows metadata-only update on same status", () => {
-    const entry = repo.create({
-      userId: null,
-      resourceId: "item-1",
-      actionType: "archive",
-      riskLevel: "approval_required",
-      status: "proposed",
-      payloadJson: "{}",
-      resultJson: null,
-      errorJson: null,
-      rollbackJson: null,
-    });
-
-    repo.updateStatus(entry.id, "approved" as any);
-    repo.updateStatus(entry.id, "approved" as any, {
-      errorJson: '{"message":"execution failed"}',
-    });
-
-    const found = repo.findByResourceAndType("item-1", "archive" as any);
-    expect(found!.status).toBe("approved");
-    expect(found!.errorJson).toBe('{"message":"execution failed"}');
-  });
-
   it("state machine rejects invalid transition: proposed → executed", () => {
     const entry = repo.create({
       userId: null,
