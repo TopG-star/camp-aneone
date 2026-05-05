@@ -228,6 +228,30 @@ describe("POST /api/webhooks/outlook", () => {
       expect(res.body.status).toBe("updated");
     });
 
+    it("propagates resolveUserId to existence lookup", async () => {
+      const scopedApp = buildApp({
+        inboundItemRepo: repo,
+        webhookSecret: WEBHOOK_SECRET,
+        logger,
+        resolveUserId: () => "user-A",
+      });
+
+      const body = JSON.stringify(VALID_PAYLOAD);
+      const sig = sign(body);
+
+      await request(scopedApp)
+        .post("/api/webhooks/outlook")
+        .set("X-Webhook-Signature", sig)
+        .set("Content-Type", "application/json")
+        .send(body);
+
+      expect(repo.findBySourceAndExternalId).toHaveBeenCalledWith(
+        "outlook",
+        "AAMkAGI123",
+        "user-A"
+      );
+    });
+
     it("handles Graph-style from object", async () => {
       const payloadWithGraphFrom = {
         ...VALID_PAYLOAD,

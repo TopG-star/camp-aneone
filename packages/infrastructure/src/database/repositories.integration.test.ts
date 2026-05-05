@@ -128,7 +128,7 @@ describe("SqliteInboundItemRepository", () => {
   });
 
   it("findBySourceAndExternalId returns null for missing", () => {
-    const found = repo.findBySourceAndExternalId("gmail" as Source, "nope");
+    const found = repo.findBySourceAndExternalId("gmail" as Source, "nope", null);
     expect(found).toBeNull();
   });
 

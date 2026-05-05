@@ -34,9 +34,7 @@ export function ingestTeamsWebhook(
 
   const userId = deps.resolveUserId?.() ?? null;
 
-  const existing = userId
-    ? inboundItemRepo.findBySourceAndExternalId("teams", payload.id, userId)
-    : inboundItemRepo.findBySourceAndExternalId("teams", payload.id);
+  const existing = inboundItemRepo.findBySourceAndExternalId("teams", payload.id, userId);
 
   const labels: string[] = [];
   if (payload.teamName) labels.push(payload.teamName);

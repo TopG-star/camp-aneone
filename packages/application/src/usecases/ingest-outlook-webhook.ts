@@ -38,9 +38,7 @@ export function ingestOutlookWebhook(
   const userId = deps.resolveUserId?.() ?? null;
 
   // Check if this item already exists (for wasCreated flag)
-  const existing = userId
-    ? inboundItemRepo.findBySourceAndExternalId("outlook", payload.id, userId)
-    : inboundItemRepo.findBySourceAndExternalId("outlook", payload.id);
+  const existing = inboundItemRepo.findBySourceAndExternalId("outlook", payload.id, userId);
 
   const item = inboundItemRepo.upsert({
     userId,

@@ -57,9 +57,7 @@ export class SqliteInboundItemRepository implements InboundItemRepository {
         now
       );
 
-    return item.userId
-      ? this.findBySourceAndExternalId(item.source, item.externalId, item.userId)!
-      : this.findBySourceAndExternalId(item.source, item.externalId)!;
+    return this.findBySourceAndExternalId(item.source, item.externalId, item.userId)!;
   }
 
   findById(id: string): InboundItem | null {
@@ -72,15 +70,19 @@ export class SqliteInboundItemRepository implements InboundItemRepository {
   findBySourceAndExternalId(
     source: Source,
     externalId: string,
-    userId?: string
+    userId: string | null
   ): InboundItem | null {
-    let sql = "SELECT * FROM inbound_items WHERE source = ? AND external_id = ?";
-    const params: unknown[] = [source, externalId];
-    if (userId) {
-      sql += " AND user_id = ?";
-      params.push(userId);
-    }
-    const row = this.db.prepare(sql).get(...params) as RawInboundItem | undefined;
+    const row = userId
+      ? (this.db
+          .prepare(
+            "SELECT * FROM inbound_items WHERE source = ? AND external_id = ? AND user_id = ?"
+          )
+          .get(source, externalId, userId) as RawInboundItem | undefined)
+      : (this.db
+          .prepare(
+            "SELECT * FROM inbound_items WHERE source = ? AND external_id = ? AND user_id IS NULL"
+          )
+          .get(source, externalId) as RawInboundItem | undefined);
     return row ? mapRow(row) : null;
   }
 

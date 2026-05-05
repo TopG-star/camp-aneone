@@ -104,6 +104,7 @@ describe("ingestGitHubWebhook", () => {
     expect(repo.findBySourceAndExternalId).toHaveBeenCalledWith(
       "github",
       "pr:octocat/hello-world#42",
+      null,
     );
   });
 
