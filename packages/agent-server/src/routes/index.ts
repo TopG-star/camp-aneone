@@ -400,6 +400,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     ...userAuth,
     createCycleRouter({
       getBackgroundLoop: () => container.backgroundLoop ?? null,
+      actionLogRepo: container.actionLogRepo,
       logger: cycleLogger,
     }),
   );

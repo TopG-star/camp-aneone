@@ -55,6 +55,14 @@ export function useCycleStatus(config?: SWRConfiguration) {
   });
 }
 
+/** Cycle errors drill-down — refresh every 10s */
+export function useCycleErrors(limit = 25, config?: SWRConfiguration) {
+  return useSWR(`/api/cycle/errors?limit=${limit}`, fetcher, {
+    refreshInterval: 10_000,
+    ...config,
+  });
+}
+
 /** Integration status — refresh every 60s */
 export function useStatus(config?: SWRConfiguration) {
   return useSWR("/api/status", fetcher, {
