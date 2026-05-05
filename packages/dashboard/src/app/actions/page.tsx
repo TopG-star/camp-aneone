@@ -1,13 +1,13 @@
 "use client";
 
-import { useState } from "react";
-import { useActions } from "@/lib/hooks";
+import { useEffect, useMemo, useState } from "react";
+import { useAction, useActions } from "@/lib/hooks";
 import { apiFetch } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Zap, Check, X, AlertTriangle } from "lucide-react";
-import type { ActionsListResponse } from "@oneon/contracts";
+import type { ActionItemResponse, ActionResponse, ActionsListResponse } from "@oneon/contracts";
 import { getMotionDelayClass } from "@/lib/motion-utils";
 
 const STATUS_OPTIONS = ["all", "proposed", "approved", "executed", "rejected", "rolled_back"] as const;
@@ -48,6 +48,7 @@ function toLabel(value: string): string {
 export default function ActionsPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [offset, setOffset] = useState(0);
+  const [targetActionId, setTargetActionId] = useState<string | null>(null);
   const limit = 25;
 
   const queryParts: string[] = [`limit=${limit}`, `offset=${offset}`];
@@ -55,7 +56,38 @@ export default function ActionsPage() {
   const query = queryParts.join("&");
 
   const { data, error, isLoading, mutate } = useActions(query);
+  const { data: targetData } = useAction(targetActionId);
   const response = data as ActionsListResponse | undefined;
+  const targetAction = targetData as ActionResponse | undefined;
+
+  useEffect(() => {
+    const syncTargetFromHash = () => {
+      const hash = window.location.hash;
+      if (!hash.startsWith("#action-")) {
+        setTargetActionId(null);
+        return;
+      }
+
+      const id = hash.slice("#action-".length).trim();
+      setTargetActionId(id.length > 0 ? id : null);
+    };
+
+    syncTargetFromHash();
+    window.addEventListener("hashchange", syncTargetFromHash);
+    return () => {
+      window.removeEventListener("hashchange", syncTargetFromHash);
+    };
+  }, []);
+
+  const linkedActionOutsideCurrentPage =
+    !!response && !!targetAction && !response.actions.some((a) => a.id === targetAction.id);
+
+  const renderedActions = useMemo(() => {
+    if (!response) return [] as ActionItemResponse[];
+    if (!targetAction) return response.actions;
+    if (response.actions.some((a) => a.id === targetAction.id)) return response.actions;
+    return [targetAction, ...response.actions];
+  }, [response, targetAction]);
 
   const handleAction = async (id: string, type: "approve" | "reject" | "retry-execution") => {
     try {
@@ -122,7 +154,7 @@ export default function ActionsPage() {
 
       {response && (
         <>
-          {response.actions.length === 0 ? (
+          {renderedActions.length === 0 ? (
             <Card>
               <CardContent className="state-content state-content-center py-10">
                 <Zap className="state-icon" />
@@ -133,11 +165,23 @@ export default function ActionsPage() {
             </Card>
           ) : (
             <div className="space-y-3 md:space-y-4">
-              {response.actions.map((action, index) => (
+              {linkedActionOutsideCurrentPage && (
+                <Card className="border-amber-500/35 bg-amber-500/10 dark:border-amber-400/40 dark:bg-amber-500/15">
+                  <CardContent className="py-3 text-label-sm text-amber-900 dark:text-amber-100">
+                    Linked action loaded outside current page/filter.
+                  </CardContent>
+                </Card>
+              )}
+
+              {renderedActions.map((action, index) => (
                 <Card
                   key={action.id}
                   id={`action-${action.id}`}
-                  className={`motion-rise-in-soft ${getMotionDelayClass(index + 2)}`}
+                  className={`motion-rise-in-soft ${getMotionDelayClass(index + 2)} ${
+                    action.id === targetActionId
+                      ? "ring-1 ring-amber-500/45 dark:ring-amber-300/45"
+                      : ""
+                  }`}
                 >
                   <CardHeader>
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -238,7 +282,7 @@ export default function ActionsPage() {
             className={`motion-rise-in-soft flex flex-col gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between ${getMotionDelayClass(3)}`}
           >
             <p className="text-label-md meta-copy">
-              Showing {offset + 1}–{Math.min(offset + limit, response.pagination.total)} of{" "}
+              Showing {response.pagination.total === 0 ? 0 : offset + 1}–{Math.min(offset + limit, response.pagination.total)} of{" "}
               {response.pagination.total}
             </p>
             <div className="flex w-full gap-2 sm:w-auto">

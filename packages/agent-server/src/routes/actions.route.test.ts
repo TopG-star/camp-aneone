@@ -151,6 +151,42 @@ describe("GET /api/actions", () => {
   });
 });
 
+describe("GET /api/actions/:id", () => {
+  it("returns one enriched action by id", async () => {
+    const action = makeAction({ id: "act-100", status: "approved", errorJson: '{"message":"boom"}' });
+    const item = makeItem({ id: "item-001", subject: "Escalated follow-up" });
+    vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
+    vi.mocked(inboundItemRepo.findById).mockReturnValue(item);
+
+    const res = await request(app).get("/api/actions/act-100");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: "act-100",
+      status: "approved",
+      executionStatus: "failed",
+      itemSubject: "Escalated follow-up",
+    });
+  });
+
+  it("returns 404 when action does not exist", async () => {
+    vi.mocked(actionLogRepo.findAll).mockReturnValue([]);
+
+    const res = await request(app).get("/api/actions/missing");
+    expect(res.status).toBe(404);
+  });
+
+  it("scopes lookup to authenticated user", async () => {
+    const action = makeAction({ id: "act-200", userId: "user-A" });
+    vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
+
+    const res = await request(app).get("/api/actions/act-200");
+    expect(res.status).toBe(200);
+    expect(actionLogRepo.findAll).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "user-A" }),
+    );
+  });
+});
+
 describe("POST /api/actions/:id/approve", () => {
   it("approves and immediately executes when manual execute is not required", async () => {
     const action = makeAction({ id: "act-001", status: "proposed" });

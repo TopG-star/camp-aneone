@@ -46,6 +46,12 @@ export const ActionItemResponseSchema = z.object({
 
 export type ActionItemResponse = z.infer<typeof ActionItemResponseSchema>;
 
+// ── Single Action Response (GET /api/actions/:id) ───────────
+
+export const ActionResponseSchema = ActionItemResponseSchema;
+
+export type ActionResponse = z.infer<typeof ActionResponseSchema>;
+
 // ── Actions List Response ────────────────────────────────────
 
 export const ActionsListResponseSchema = z.object({

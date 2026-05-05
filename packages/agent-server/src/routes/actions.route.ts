@@ -50,20 +50,7 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
 
       const enriched = actions.map((a) => {
         const item = inboundItemRepo.findById(a.resourceId);
-        return {
-          id: a.id,
-          resourceId: a.resourceId,
-          actionType: a.actionType,
-          riskLevel: a.riskLevel,
-          status: a.status,
-          executionStatus: deriveExecutionStatus(a),
-          payloadJson: a.payloadJson,
-          resultJson: a.resultJson,
-          errorJson: a.errorJson,
-          createdAt: a.createdAt,
-          updatedAt: a.updatedAt,
-          itemSubject: item?.subject ?? null,
-        };
+        return toActionResponse(a, item?.subject ?? null);
       });
 
       res.json({
@@ -77,6 +64,28 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
       });
     } catch (error) {
       logger.error("Failed to fetch actions", { error: error instanceof Error ? error.message : String(error) });
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // ── GET /:id — Single action detail for deep-link fallback ─
+  router.get("/:id", (req, res) => {
+    try {
+      const userId = req.userId!;
+      const actions = actionLogRepo.findAll({ limit: 1000, userId });
+      const action = actions.find((a) => a.id === req.params.id);
+      if (!action) {
+        res.status(404).json({ error: "Action not found" });
+        return;
+      }
+
+      const item = inboundItemRepo.findById(action.resourceId);
+      res.json(toActionResponse(action, item?.subject ?? null));
+    } catch (error) {
+      logger.error("Failed to fetch action", {
+        actionId: req.params.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       res.status(500).json({ error: "Internal server error" });
     }
   });
@@ -199,6 +208,23 @@ function deriveExecutionStatus(action: Pick<ActionLogEntry, "status" | "resultJs
   }
 
   return "not_started";
+}
+
+function toActionResponse(action: ActionLogEntry, itemSubject: string | null) {
+  return {
+    id: action.id,
+    resourceId: action.resourceId,
+    actionType: action.actionType,
+    riskLevel: action.riskLevel,
+    status: action.status,
+    executionStatus: deriveExecutionStatus(action),
+    payloadJson: action.payloadJson,
+    resultJson: action.resultJson,
+    errorJson: action.errorJson,
+    createdAt: action.createdAt,
+    updatedAt: action.updatedAt,
+    itemSubject,
+  };
 }
 
 function executeApprovedAction(
