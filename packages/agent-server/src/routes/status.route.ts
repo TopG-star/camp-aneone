@@ -76,6 +76,13 @@ export function createStatusRouter(deps: StatusRouteDeps): Router {
         detail: container.calendarPort ? "connected" : "not configured",
       });
 
+      // Teams
+      integrations.push({
+        name: "teams",
+        connected: !!container.teamsPort,
+        detail: container.teamsPort ? "local search active" : "not configured",
+      });
+
       // LLM
       const llmProvider = container.env.LLM_PROVIDER;
       const llmConnected =

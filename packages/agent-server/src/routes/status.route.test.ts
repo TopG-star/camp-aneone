@@ -26,6 +26,7 @@ beforeEach(() => {
       LLM_PROVIDER: "anthropic",
     },
     calendarPort: { listEvents: vi.fn() },
+    teamsPort: { searchMessages: vi.fn() },
     oauthTokenRepo: null,
     userRepo: null,
   } as unknown as AppContainer;
@@ -39,7 +40,7 @@ describe("GET /api/status", () => {
   it("returns integration statuses", async () => {
     const res = await request(app).get("/api/status");
     expect(res.status).toBe(200);
-    expect(res.body.integrations).toHaveLength(5);
+    expect(res.body.integrations).toHaveLength(6);
     expect(res.body).toHaveProperty("uptime");
 
     const gmail = res.body.integrations.find((i: any) => i.name === "gmail");
@@ -55,12 +56,17 @@ describe("GET /api/status", () => {
 
     const llm = res.body.integrations.find((i: any) => i.name === "llm");
     expect(llm.connected).toBe(true);
+
+    const teams = res.body.integrations.find((i: any) => i.name === "teams");
+    expect(teams.connected).toBe(true);
+    expect(teams.detail).toBe("local search active");
   });
 
   it("shows disconnected when tokens missing", async () => {
     container = {
       env: { LLM_PROVIDER: "anthropic" },
       calendarPort: null,
+      teamsPort: null,
       oauthTokenRepo: null,
       userRepo: null,
     } as unknown as AppContainer;
@@ -74,6 +80,10 @@ describe("GET /api/status", () => {
 
     const calendar = res.body.integrations.find((i: any) => i.name === "calendar");
     expect(calendar.connected).toBe(false);
+
+    const teams = res.body.integrations.find((i: any) => i.name === "teams");
+    expect(teams.connected).toBe(false);
+    expect(teams.detail).toBe("not configured");
   });
 
   it("shows db source when oauthTokenRepo has tokens", async () => {
