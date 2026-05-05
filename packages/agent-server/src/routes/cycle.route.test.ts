@@ -182,6 +182,55 @@ describe("GET /api/cycle/errors", () => {
     expect(res.status).toBe(200);
     expect(res.body.errors).toHaveLength(1);
   });
+
+  it("filters by component, stage, and scope", async () => {
+    const now = new Date().toISOString();
+    const older = new Date(Date.now() - 60_000).toISOString();
+
+    vi.mocked(loop!.getRecentErrors).mockReturnValue([
+      {
+        id: "loop-1",
+        occurredAt: older,
+        component: "classifier",
+        stage: "classify",
+        userId: "test-user",
+        message: "classifier failure",
+      },
+    ]);
+
+    vi.mocked(actionLogRepo.findAll).mockReturnValue([
+      {
+        id: "act-1",
+        userId: "test-user",
+        resourceId: "item-1",
+        actionType: "archive",
+        riskLevel: "approval_required",
+        status: "approved",
+        payloadJson: "{}",
+        resultJson: null,
+        errorJson: '{"message":"SMTP timeout"}',
+        rollbackJson: null,
+        createdAt: older,
+        updatedAt: now,
+      },
+    ] as any);
+
+    const res = await request(app).get(
+      "/api/cycle/errors?component=actions&stage=execute&scope=action",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.errors).toHaveLength(1);
+    expect(res.body.errors[0]).toMatchObject({
+      component: "actions",
+      stage: "execute",
+      scope: "action",
+    });
+  });
+
+  it("returns 400 for invalid scope query", async () => {
+    const res = await request(app).get("/api/cycle/errors?scope=invalid");
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("POST /api/cycle/run-now", () => {
