@@ -39,6 +39,11 @@ export function useActions(query?: string, config?: SWRConfiguration) {
   });
 }
 
+/** Action detail for deep-link fallback */
+export function useAction(id: string | null, config?: SWRConfiguration) {
+  return useSWR(id ? `/api/actions/${id}` : null, fetcher, config);
+}
+
 /** Notifications — refresh every 15s */
 export function useNotifications(config?: SWRConfiguration) {
   return useSWR("/api/notifications", fetcher, {
