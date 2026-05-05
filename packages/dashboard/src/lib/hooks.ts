@@ -61,8 +61,22 @@ export function useCycleStatus(config?: SWRConfiguration) {
 }
 
 /** Cycle errors drill-down — refresh every 10s */
-export function useCycleErrors(limit = 25, config?: SWRConfiguration) {
-  return useSWR(`/api/cycle/errors?limit=${limit}`, fetcher, {
+export function useCycleErrors(
+  options?: {
+    limit?: number;
+    component?: string | null;
+    stage?: string | null;
+    scope?: "global" | "action" | null;
+  },
+  config?: SWRConfiguration,
+) {
+  const params = new URLSearchParams();
+  params.set("limit", String(options?.limit ?? 25));
+  if (options?.component) params.set("component", options.component);
+  if (options?.stage) params.set("stage", options.stage);
+  if (options?.scope) params.set("scope", options.scope);
+
+  return useSWR(`/api/cycle/errors?${params.toString()}`, fetcher, {
     refreshInterval: 10_000,
     ...config,
   });

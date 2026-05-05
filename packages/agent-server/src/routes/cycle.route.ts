@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { BackgroundLoop } from "../background-loop.js";
 import type { ActionLogRepository, Logger } from "@oneon/domain";
+import { CycleErrorsQuerySchema } from "@oneon/contracts";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -49,13 +50,20 @@ export function createCycleRouter(deps: CycleRouteDeps): Router {
   // ── GET /errors — Recent cycle/action errors for drill-down ─
   router.get("/errors", (req, res) => {
     try {
+      const parsedQuery = CycleErrorsQuerySchema.safeParse(req.query);
+      if (!parsedQuery.success) {
+        res.status(400).json({ error: "Invalid query parameters", details: parsedQuery.error.format() });
+        return;
+      }
+
       const userId = req.userId;
       if (!userId) {
         res.status(401).json({ error: "User not authenticated" });
         return;
       }
 
-      const limit = clampLimit(req.query.limit);
+      const { component, stage, scope } = parsedQuery.data;
+      const limit = parsedQuery.data.limit ?? 25;
       const loop = getBackgroundLoop();
 
       const loopErrors = loop
@@ -88,6 +96,12 @@ export function createCycleRouter(deps: CycleRouteDeps): Router {
         }));
 
       const combined = [...failedActionErrors, ...loopErrors]
+        .filter((error) => {
+          if (component && error.component !== component) return false;
+          if (stage && error.stage !== stage) return false;
+          if (scope && error.scope !== scope) return false;
+          return true;
+        })
         .sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt))
         .slice(0, limit);
 
@@ -137,12 +151,6 @@ export function createCycleRouter(deps: CycleRouteDeps): Router {
   });
 
   return router;
-}
-
-function clampLimit(rawLimit: unknown): number {
-  const parsed = Number(rawLimit);
-  if (!Number.isFinite(parsed)) return 25;
-  return Math.min(100, Math.max(1, Math.trunc(parsed)));
 }
 
 function readErrorMessage(errorJson: string | null): string {

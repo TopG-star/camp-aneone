@@ -37,7 +37,19 @@ interface CycleErrorGroup {
 
 export function CycleStatusBar() {
   const { data, error, mutate } = useCycleStatus();
-  const { data: errorsData, mutate: mutateErrors } = useCycleErrors(25);
+  const [componentFilter, setComponentFilter] = useState("");
+  const [stageFilter, setStageFilter] = useState("");
+  const [scopeFilter, setScopeFilter] = useState<"all" | "global" | "action">("all");
+  const cycleErrorFilters = useMemo(
+    () => ({
+      limit: 25,
+      component: componentFilter.trim() || null,
+      stage: stageFilter.trim() || null,
+      scope: scopeFilter === "all" ? null : scopeFilter,
+    }),
+    [componentFilter, stageFilter, scopeFilter],
+  );
+  const { data: errorsData, mutate: mutateErrors } = useCycleErrors(cycleErrorFilters);
   const status = data as CycleStatus | undefined;
   const cycleErrors = (errorsData as CycleErrorsResponse | undefined)?.errors ?? [];
   const groupedErrors = useMemo(() => groupCycleErrors(cycleErrors), [cycleErrors]);
@@ -158,9 +170,42 @@ export function CycleStatusBar() {
           </div>
 
           <div className="max-h-[24rem] space-y-3 overflow-y-auto pr-1">
+            <div className="grid grid-cols-1 gap-2 rounded-eight border border-outline-variant/30 bg-surface-low p-3 sm:grid-cols-3 dark:border-dark-outline-variant/30 dark:bg-dark-surface-low">
+              <label className="text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                Component
+                <input
+                  value={componentFilter}
+                  onChange={(event) => setComponentFilter(event.target.value)}
+                  placeholder="e.g. actions"
+                  className="mt-1 w-full rounded-six border border-outline-variant/40 bg-surface-lowest px-2 py-1 text-label-sm text-on-surface outline-none focus:border-outline dark:border-dark-outline-variant/40 dark:bg-dark-surface-container dark:text-dark-on-surface dark:focus:border-dark-outline"
+                />
+              </label>
+              <label className="text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                Stage
+                <input
+                  value={stageFilter}
+                  onChange={(event) => setStageFilter(event.target.value)}
+                  placeholder="e.g. execute"
+                  className="mt-1 w-full rounded-six border border-outline-variant/40 bg-surface-lowest px-2 py-1 text-label-sm text-on-surface outline-none focus:border-outline dark:border-dark-outline-variant/40 dark:bg-dark-surface-container dark:text-dark-on-surface dark:focus:border-dark-outline"
+                />
+              </label>
+              <label className="text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                Scope
+                <select
+                  value={scopeFilter}
+                  onChange={(event) => setScopeFilter(event.target.value as "all" | "global" | "action")}
+                  className="mt-1 w-full rounded-six border border-outline-variant/40 bg-surface-lowest px-2 py-1 text-label-sm text-on-surface outline-none focus:border-outline dark:border-dark-outline-variant/40 dark:bg-dark-surface-container dark:text-dark-on-surface dark:focus:border-dark-outline"
+                >
+                  <option value="all">all</option>
+                  <option value="global">global</option>
+                  <option value="action">action</option>
+                </select>
+              </label>
+            </div>
+
             {groupedErrors.length === 0 && (
               <p className="text-label-sm text-on-surface-variant/80 dark:text-dark-on-surface-variant/80">
-                Waiting for detailed error telemetry...
+                No errors match current filters.
               </p>
             )}
 
