@@ -41,9 +41,7 @@ export function ingestGitHubWebhook(
 
   const userId = deps.resolveUserId?.() ?? null;
 
-  const existing = userId
-    ? inboundItemRepo.findBySourceAndExternalId("github", payload.externalId, userId)
-    : inboundItemRepo.findBySourceAndExternalId("github", payload.externalId);
+  const existing = inboundItemRepo.findBySourceAndExternalId("github", payload.externalId, userId);
 
   const subject = `[${payload.repo}] ${payload.eventType === "pull_request" ? "PR" : "Issue"} #${payload.number}: ${payload.title}`;
 

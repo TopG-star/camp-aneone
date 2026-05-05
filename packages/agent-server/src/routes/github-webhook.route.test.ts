@@ -280,6 +280,25 @@ describe("POST /api/webhooks/github", () => {
       );
     });
 
+    it("propagates resolveUserId to PR existence lookup", async () => {
+      const scopedApp = buildApp({
+        inboundItemRepo: repo,
+        webhookSecret: WEBHOOK_SECRET,
+        logger,
+        resolveUserId: () => "user-A",
+      });
+
+      await sendSigned(scopedApp, VALID_PR_PAYLOAD, {
+        eventType: "pull_request",
+      });
+
+      expect(repo.findBySourceAndExternalId).toHaveBeenCalledWith(
+        "github",
+        "pr:octocat/hello-world#42",
+        "user-A",
+      );
+    });
+
     it("accepts synchronize action", async () => {
       const payload = { ...VALID_PR_PAYLOAD, action: "synchronize" };
       const res = await sendSigned(app, payload, {
