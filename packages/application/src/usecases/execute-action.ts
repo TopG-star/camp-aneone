@@ -75,6 +75,7 @@ export function executeAction(
   const executedResult = JSON.stringify({ executedAt: new Date().toISOString(), mode: "auto" });
   actionLogRepo.updateStatus(action.id, "executed", {
     resultJson: executedResult,
+    errorJson: null,
   });
 
   logger.info("Action auto-executed", {

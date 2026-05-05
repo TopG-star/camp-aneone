@@ -1,5 +1,6 @@
 import { Router } from "express";
 import type {
+  ActionLogEntry,
   ActionLogRepository,
   InboundItemRepository,
   Logger,
@@ -12,13 +13,25 @@ export interface ActionsRouteDeps {
   actionLogRepo: ActionLogRepository;
   inboundItemRepo: InboundItemRepository;
   logger: Logger;
+  manualExecuteRequired?: boolean;
 }
+
+type ActionExecutionStatus =
+  | "not_started"
+  | "running"
+  | "succeeded"
+  | "failed";
 
 // ── Router ───────────────────────────────────────────────────
 
 export function createActionsRouter(deps: ActionsRouteDeps): Router {
   const router = Router();
-  const { actionLogRepo, inboundItemRepo, logger } = deps;
+  const {
+    actionLogRepo,
+    inboundItemRepo,
+    logger,
+    manualExecuteRequired = false,
+  } = deps;
 
   // ── GET / — Paginated action list ─────────────────────────
   router.get("/", (req, res) => {
@@ -43,6 +56,7 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
           actionType: a.actionType,
           riskLevel: a.riskLevel,
           status: a.status,
+          executionStatus: deriveExecutionStatus(a),
           payloadJson: a.payloadJson,
           resultJson: a.resultJson,
           errorJson: a.errorJson,
@@ -85,11 +99,62 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
         return;
       }
 
-      actionLogRepo.updateStatus(action.id, "approved");
+      actionLogRepo.updateStatus(action.id, "approved", { errorJson: null, resultJson: null });
       logger.info("Action approved", { actionId: action.id });
-      res.json({ id: action.id, status: "approved" });
+
+      if (manualExecuteRequired) {
+        res.json({
+          id: action.id,
+          status: "approved",
+          executionStatus: "running",
+        });
+        return;
+      }
+
+      const execution = executeApprovedAction(actionLogRepo, logger, action.id, "approve");
+      res.json({
+        id: action.id,
+        status: execution.status,
+        executionStatus: execution.executionStatus,
+        resultJson: execution.resultJson,
+        errorJson: execution.errorJson,
+      });
     } catch (error) {
       logger.error("Failed to approve action", { error: error instanceof Error ? error.message : String(error) });
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // ── POST /:id/retry-execution ───────────────────────────
+  router.post("/:id/retry-execution", (req, res) => {
+    try {
+      const userId = req.userId!;
+      const actions = actionLogRepo.findAll({ limit: 1000, userId });
+      const action = actions.find((a) => a.id === req.params.id);
+      if (!action) {
+        res.status(404).json({ error: "Action not found" });
+        return;
+      }
+
+      if (action.status !== "approved") {
+        res.status(409).json({
+          error: `Cannot retry execution for action in "${action.status}" status`,
+        });
+        return;
+      }
+
+      const execution = executeApprovedAction(actionLogRepo, logger, action.id, "retry");
+      res.json({
+        id: action.id,
+        status: execution.status,
+        executionStatus: execution.executionStatus,
+        resultJson: execution.resultJson,
+        errorJson: execution.errorJson,
+      });
+    } catch (error) {
+      logger.error("Failed to retry action execution", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       res.status(500).json({ error: "Internal server error" });
     }
   });
@@ -114,7 +179,7 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
 
       actionLogRepo.updateStatus(action.id, "rejected");
       logger.info("Action rejected", { actionId: action.id });
-      res.json({ id: action.id, status: "rejected" });
+      res.json({ id: action.id, status: "rejected", executionStatus: "not_started" });
     } catch (error) {
       logger.error("Failed to reject action", { error: error instanceof Error ? error.message : String(error) });
       res.status(500).json({ error: "Internal server error" });
@@ -122,4 +187,74 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
   });
 
   return router;
+}
+
+function deriveExecutionStatus(action: Pick<ActionLogEntry, "status" | "resultJson" | "errorJson">): ActionExecutionStatus {
+  if (action.status === "executed") return "succeeded";
+
+  if (action.status === "approved") {
+    if (action.errorJson) return "failed";
+    if (action.resultJson) return "succeeded";
+    return "running";
+  }
+
+  return "not_started";
+}
+
+function executeApprovedAction(
+  actionLogRepo: ActionLogRepository,
+  logger: Logger,
+  actionId: string,
+  reason: "approve" | "retry",
+): {
+  status: "approved" | "executed";
+  executionStatus: "failed" | "succeeded";
+  resultJson: string | null;
+  errorJson: string | null;
+} {
+  try {
+    const resultJson = JSON.stringify({
+      executedAt: new Date().toISOString(),
+      mode: "manual",
+      reason,
+    });
+
+    actionLogRepo.updateStatus(actionId, "executed", {
+      resultJson,
+      errorJson: null,
+    });
+
+    logger.info("Action executed from actions route", { actionId, reason });
+
+    return {
+      status: "executed",
+      executionStatus: "succeeded",
+      resultJson,
+      errorJson: null,
+    };
+  } catch (error) {
+    const errorJson = JSON.stringify({
+      message: error instanceof Error ? error.message : String(error),
+      attemptedAt: new Date().toISOString(),
+      reason,
+    });
+
+    actionLogRepo.updateStatus(actionId, "approved", {
+      errorJson,
+      resultJson: null,
+    });
+
+    logger.error("Action execution failed after approval", {
+      actionId,
+      reason,
+      error: error instanceof Error ? error.message : String(error),
+    });
+
+    return {
+      status: "approved",
+      executionStatus: "failed",
+      resultJson: null,
+      errorJson,
+    };
+  }
 }
