@@ -35,6 +35,16 @@ interface CycleErrorGroup {
   entries: CycleErrorItem[];
 }
 
+interface RetryExecutionResponse {
+  executionStatus: "succeeded" | "failed";
+  errorJson?: string | null;
+}
+
+interface RetryFeedback {
+  kind: "success" | "error";
+  message: string;
+}
+
 export function CycleStatusBar() {
   const { data, error, mutate } = useCycleStatus();
   const [componentFilter, setComponentFilter] = useState("");
@@ -55,6 +65,7 @@ export function CycleStatusBar() {
   const groupedErrors = useMemo(() => groupCycleErrors(cycleErrors), [cycleErrors]);
   const [isPanelOpen, setIsPanelOpen] = useState(false);
   const [retryingActionId, setRetryingActionId] = useState<string | null>(null);
+  const [retryFeedbackByActionId, setRetryFeedbackByActionId] = useState<Record<string, RetryFeedback>>({});
 
   const handleTrigger = async () => {
     try {
@@ -67,11 +78,41 @@ export function CycleStatusBar() {
 
   const handleRetryExecution = async (actionId: string) => {
     setRetryingActionId(actionId);
+    setRetryFeedbackByActionId((current) => {
+      const next = { ...current };
+      delete next[actionId];
+      return next;
+    });
+
     try {
-      await apiFetch(`/api/actions/${actionId}/retry-execution`, { method: "POST" });
+      const result = await apiFetch<RetryExecutionResponse>(`/api/actions/${actionId}/retry-execution`, { method: "POST" });
       await Promise.all([mutate(), mutateErrors()]);
-    } catch {
-      // swallow — failed retries are reflected by /api/cycle/errors polling
+
+      if (result.executionStatus === "succeeded") {
+        setRetryFeedbackByActionId((current) => ({
+          ...current,
+          [actionId]: {
+            kind: "success",
+            message: "Retry succeeded. Action executed.",
+          },
+        }));
+      } else {
+        setRetryFeedbackByActionId((current) => ({
+          ...current,
+          [actionId]: {
+            kind: "error",
+            message: parseRetryErrorMessage(result.errorJson),
+          },
+        }));
+      }
+    } catch (error) {
+      setRetryFeedbackByActionId((current) => ({
+        ...current,
+        [actionId]: {
+          kind: "error",
+          message: error instanceof Error ? error.message : "Retry request failed",
+        },
+      }));
     } finally {
       setRetryingActionId(null);
     }
@@ -227,21 +268,35 @@ export function CycleStatusBar() {
                         {formatRelative(entry.occurredAt)}
                       </p>
                       {entry.scope === "action" && entry.actionId && (
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <a
-                            href={entry.actionHref ?? `/actions#action-${entry.actionId}`}
-                            className="text-label-sm font-medium text-on-surface underline-offset-4 hover:underline dark:text-dark-on-surface"
-                          >
-                            Open action
-                          </a>
-                          <button
-                            type="button"
-                            disabled={retryingActionId === entry.actionId}
-                            onClick={() => void handleRetryExecution(entry.actionId!)}
-                            className="text-label-sm font-medium text-on-surface underline-offset-4 hover:underline disabled:cursor-not-allowed disabled:opacity-60 dark:text-dark-on-surface"
-                          >
-                            {retryingActionId === entry.actionId ? "Retrying..." : "Retry execution"}
-                          </button>
+                        <div className="mt-2 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <a
+                              href={entry.actionHref ?? `/actions#action-${entry.actionId}`}
+                              className="text-label-sm font-medium text-on-surface underline-offset-4 hover:underline dark:text-dark-on-surface"
+                            >
+                              Open action
+                            </a>
+                            <button
+                              type="button"
+                              disabled={retryingActionId === entry.actionId}
+                              onClick={() => void handleRetryExecution(entry.actionId!)}
+                              className="text-label-sm font-medium text-on-surface underline-offset-4 hover:underline disabled:cursor-not-allowed disabled:opacity-60 dark:text-dark-on-surface"
+                            >
+                              {retryingActionId === entry.actionId ? "Retrying..." : "Retry execution"}
+                            </button>
+                          </div>
+                          {retryFeedbackByActionId[entry.actionId] && (
+                            <p
+                              className={cn(
+                                "text-label-sm",
+                                retryFeedbackByActionId[entry.actionId].kind === "success"
+                                  ? "text-emerald-700 dark:text-emerald-300"
+                                  : "text-red-700 dark:text-red-300",
+                              )}
+                            >
+                              {retryFeedbackByActionId[entry.actionId].message}
+                            </p>
+                          )}
                         </div>
                       )}
                     </div>
@@ -283,6 +338,21 @@ function groupCycleErrors(errors: CycleErrorItem[]): CycleErrorGroup[] {
 
 function toLabel(value: string): string {
   return value.replace(/_/g, " ");
+}
+
+function parseRetryErrorMessage(errorJson?: string | null): string {
+  if (!errorJson) return "Retry failed. Check the action detail for context.";
+
+  try {
+    const parsed = JSON.parse(errorJson) as { message?: unknown };
+    if (typeof parsed.message === "string" && parsed.message.trim().length > 0) {
+      return `Retry failed: ${parsed.message}`;
+    }
+  } catch {
+    // ignore parse errors and fallback below
+  }
+
+  return `Retry failed: ${errorJson}`;
 }
 
 function formatRelative(iso: string): string {
