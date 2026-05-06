@@ -38,6 +38,9 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
     try {
       const parsed = ActionsQuerySchema.safeParse(req.query);
       if (!parsed.success) {
+        logger.warn("Invalid actions list query", {
+          query: req.query,
+        });
         res.status(400).json({ error: "Invalid query parameters", details: parsed.error.format() });
         return;
       }
@@ -55,6 +58,15 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
           itemSource: item?.source ?? null,
           itemSubject: item?.subject ?? null,
         });
+      });
+
+      logger.info("Fetched actions list", {
+        userId,
+        status: status ?? null,
+        limit,
+        offset,
+        returned: enriched.length,
+        total,
       });
 
       res.json({
@@ -79,11 +91,13 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
       const actions = actionLogRepo.findAll({ limit: 1000, userId });
       const action = actions.find((a) => a.id === req.params.id);
       if (!action) {
+        logger.warn("Action detail not found", { userId, actionId: req.params.id });
         res.status(404).json({ error: "Action not found" });
         return;
       }
 
       const item = inboundItemRepo.findById(action.resourceId);
+      logger.info("Fetched action detail", { userId, actionId: action.id, status: action.status });
       res.json(toActionResponse(action, {
         itemFrom: item?.from ?? null,
         itemSource: item?.source ?? null,
@@ -105,11 +119,17 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
       const actions = actionLogRepo.findAll({ limit: 1000, userId });
       const action = actions.find((a) => a.id === req.params.id);
       if (!action) {
+        logger.warn("Approve action not found", { userId, actionId: req.params.id });
         res.status(404).json({ error: "Action not found" });
         return;
       }
 
       if (action.status !== "proposed") {
+        logger.warn("Approve action conflict", {
+          userId,
+          actionId: action.id,
+          status: action.status,
+        });
         res.status(409).json({
           error: `Cannot approve action in "${action.status}" status`,
         });
@@ -149,11 +169,17 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
       const actions = actionLogRepo.findAll({ limit: 1000, userId });
       const action = actions.find((a) => a.id === req.params.id);
       if (!action) {
+        logger.warn("Retry execution action not found", { userId, actionId: req.params.id });
         res.status(404).json({ error: "Action not found" });
         return;
       }
 
       if (action.status !== "approved") {
+        logger.warn("Retry execution conflict", {
+          userId,
+          actionId: action.id,
+          status: action.status,
+        });
         res.status(409).json({
           error: `Cannot retry execution for action in "${action.status}" status`,
         });
@@ -183,11 +209,17 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
       const actions = actionLogRepo.findAll({ limit: 1000, userId });
       const action = actions.find((a) => a.id === req.params.id);
       if (!action) {
+        logger.warn("Reject action not found", { userId, actionId: req.params.id });
         res.status(404).json({ error: "Action not found" });
         return;
       }
 
       if (action.status !== "proposed") {
+        logger.warn("Reject action conflict", {
+          userId,
+          actionId: action.id,
+          status: action.status,
+        });
         res.status(409).json({
           error: `Cannot reject action in "${action.status}" status`,
         });
