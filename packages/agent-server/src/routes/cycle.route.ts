@@ -1,11 +1,13 @@
 import { Router } from "express";
 import type { BackgroundLoop } from "../background-loop.js";
-import type { Logger } from "@oneon/domain";
+import type { ActionLogRepository, Logger } from "@oneon/domain";
+import { CycleErrorsQuerySchema } from "@oneon/contracts";
 
 // ── Types ────────────────────────────────────────────────────
 
 export interface CycleRouteDeps {
   getBackgroundLoop: () => BackgroundLoop | null;
+  actionLogRepo: ActionLogRepository;
   logger: Logger;
 }
 
@@ -13,7 +15,7 @@ export interface CycleRouteDeps {
 
 export function createCycleRouter(deps: CycleRouteDeps): Router {
   const router = Router();
-  const { getBackgroundLoop, logger } = deps;
+  const { getBackgroundLoop, actionLogRepo, logger } = deps;
 
   // ── GET /status — Current cycle status ────────────────────
   router.get("/status", (_req, res) => {
@@ -39,6 +41,73 @@ export function createCycleRouter(deps: CycleRouteDeps): Router {
       });
     } catch (error) {
       logger.error("Failed to fetch cycle status", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // ── GET /errors — Recent cycle/action errors for drill-down ─
+  router.get("/errors", (req, res) => {
+    try {
+      const parsedQuery = CycleErrorsQuerySchema.safeParse(req.query);
+      if (!parsedQuery.success) {
+        res.status(400).json({ error: "Invalid query parameters", details: parsedQuery.error.format() });
+        return;
+      }
+
+      const userId = req.userId;
+      if (!userId) {
+        res.status(401).json({ error: "User not authenticated" });
+        return;
+      }
+
+      const { component, stage, scope } = parsedQuery.data;
+      const limit = parsedQuery.data.limit ?? 25;
+      const loop = getBackgroundLoop();
+
+      const loopErrors = loop
+        ? loop.getRecentErrors(limit * 3, userId).map((e) => ({
+            id: e.id,
+            occurredAt: e.occurredAt,
+            component: e.component,
+            stage: e.stage,
+            scope: "global" as const,
+            userId: e.userId,
+            message: e.message,
+            actionId: null,
+            actionHref: null,
+          }))
+        : [];
+
+      const failedActionErrors = actionLogRepo
+        .findAll({ status: "approved", userId, limit: limit * 5 })
+        .filter((a) => !!a.errorJson)
+        .map((a) => ({
+          id: `action-${a.id}-${a.updatedAt}`,
+          occurredAt: a.updatedAt,
+          component: "actions",
+          stage: "execute",
+          scope: "action" as const,
+          userId: a.userId,
+          message: readErrorMessage(a.errorJson),
+          actionId: a.id,
+          actionHref: `/actions#action-${a.id}`,
+        }));
+
+      const combined = [...failedActionErrors, ...loopErrors]
+        .filter((error) => {
+          if (component && error.component !== component) return false;
+          if (stage && error.stage !== stage) return false;
+          if (scope && error.scope !== scope) return false;
+          return true;
+        })
+        .sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt))
+        .slice(0, limit);
+
+      res.json({ errors: combined });
+    } catch (error) {
+      logger.error("Failed to fetch cycle errors", {
         error: error instanceof Error ? error.message : String(error),
       });
       res.status(500).json({ error: "Internal server error" });
@@ -82,4 +151,17 @@ export function createCycleRouter(deps: CycleRouteDeps): Router {
   });
 
   return router;
+}
+
+function readErrorMessage(errorJson: string | null): string {
+  if (!errorJson) return "Unknown action execution error";
+  try {
+    const parsed = JSON.parse(errorJson) as { message?: unknown };
+    if (typeof parsed.message === "string" && parsed.message.trim().length > 0) {
+      return parsed.message;
+    }
+    return errorJson;
+  } catch {
+    return errorJson;
+  }
 }
