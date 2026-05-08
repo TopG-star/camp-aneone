@@ -38,6 +38,22 @@ export const TodayResponseSchema = z.object({
       inboundItemId: z.string(),
     }),
   ),
+  triageQueue: z.array(
+    z.object({
+      id: z.string(),
+      kind: z.enum(["urgent_email", "teams_incident", "pr_review", "deadline_pressure"]),
+      source: z.string(),
+      title: z.string(),
+      reason: z.string(),
+      primaryReason: z.string(),
+      signals: z.array(z.string()),
+      score: z.number(),
+      href: z.string(),
+      observedAt: z.string(),
+      lastUpdatedAt: z.string(),
+      occurredAt: z.string(),
+    }),
+  ),
   pendingActions: z.object({
     count: z.number(),
     items: z.array(

@@ -72,3 +72,41 @@ export function formatUsdMinor(amountMinor: number): string {
     maximumFractionDigits: 2,
   }).format(amountMinor / 100);
 }
+
+export function inferSpendCategory(description: string): string {
+  const value = description.toUpperCase();
+
+  if (hasAny(value, ["GROCERY", "WHOLEFOOD", "SUPERMARKET", "TRADER JOE", "WALMART"])) {
+    return "groceries";
+  }
+
+  if (hasAny(value, ["UBER", "LYFT", "FUEL", "SHELL", "CHEVRON", "EXXON", "TRANSIT", "METRO"])) {
+    return "transport";
+  }
+
+  if (hasAny(value, ["COFFEE", "CAFE", "STARBUCKS", "RESTAURANT", "DINER", "DOORDASH", "UBER EATS"])) {
+    return "dining";
+  }
+
+  if (hasAny(value, ["ELECTRIC", "WATER", "INTERNET", "PHONE", "MOBILE", "UTILITY", "VERIZON", "COMCAST"])) {
+    return "utilities";
+  }
+
+  if (hasAny(value, ["RENT", "MORTGAGE", "LANDLORD", "PROPERTY"])) {
+    return "housing";
+  }
+
+  if (hasAny(value, ["PHARMACY", "HOSPITAL", "CLINIC", "MEDICAL", "DENTAL"])) {
+    return "health";
+  }
+
+  if (hasAny(value, ["AMAZON", "TARGET", "STORE", "SHOP", "BEST BUY"])) {
+    return "shopping";
+  }
+
+  return "other";
+}
+
+function hasAny(value: string, keywords: string[]): boolean {
+  return keywords.some((keyword) => value.includes(keyword));
+}

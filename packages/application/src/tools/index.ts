@@ -146,3 +146,16 @@ export {
   type SummarizeFinanceSpendInput,
   type SpendCategoryRow,
 } from "./summarize-finance-spend.js";
+
+export {
+  createFinanceSpendInsightsTool,
+  financeSpendInsightsSchema,
+  buildFinanceSpendInsightsData,
+  summarizeFinanceInsights,
+  type FinanceSpendInsightsDeps,
+  type FinanceSpendInsightsInput,
+  type FinanceSpendInsightsData,
+  type FinanceInsightSummary,
+  type FinanceCategoryInsight,
+  type FinanceAnomaly,
+} from "./finance-spend-insights.js";

@@ -46,6 +46,7 @@ import {
   createSearchFinanceTransactionsTool,
   createTopFinanceTransactionsTool,
   createSummarizeFinanceSpendTool,
+  createFinanceSpendInsightsTool,
 } from "@oneon/application";
 
 export function registerRoutes(app: Express, container: AppContainer): void {
@@ -190,6 +191,10 @@ export function registerRoutes(app: Express, container: AppContainer): void {
         bankStatementParseRepo: container.bankStatementParseRepo,
       }));
       toolRegistry.register(createSummarizeFinanceSpendTool({
+        bankStatementRepo: container.bankStatementRepo,
+        bankStatementParseRepo: container.bankStatementParseRepo,
+      }));
+      toolRegistry.register(createFinanceSpendInsightsTool({
         bankStatementRepo: container.bankStatementRepo,
         bankStatementParseRepo: container.bankStatementParseRepo,
       }));
@@ -387,6 +392,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       deadlineRepo: container.deadlineRepo,
       actionLogRepo: container.actionLogRepo,
       notificationRepo: container.notificationRepo,
+      preferenceRepo: container.preferenceRepo,
       calendarPort: container.calendarPort,
       logger: todayLogger,
     }),
