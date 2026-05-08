@@ -20,11 +20,10 @@ import { createOAuthRouter } from "./oauth.route.js";
 import { createIntegrationsRouter } from "./integrations.route.js";
 import { createPushSubscriptionsRouter } from "./push-subscriptions.route.js";
 import { createUsersRouter } from "./users.route.js";
-import { createMemoryRouter } from "./memory.route.js";
 import { createTokenAuthMiddleware } from "../middleware/auth.js";
 import { createSessionAuthMiddleware } from "../middleware/session-auth.js";
 import { requireUser } from "../middleware/require-user.js";
-import { LocalDocMemoryProvider, StructuredLogger } from "@oneon/infrastructure";
+import { StructuredLogger } from "@oneon/infrastructure";
 import type { RequestHandler } from "express";
 import {
   createToolRegistry,
@@ -48,17 +47,10 @@ import {
   createTopFinanceTransactionsTool,
   createSummarizeFinanceSpendTool,
   createFinanceSpendInsightsTool,
-  createSearchPersonalMemoryTool,
 } from "@oneon/application";
 
 export function registerRoutes(app: Express, container: AppContainer): void {
   const { env } = container;
-  const docMemoryProvider = env.FEATURE_PERSONAL_MEMORY
-    ? new LocalDocMemoryProvider({
-        roots: env.MEMORY_DOC_ROOTS,
-        maxFiles: env.MEMORY_DOC_MAX_FILES,
-      })
-    : null;
 
   // ── Auth middleware ─────────────────────────────────────────
   //
@@ -184,13 +176,6 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     toolRegistry.register(createListNotificationsTool({
       notificationRepo: container.notificationRepo,
     }));
-    if (env.FEATURE_PERSONAL_MEMORY) {
-      toolRegistry.register(createSearchPersonalMemoryTool({
-        personalMemoryNoteRepo: container.personalMemoryNoteRepo,
-        personalMemoryPinRepo: container.personalMemoryPinRepo,
-        docMemoryProvider,
-      }));
-    }
 
     // Finance tools (only when finance intake feature is enabled)
     if (env.FEATURE_FINANCE_STATEMENT_INTAKE) {
@@ -338,21 +323,6 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     }),
   );
   profileLogger.info("Profile routes registered at /api/profile");
-
-  if (env.FEATURE_PERSONAL_MEMORY) {
-    const memoryLogger = new StructuredLogger("memory", env.LOG_LEVEL);
-    app.use(
-      "/api/memory",
-      ...userAuth,
-      createMemoryRouter({
-        personalMemoryNoteRepo: container.personalMemoryNoteRepo,
-        personalMemoryPinRepo: container.personalMemoryPinRepo,
-        docMemoryProvider,
-        logger: memoryLogger,
-      }),
-    );
-    memoryLogger.info("Memory routes registered at /api/memory");
-  }
 
   // ── Finance Statement Intake (read-only) ────────────────
   if (env.FEATURE_FINANCE_STATEMENT_INTAKE) {

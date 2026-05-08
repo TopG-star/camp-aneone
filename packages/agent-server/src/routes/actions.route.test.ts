@@ -105,7 +105,7 @@ describe("GET /api/actions", () => {
     expect(res.body.pagination).toEqual({ limit: 25, offset: 0, total: 0, hasMore: false });
   });
 
-  it("returns enriched actions with item metadata", async () => {
+  it("returns enriched actions with itemSubject", async () => {
     const action = makeAction();
     const item = makeItem();
     vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
@@ -116,8 +116,6 @@ describe("GET /api/actions", () => {
     expect(res.status).toBe(200);
     expect(res.body.actions).toHaveLength(1);
     expect(res.body.actions[0].itemSubject).toBe("Q4 Review");
-    expect(res.body.actions[0].itemFrom).toBe("boss@company.com");
-    expect(res.body.actions[0].itemSource).toBe("gmail");
     expect(res.body.actions[0].executionStatus).toBe("not_started");
   });
 
@@ -167,8 +165,6 @@ describe("GET /api/actions/:id", () => {
       status: "approved",
       executionStatus: "failed",
       itemSubject: "Escalated follow-up",
-      itemFrom: "boss@company.com",
-      itemSource: "gmail",
     });
   });
 

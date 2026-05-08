@@ -170,26 +170,6 @@ export interface BankStatementParseRun {
   createdAt: string;
 }
 
-export interface PersonalMemoryNote {
-  id: string;
-  userId: string;
-  title: string;
-  content: string;
-  tags: string;
-  pinned: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface PersonalMemoryPin {
-  id: string;
-  userId: string;
-  sourceMessageId: string | null;
-  conversationId: string | null;
-  content: string;
-  createdAt: string;
-}
-
 export interface User {
   id: string;
   email: string;

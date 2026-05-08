@@ -440,49 +440,6 @@ describe("sendChatMessage", () => {
     expect(parsedToolCalls[0].tool).toBe("search_teams_messages");
   });
 
-  it("Alfred-like milestone: returns memory-grounded response for style planning prompts", async () => {
-    const extractor = createMockExtractor([
-      [
-        {
-          tool: "search_personal_memory",
-          parameters: { query: "response style for action proposals", includeDocs: true },
-        },
-      ],
-      [{ tool: "none", parameters: {} }],
-    ]);
-
-    const registry = createMockToolRegistry({
-      search_personal_memory: makeToolResult(
-        "search_personal_memory",
-        'Found 2 personal memory matches for "response style for action proposals".',
-        [
-          { source: "note", title: "Style", snippet: "Keep output concise and direct." },
-          { source: "doc", title: "docs/style.md", snippet: "Use concise, action-oriented language." },
-        ],
-      ),
-    });
-
-    const result = await sendChatMessage(
-      {
-        conversationRepo,
-        logger,
-        intentExtractor: extractor,
-        toolRegistry: registry,
-      },
-      { message: "Draft my plan in my usual style", now: NOW, userId: "user-A" },
-    );
-
-    expect(registry.execute).toHaveBeenCalledWith(
-      "search_personal_memory",
-      expect.objectContaining({
-        query: "response style for action proposals",
-        includeDocs: true,
-        userId: "user-A",
-      }),
-    );
-    expect(result.response).toContain("Found 2 personal memory matches");
-  });
-
   it("returns fallback when loop produces no tool calls", async () => {
     const extractor = createMockExtractor([
       [], // empty intents → stops immediately

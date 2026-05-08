@@ -11,5 +11,3 @@ export { SqliteBankStatementParseRepository } from "./sqlite-bank-statement-pars
 export { SqliteUserRepository } from "./sqlite-user.repository.js";
 export { SqliteUserProfileRepository } from "./sqlite-user-profile.repository.js";
 export { SqliteOAuthTokenRepository } from "./sqlite-oauth-token.repository.js";
-export { SqlitePersonalMemoryNoteRepository } from "./sqlite-personal-memory-note.repository.js";
-export { SqlitePersonalMemoryPinRepository } from "./sqlite-personal-memory-pin.repository.js";

@@ -178,14 +178,6 @@ function migrationAlreadyAppliedInSchema(
         hasIndex(db, "ux_inbound_items_null_user_source_external")
       );
     }
-    case 13:
-      return (
-        hasTable(db, "personal_memory_notes") &&
-        hasColumn(db, "personal_memory_notes", "user_id") &&
-        hasColumn(db, "personal_memory_notes", "tags") &&
-        hasTable(db, "personal_memory_pins") &&
-        hasColumn(db, "personal_memory_pins", "source_message_id")
-      );
     default:
       return false;
   }
@@ -245,7 +237,6 @@ export function runMigrations(db: Database.Database): void {
     { version: 10, name: "bank_statement_parser_framework", file: "010_bank_statement_parser_framework.sql" },
     { version: 11, name: "push_subscriptions_user_scope", file: "011_push_subscriptions_user_scope.sql" },
     { version: 12, name: "inbound_items_user_scope", file: "012_inbound_items_user_scope.sql", transactional: false },
-    { version: 13, name: "personal_memory", file: "013_personal_memory.sql" },
   ];
 
   const migrationsDir = getMigrationsDir();

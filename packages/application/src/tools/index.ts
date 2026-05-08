@@ -148,17 +148,6 @@ export {
 } from "./summarize-finance-spend.js";
 
 export {
-  createSearchPersonalMemoryTool,
-  searchPersonalMemorySchema,
-  retrievePersonalMemory,
-  type SearchPersonalMemoryInput,
-  type SearchPersonalMemoryDeps,
-  type PersonalMemoryHit,
-  type PersonalDocMemoryProvider,
-  type PersonalDocSearchResult,
-} from "./search-personal-memory.js";
-
-export {
   createFinanceSpendInsightsTool,
   financeSpendInsightsSchema,
   buildFinanceSpendInsightsData,

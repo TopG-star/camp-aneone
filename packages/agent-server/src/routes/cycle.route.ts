@@ -52,16 +52,12 @@ export function createCycleRouter(deps: CycleRouteDeps): Router {
     try {
       const parsedQuery = CycleErrorsQuerySchema.safeParse(req.query);
       if (!parsedQuery.success) {
-        logger.warn("Invalid cycle errors query", {
-          query: req.query,
-        });
         res.status(400).json({ error: "Invalid query parameters", details: parsedQuery.error.format() });
         return;
       }
 
       const userId = req.userId;
       if (!userId) {
-        logger.warn("Unauthorized cycle errors request");
         res.status(401).json({ error: "User not authenticated" });
         return;
       }
@@ -108,15 +104,6 @@ export function createCycleRouter(deps: CycleRouteDeps): Router {
         })
         .sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt))
         .slice(0, limit);
-
-      logger.info("Fetched cycle errors", {
-        userId,
-        limit,
-        component: component ?? null,
-        stage: stage ?? null,
-        scope: scope ?? null,
-        returned: combined.length,
-      });
 
       res.json({ errors: combined });
     } catch (error) {

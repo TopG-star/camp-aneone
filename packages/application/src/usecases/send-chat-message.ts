@@ -96,7 +96,6 @@ export async function sendChatMessage(
       },
       {
         userMessage: input.message,
-        userId,
         history: truncateHistory(history, TRUNCATE_OPTIONS),
         toolDefinitions: deps.toolRegistry!.list(),
         stats: deps.stats ?? defaultStats(),
