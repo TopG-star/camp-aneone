@@ -45,10 +45,8 @@ export const TodayResponseSchema = z.object({
       source: z.string(),
       title: z.string(),
       reason: z.string(),
-      explainability: z.object({
-        summary: z.string(),
-        signals: z.array(z.string()),
-      }),
+      primaryReason: z.string(),
+      signals: z.array(z.string()),
       score: z.number(),
       href: z.string(),
       observedAt: z.string(),

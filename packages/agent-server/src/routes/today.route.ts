@@ -38,10 +38,8 @@ interface TriageQueueItem {
   source: string;
   title: string;
   reason: string;
-  explainability: {
-    summary: string;
-    signals: string[];
-  };
+  primaryReason: string;
+  signals: string[];
   score: number;
   href: string;
   observedAt: string;
@@ -238,14 +236,12 @@ export function createTodayRouter(deps: TodayRouteDeps): Router {
             source: item.source,
             title: item.subject,
             reason: buildUrgentEmailReason(classification),
-            explainability: {
-              summary: "High-priority email signal matched triage guardrails.",
-              signals: compactSignals([
-                `Source: ${item.source}`,
-                classification ? `Priority: P${classification.priority}` : null,
-                classification ? `Category: ${classification.category}` : null,
-              ]),
-            },
+            primaryReason: "High-priority email signal matched triage guardrails.",
+            signals: compactSignals([
+              `Source: ${item.source}`,
+              classification ? `Priority: P${classification.priority}` : null,
+              classification ? `Category: ${classification.category}` : null,
+            ]),
             score: scoreUrgentEmail(item, classification, now),
             href: `/inbox?id=${item.id}`,
             observedAt: nowIso,
@@ -261,14 +257,12 @@ export function createTodayRouter(deps: TodayRouteDeps): Router {
             source: item.source,
             title: item.subject,
             reason: buildTeamsIncidentReason(classification),
-            explainability: {
-              summary: "Teams message matched incident-response criteria.",
-              signals: compactSignals([
-                `Source: ${item.source}`,
-                classification ? `Priority: P${classification.priority}` : null,
-                hasIncidentKeywords(item) ? "Incident keywords detected" : null,
-              ]),
-            },
+            primaryReason: "Teams message matched incident-response criteria.",
+            signals: compactSignals([
+              `Source: ${item.source}`,
+              classification ? `Priority: P${classification.priority}` : null,
+              hasIncidentKeywords(item) ? "Incident keywords detected" : null,
+            ]),
             score: scoreTeamsIncident(item, classification, now),
             href: `/inbox?id=${item.id}`,
             observedAt: nowIso,
@@ -284,14 +278,12 @@ export function createTodayRouter(deps: TodayRouteDeps): Router {
             source: item.source,
             title: item.subject,
             reason: "PR review is requested and ready for response.",
-            explainability: {
-              summary: "GitHub PR review signals are present and fresh enough for queue ranking.",
-              signals: compactSignals([
-                `Source: ${item.source}`,
-                hasReviewRequestedLabel(item.labels) ? "Label: review_requested" : null,
-                "Pull request context detected",
-              ]),
-            },
+            primaryReason: "GitHub PR review signals are present and fresh enough for queue ranking.",
+            signals: compactSignals([
+              `Source: ${item.source}`,
+              hasReviewRequestedLabel(item.labels) ? "Label: review_requested" : null,
+              "Pull request context detected",
+            ]),
             score: scorePRReview(item, now),
             href: `/inbox?id=${item.id}`,
             observedAt: nowIso,
@@ -315,14 +307,12 @@ export function createTodayRouter(deps: TodayRouteDeps): Router {
           source: "deadlines",
           title: deadline.description,
           reason: buildDeadlineReason(deadline, now),
-          explainability: {
-            summary: "Deadline timing pressure exceeded ranking guardrails.",
-            signals: compactSignals([
-              `Due: ${formatDayLabel(deadline.dueDate)}`,
-              deadline.confidence >= 0 ? `Confidence: ${Math.round(deadline.confidence * 100)}%` : null,
-              new Date(deadline.dueDate).getTime() <= now.getTime() ? "Status: Overdue" : "Status: Upcoming",
-            ]),
-          },
+          primaryReason: "Deadline timing pressure exceeded ranking guardrails.",
+          signals: compactSignals([
+            `Due: ${formatDayLabel(deadline.dueDate)}`,
+            deadline.confidence >= 0 ? `Confidence: ${Math.round(deadline.confidence * 100)}%` : null,
+            new Date(deadline.dueDate).getTime() <= now.getTime() ? "Status: Overdue" : "Status: Upcoming",
+          ]),
           score: scoreDeadlinePressure(deadline, now),
           href: "/deadlines",
           observedAt: nowIso,

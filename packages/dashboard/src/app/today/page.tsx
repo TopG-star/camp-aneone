@@ -32,10 +32,8 @@ interface TodayData {
     source: string;
     title: string;
     reason: string;
-    explainability: {
-      summary: string;
-      signals: string[];
-    };
+    primaryReason: string;
+    signals: string[];
     score: number;
     href: string;
     observedAt: string;
@@ -230,16 +228,19 @@ export default function TodayPage() {
                     </div>
 
                     <details className="rounded-eight border border-outline-variant/25 bg-white/65 p-3 dark:border-dark-outline-variant/25 dark:bg-dark-surface">
-                      <summary className="cursor-pointer text-label-sm font-medium text-on-surface dark:text-dark-on-surface">
-                        Why is this here?
+                      <summary
+                        className="cursor-pointer text-label-sm font-medium text-on-surface dark:text-dark-on-surface"
+                        title={item.primaryReason}
+                      >
+                        Why
                       </summary>
                       <div className="mt-2 space-y-1">
                         <p className="text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
-                          {item.explainability.summary}
+                          {item.primaryReason}
                         </p>
-                        {item.explainability.signals.length > 0 && (
+                        {item.signals.length > 0 && (
                           <ul className="list-disc pl-5 text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
-                            {item.explainability.signals.map((signal) => (
+                            {item.signals.map((signal) => (
                               <li key={`${item.id}-${signal}`}>{signal}</li>
                             ))}
                           </ul>

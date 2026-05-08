@@ -297,10 +297,8 @@ describe("GET /api/today", () => {
     expect(res.body.triageQueue[0].kind).toBe("deadline_pressure");
     expect(res.body.triageQueue[0].title).toContain("Post incident status page update");
     expect(res.body.triageQueue[0]).toMatchObject({
-      explainability: {
-        summary: expect.any(String),
-        signals: expect.any(Array),
-      },
+      primaryReason: expect.any(String),
+      signals: expect.any(Array),
       observedAt: expect.any(String),
       lastUpdatedAt: expect.any(String),
     });
