@@ -15,6 +15,8 @@ import type {
   UserRepository,
   UserProfileRepository,
   OAuthTokenRepository,
+  PersonalMemoryNoteRepository,
+  PersonalMemoryPinRepository,
   LLMPort,
   CalendarPort,
   GitHubPort,
@@ -41,6 +43,8 @@ import {
   SqliteUserRepository,
   SqliteUserProfileRepository,
   SqliteOAuthTokenRepository,
+  SqlitePersonalMemoryNoteRepository,
+  SqlitePersonalMemoryPinRepository,
   SqliteTransactionRunner,
   ClaudeClassifierAdapter,
   DeepSeekClassifierAdapter,
@@ -92,6 +96,8 @@ export interface AppContainer {
   userRepo: UserRepository | null;
   userProfileRepo: UserProfileRepository;
   oauthTokenRepo: OAuthTokenRepository | null;
+  personalMemoryNoteRepo: PersonalMemoryNoteRepository;
+  personalMemoryPinRepo: PersonalMemoryPinRepository;
 
   // ── External Ports ────────────────────────────────────────
   llmPort: LLMPort | null;
@@ -151,6 +157,8 @@ export function createContainer(env: Env): AppContainer {
     },
   ]);
   const userProfileRepo = new SqliteUserProfileRepository(db);
+  const personalMemoryNoteRepo = new SqlitePersonalMemoryNoteRepository(db);
+  const personalMemoryPinRepo = new SqlitePersonalMemoryPinRepository(db);
 
   // ── OAuth Repositories (requires OAUTH_TOKEN_ENCRYPTION_KEY) ──
   let userRepo: UserRepository | null = null;
@@ -469,6 +477,8 @@ export function createContainer(env: Env): AppContainer {
     userRepo,
     userProfileRepo,
     oauthTokenRepo,
+    personalMemoryNoteRepo,
+    personalMemoryPinRepo,
     hasGoogleCredentials: hasGoogleClientCreds,
     getEligibleUsers,
     createGoogleTokenProvider,

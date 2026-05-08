@@ -44,6 +44,7 @@ export interface RunIntentLoopDeps {
 
 export interface RunIntentLoopInput {
   userMessage: string;
+  userId?: string;
   history: ConversationMessage[];
   toolDefinitions: Array<{ name: string; description: string }>;
   stats: ChatContextStats;
@@ -65,7 +66,7 @@ export async function runIntentLoop(
   input: RunIntentLoopInput
 ): Promise<RunIntentLoopResult> {
   const { intentExtractor, toolRegistry, logger } = deps;
-  const { userMessage, history, toolDefinitions, stats, now, timezone, persona } = input;
+  const { userMessage, history, toolDefinitions, stats, now, timezone, persona, userId } = input;
 
   const allToolCalls: ToolCallRecord[] = [];
   const executedSet = new Set<string>(); // Refinement #3: dedupe
@@ -152,7 +153,10 @@ export async function runIntentLoop(
       anyToolExecuted = true;
       const startTime = performance.now();
       try {
-        const result = await toolRegistry.execute(intent.tool, intent.parameters);
+        const executionParameters = userId
+          ? { ...intent.parameters, userId }
+          : intent.parameters;
+        const result = await toolRegistry.execute(intent.tool, executionParameters);
         const durationMs =
           Math.round((performance.now() - startTime) * 100) / 100;
 

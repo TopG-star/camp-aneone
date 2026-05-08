@@ -123,6 +123,22 @@ const envSchema = z.object({
     .string()
     .transform((v) => v === "true")
     .default("false"),
+  FEATURE_PERSONAL_MEMORY: z
+    .string()
+    .transform((v) => v === "true")
+    .default("true"),
+
+  // ── Personal Memory RAG ─────────────────────────────────
+  MEMORY_DOC_ROOTS: z
+    .string()
+    .default("docs")
+    .transform((value) =>
+      value
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+    ),
+  MEMORY_DOC_MAX_FILES: z.coerce.number().default(200),
 
   // ── Finance Statement Intake (FIN-001a) ─────────────────
   FINANCE_STATEMENT_SENDER_ALLOWLIST: z
