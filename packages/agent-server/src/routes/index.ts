@@ -387,6 +387,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       deadlineRepo: container.deadlineRepo,
       actionLogRepo: container.actionLogRepo,
       notificationRepo: container.notificationRepo,
+      preferenceRepo: container.preferenceRepo,
       calendarPort: container.calendarPort,
       logger: todayLogger,
     }),
