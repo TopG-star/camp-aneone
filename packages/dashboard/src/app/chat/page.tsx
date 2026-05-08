@@ -22,6 +22,14 @@ interface ChatResponse {
   history: ChatMessage[];
 }
 
+const QUICK_PROMPTS = [
+  "What's urgent today?",
+  "Show my calendar for this week",
+  "Any pending actions?",
+  "Summarize my unread emails",
+  "Review my latest finance anomalies and explain what needs attention",
+] as const;
+
 export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -131,12 +139,7 @@ export default function ChatPage() {
                 </p>
               </div>
               <div className="flex flex-wrap justify-center gap-2 pt-2">
-                {[
-                  "What's urgent today?",
-                  "Show my calendar for this week",
-                  "Any pending actions?",
-                  "Summarize my unread emails",
-                ].map((suggestion) => (
+                {QUICK_PROMPTS.map((suggestion) => (
                   <button
                     key={suggestion}
                     onClick={() => setInput(suggestion)}
