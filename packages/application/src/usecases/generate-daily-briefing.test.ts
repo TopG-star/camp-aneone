@@ -364,6 +364,46 @@ describe("generateDailyBriefing", () => {
 
     expect(result.data.date).toBe("2026-04-18");
   });
+
+  it("uses correct day boundaries across DST start in America/New_York", async () => {
+    const calendarPort: CalendarPort = {
+      listEvents: vi.fn(async () => []),
+      createEvent: vi.fn(),
+      updateEvent: vi.fn(),
+      searchEvents: vi.fn(),
+    };
+
+    const deps = createDeps({ calendarPort });
+    await generateDailyBriefing(deps, defaultInput({
+      now: new Date("2026-03-08T12:00:00Z"),
+      timezone: "America/New_York",
+    }));
+
+    expect(calendarPort.listEvents).toHaveBeenCalledWith(
+      "2026-03-08T05:00:00.000Z",
+      "2026-03-09T04:00:00.000Z",
+    );
+  });
+
+  it("uses correct day boundaries for non-hour offset timezone", async () => {
+    const calendarPort: CalendarPort = {
+      listEvents: vi.fn(async () => []),
+      createEvent: vi.fn(),
+      updateEvent: vi.fn(),
+      searchEvents: vi.fn(),
+    };
+
+    const deps = createDeps({ calendarPort });
+    await generateDailyBriefing(deps, defaultInput({
+      now: new Date("2026-04-18T10:00:00Z"),
+      timezone: "Asia/Kathmandu",
+    }));
+
+    expect(calendarPort.listEvents).toHaveBeenCalledWith(
+      "2026-04-17T18:15:00.000Z",
+      "2026-04-18T18:15:00.000Z",
+    );
+  });
 });
 
 // ── Tests: buildBriefingPrompt ───────────────────────────────
