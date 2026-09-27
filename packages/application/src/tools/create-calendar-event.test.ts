@@ -95,7 +95,7 @@ describe("create_calendar_event tool", () => {
       location: "Cafe",
     });
 
-    expect(deps.calendarPort.createEvent).toHaveBeenCalledWith({
+    expect(deps.calendarPort!.createEvent).toHaveBeenCalledWith({
       title: "Team Lunch",
       start: "2026-04-18T12:00:00Z",
       end: "2026-04-18T13:00:00Z",
@@ -104,6 +104,31 @@ describe("create_calendar_event tool", () => {
       attendees: ["alice@test.com"],
       location: "Cafe",
     });
+  });
+
+  it("uses resolveCalendarPort when userId is provided", async () => {
+    const resolvedPort = {
+      listEvents: vi.fn().mockResolvedValue([]),
+      createEvent: vi.fn().mockResolvedValue(makeCreated()),
+      updateEvent: vi.fn(),
+      searchEvents: vi.fn().mockResolvedValue([]),
+    };
+
+    const tool = createCreateCalendarEventTool({
+      resolveCalendarPort: vi.fn().mockReturnValue(resolvedPort),
+    });
+
+    await tool.execute({
+      title: "Team Lunch",
+      start: "2026-04-18T12:00:00Z",
+      end: "2026-04-18T13:00:00Z",
+      description: null,
+      attendees: [],
+      location: null,
+      userId: "user-A",
+    });
+
+    expect(resolvedPort.createEvent).toHaveBeenCalledOnce();
   });
 
   it("returns created event in data field", async () => {

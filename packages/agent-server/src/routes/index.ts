@@ -24,8 +24,17 @@ import { createMemoryRouter } from "./memory.route.js";
 import { createTokenAuthMiddleware } from "../middleware/auth.js";
 import { createSessionAuthMiddleware } from "../middleware/session-auth.js";
 import { requireUser } from "../middleware/require-user.js";
-import { LocalDocMemoryProvider, StructuredLogger } from "@oneon/infrastructure";
+import {
+  LocalDocMemoryProvider,
+  StructuredLogger,
+  TTLCache,
+  GCalHttpClient,
+  GoogleCalendarAdapter,
+  GitHubHttpClient,
+  GitHubAdapter,
+} from "@oneon/infrastructure";
 import type { RequestHandler } from "express";
+import type { CalendarEvent, GitHubNotification, GitHubPullRequest } from "@oneon/domain";
 import {
   createToolRegistry,
   createListInboxTool,
@@ -154,6 +163,66 @@ export function registerRoutes(app: Express, container: AppContainer): void {
   // ── Chat Endpoint ─────────────────────────────────────────
   if (env.FEATURE_CHAT) {
     const chatLogger = new StructuredLogger("chat", env.LOG_LEVEL);
+    const calendarPortByUser = new Map<string, NonNullable<typeof container.calendarPort>>();
+    const resolveCalendarPort = (userId: string) => {
+      if (calendarPortByUser.has(userId)) {
+        return calendarPortByUser.get(userId)!;
+      }
+
+      const tokenProvider = container.createGoogleTokenProvider(userId);
+      if (!tokenProvider) {
+        return null;
+      }
+
+      const port = new GoogleCalendarAdapter({
+        client: new GCalHttpClient(tokenProvider),
+        calendarId: env.CALENDAR_ID,
+        cache: new TTLCache<CalendarEvent[]>(),
+        cacheTtlMs: env.CALENDAR_CACHE_TTL_MS,
+      });
+
+      calendarPortByUser.set(userId, port);
+      return port;
+    };
+
+    const githubPortByUser = new Map<
+      string,
+      {
+        accessToken: string;
+        port: NonNullable<typeof container.githubPort>;
+      }
+    >();
+    const resolveGitHubPort = (userId: string) => {
+      if (!container.oauthTokenRepo) {
+        return null;
+      }
+
+      const token = container.oauthTokenRepo.get("github", userId);
+      if (!token) {
+        githubPortByUser.delete(userId);
+        return null;
+      }
+
+      const cached = githubPortByUser.get(userId);
+      if (cached && cached.accessToken === token.accessToken) {
+        return cached.port;
+      }
+
+      const port = new GitHubAdapter({
+        client: new GitHubHttpClient(token.accessToken),
+        notificationCache: new TTLCache<GitHubNotification[]>(),
+        searchCache: new TTLCache<GitHubPullRequest[]>(),
+        notificationCacheTtlMs: env.GITHUB_NOTIFICATION_CACHE_TTL_MS,
+        searchCacheTtlMs: env.GITHUB_SEARCH_CACHE_TTL_MS,
+      });
+
+      githubPortByUser.set(userId, {
+        accessToken: token.accessToken,
+        port,
+      });
+      return port;
+    };
+
 
     // Build tool registry with all available tools
     const toolRegistry = createToolRegistry();
@@ -220,26 +289,32 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     if (container.calendarPort) {
       toolRegistry.register(createListCalendarEventsTool({
         calendarPort: container.calendarPort,
-      }));
+        resolveCalendarPort,
+      } as Parameters<typeof createListCalendarEventsTool>[0]));
       toolRegistry.register(createCreateCalendarEventTool({
         calendarPort: container.calendarPort,
-      }));
+        resolveCalendarPort,
+      } as Parameters<typeof createCreateCalendarEventTool>[0]));
       toolRegistry.register(createUpdateCalendarEventTool({
         calendarPort: container.calendarPort,
-      }));
+        resolveCalendarPort,
+      } as Parameters<typeof createUpdateCalendarEventTool>[0]));
       toolRegistry.register(createSearchCalendarTool({
         calendarPort: container.calendarPort,
-      }));
+        resolveCalendarPort,
+      } as Parameters<typeof createSearchCalendarTool>[0]));
     }
 
     // GitHub tools (only if githubPort available)
     if (container.githubPort) {
       toolRegistry.register(createListGitHubNotificationsTool({
         githubPort: container.githubPort,
-      }));
+        resolveGitHubPort,
+      } as Parameters<typeof createListGitHubNotificationsTool>[0]));
       toolRegistry.register(createListGitHubPRsTool({
         githubPort: container.githubPort,
-      }));
+        resolveGitHubPort,
+      } as Parameters<typeof createListGitHubPRsTool>[0]));
     }
 
     // Teams tools (only if teamsPort available)
