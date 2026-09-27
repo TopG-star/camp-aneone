@@ -113,7 +113,7 @@ execution. *LLM decides; software guarantees.*
 | FR-022 | Store deadlines in separate `deadlines` table linked to inbound item | P0 |
 | FR-023 | Dashboard page showing upcoming and overdue deadlines | P0 |
 | FR-024 | Deadline status transitions: open → done / dismissed | P0 |
-| FR-025 | Confidence threshold: only auto-create reminders for confidence ≥ 0.6 | P1 |
+| FR-025 | Confidence threshold: only auto-create reminders for confidence ≥ 0.7 | P1 |
 
 ### 5.4 Action Lifecycle (Event-Sourced)
 
