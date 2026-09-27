@@ -4,7 +4,16 @@ import { useState, useRef, useEffect } from "react";
 import { apiFetch } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { MessageSquare, Send, Loader2, Bot, User, AlertTriangle } from "lucide-react";
+import {
+  MessageSquare,
+  Send,
+  Loader2,
+  Bot,
+  User,
+  AlertTriangle,
+  Bookmark,
+  BookmarkCheck,
+} from "lucide-react";
 import { getMotionDelayClass } from "@/lib/motion-utils";
 
 interface ChatMessage {
@@ -22,6 +31,11 @@ interface ChatResponse {
   history: ChatMessage[];
 }
 
+interface CreateMemoryPinResponse {
+  pin: { id: string };
+  deduped: boolean;
+}
+
 const QUICK_PROMPTS = [
   "What's urgent today?",
   "Show my calendar for this week",
@@ -34,6 +48,8 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [pinningMessageId, setPinningMessageId] = useState<string | null>(null);
+  const [pinnedMessageIds, setPinnedMessageIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | undefined>();
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -105,6 +121,39 @@ export default function ChatPage() {
     }
   }
 
+  async function handlePinAssistantMessage(message: ChatMessage) {
+    if (message.role !== "assistant") {
+      return;
+    }
+    if (pinningMessageId || pinnedMessageIds.has(message.id)) {
+      return;
+    }
+
+    setError(null);
+    setPinningMessageId(message.id);
+
+    try {
+      await apiFetch<CreateMemoryPinResponse>("/api/memory/pins", {
+        method: "POST",
+        body: JSON.stringify({
+          content: message.content,
+          sourceMessageId: message.id,
+          conversationId: conversationId ?? null,
+        }),
+      });
+
+      setPinnedMessageIds((prev) => {
+        const next = new Set(prev);
+        next.add(message.id);
+        return next;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to pin output");
+    } finally {
+      setPinningMessageId(null);
+    }
+  }
+
   return (
     <div className="motion-page-enter flex h-[calc(100dvh-5rem)] min-h-[calc(100dvh-5rem)] flex-col">
       {/* Header */}
@@ -170,6 +219,26 @@ export default function ChatPage() {
                 }`}
               >
                 <p className="text-body-md whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                {msg.role === "assistant" && (
+                  <div className="mt-3 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => handlePinAssistantMessage(msg)}
+                      disabled={pinningMessageId === msg.id || pinnedMessageIds.has(msg.id)}
+                      className="motion-interactive inline-flex items-center gap-1 rounded-six border border-outline-variant/30 px-2 py-1 text-label-sm text-on-surface-variant dark:border-dark-outline-variant/30 dark:text-dark-on-surface-variant disabled:opacity-60"
+                      aria-label={pinnedMessageIds.has(msg.id) ? "Pinned" : "Pin this output"}
+                    >
+                      {pinnedMessageIds.has(msg.id) ? (
+                        <BookmarkCheck className="h-3.5 w-3.5" />
+                      ) : pinningMessageId === msg.id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Bookmark className="h-3.5 w-3.5" />
+                      )}
+                      <span>{pinnedMessageIds.has(msg.id) ? "Pinned" : "Pin"}</span>
+                    </button>
+                  </div>
+                )}
               </div>
               {msg.role === "user" && (
                 <div className="flex-shrink-0 w-8 h-8 rounded-full bg-surface-high dark:bg-dark-surface-high flex items-center justify-center">

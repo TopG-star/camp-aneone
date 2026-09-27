@@ -1,7 +1,7 @@
 # Camp-Aneone (Oneon) — Product Requirements Document
 
-**Version:** 1.1
-**Date:** 2026-04-29
+**Version:** 1.2
+**Date:** 2026-05-08
 **Author:** Product Owner
 **Status:** Draft → Approved
 
@@ -191,6 +191,16 @@ execution. *LLM decides; software guarantees.*
 | FR-065 | Store immutable message metadata evidence (`message_id`, `thread_id`, sender, subject, received_at, detection_rule_version) | P1 |
 | FR-066 | FIN-001a scope boundary: no PDF parsing, no transaction extraction, no finance analytics/chat/dashboard UI in this slice | P0 |
 
+### 5.11 Personal Memory RAG (v1)
+
+| ID | Requirement | Priority |
+|----|------------|----------|
+| FR-067 | Persist user-authored personal memory notes (`title`, `content`, `tags`, `pinned`) in user-scoped storage | P0 |
+| FR-068 | Persist explicitly user-pinned assistant outputs as memory pins (deduplicated by source message when available) | P0 |
+| FR-069 | Provide user-scoped retrieval API that can search notes, pins, and curated docs with ranked results | P0 |
+| FR-070 | Expose `search_personal_memory` tool to chat agent loop for grounding responses and action proposals | P0 |
+| FR-071 | Personal Memory v1 explicitly includes curated docs (markdown docs roots) as a retrieval source; embeddings/vector index are not required for v1 | P0 |
+
 ---
 
 ## 6. Non-Functional Requirements
@@ -227,6 +237,8 @@ execution. *LLM decides; software guarantees.*
 | `notifications` | In-app notification queue | Read status tracking; deep links |
 | `conversations` | Chat message history | Chronological order; never edited/deleted |
 | `bank_statements` | Idempotent intake registry for bank-statement candidates (FIN-001a) | Unique on `(user_id, source, external_id)` |
+| `personal_memory_notes` | User-authored memory notes for grounding and style continuity | User-scoped, ordered by recency |
+| `personal_memory_pins` | Explicit user-pinned assistant outputs | User-scoped, dedupe by source message when present |
 | `preferences` | User settings (polling, notifications) | Key-value store |
 | `push_subscriptions` | Web push endpoints (MVP1.5 foundation) | Unique on `endpoint` |
 | `classification_feedback` | User corrections for eval loop | Links to `classifications` |
@@ -249,6 +261,7 @@ execution. *LLM decides; software guarantees.*
 | `list_pending_actions` | List actions awaiting approval | `status?` |
 | `list_follow_ups` | List items needing follow-up | `overdue?` |
 | `daily_briefing` | Generate today's full briefing | `{}` (no input) |
+| `search_personal_memory` | Retrieve user notes, explicit pins, and curated docs for grounding | `query, limit?, includeNotes?, includePins?, includeDocs?` |
 | `none` | Signal no more tools needed (stop loop) | `{}` (no input) |
 
 ---
@@ -298,7 +311,8 @@ These are explicitly deferred to future phases:
 - Full finance pipeline beyond FIN-001a foundation (PDF parsing, transaction extraction, conversational finance insights, finance dashboard)
 - Pharmaceutical ERP / sales management system integration
 - Deployed software monitoring and alerting
-- RAG / vector search over personal knowledge base
+- Embedding/vector index for memory retrieval (lexical+ranked retrieval is sufficient for v1)
+- Automatic ingestion of all prior conversation outputs into memory (v1 remains explicit pin-only)
 - WhatsApp / LinkedIn integration
 - Smart home integration (HomeKit, robot vacuum status)
 - Tool-use chat mode (Claude native tool calling — planned MVP1.5)
