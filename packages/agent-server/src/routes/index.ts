@@ -352,6 +352,10 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       createChatRouter({
         conversationRepo: container.conversationRepo,
         logger: chatLogger,
+        inboundItemRepo: container.inboundItemRepo,
+        classificationRepo: container.classificationRepo,
+        deadlineRepo: container.deadlineRepo,
+        actionLogRepo: container.actionLogRepo,
         userProfileRepo: container.userProfileRepo,
         intentExtractor: container.llmPort,
         synthesizer: container.llmPort,
