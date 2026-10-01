@@ -68,6 +68,7 @@ import {
 } from "@oneon/infrastructure";
 
 import type { Env } from "./config/env.js";
+import { recordGmailRefreshFailure } from "./gmail-refresh-state.js";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -206,6 +207,7 @@ export function createContainer(env: Env): AppContainer {
         env.GOOGLE_CLIENT_ID!,
         env.GOOGLE_CLIENT_SECRET!,
         primaryUser!.id,
+        () => recordGmailRefreshFailure(preferenceRepo, primaryUser!.id),
       );
       logger.info("Google: ✓ active (DB token)", {
         user: dbGoogleToken.providerEmail ?? primaryUser!.email,
@@ -254,6 +256,7 @@ export function createContainer(env: Env): AppContainer {
       env.GOOGLE_CLIENT_ID!,
       env.GOOGLE_CLIENT_SECRET!,
       userId,
+      () => recordGmailRefreshFailure(preferenceRepo, userId),
     );
   };
 
