@@ -186,6 +186,13 @@ function migrationAlreadyAppliedInSchema(
         hasTable(db, "personal_memory_pins") &&
         hasColumn(db, "personal_memory_pins", "source_message_id")
       );
+    case 14:
+      return (
+        hasTable(db, "action_instances") &&
+        hasTable(db, "action_events") &&
+        hasTable(db, "action_log_legacy") &&
+        !hasTable(db, "action_log")
+      );
     default:
       return false;
   }
@@ -246,6 +253,7 @@ export function runMigrations(db: Database.Database): void {
     { version: 11, name: "push_subscriptions_user_scope", file: "011_push_subscriptions_user_scope.sql" },
     { version: 12, name: "inbound_items_user_scope", file: "012_inbound_items_user_scope.sql", transactional: false },
     { version: 13, name: "personal_memory", file: "013_personal_memory.sql" },
+    { version: 14, name: "action_spec_framework", file: "014_action_spec_framework.sql" },
   ];
 
   const migrationsDir = getMigrationsDir();

@@ -13,3 +13,6 @@ export { SqliteUserProfileRepository } from "./sqlite-user-profile.repository.js
 export { SqliteOAuthTokenRepository } from "./sqlite-oauth-token.repository.js";
 export { SqlitePersonalMemoryNoteRepository } from "./sqlite-personal-memory-note.repository.js";
 export { SqlitePersonalMemoryPinRepository } from "./sqlite-personal-memory-pin.repository.js";
+export { SqliteActionInstanceRepository } from "./sqlite-action-instance.repository.js";
+export { SqliteActionConfigRepository } from "./sqlite-action-config.repository.js";
+export { SqliteLegacyActionRepository } from "./sqlite-legacy-action.repository.js";
