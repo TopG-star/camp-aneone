@@ -107,6 +107,8 @@ describe("GoogleCalendarAdapter", () => {
         description: "Daily sync",
         attendees: ["alice@test.com", "bob@test.com"],
         location: "Zoom",
+        etag: null,
+        updated: null,
       });
     });
 

@@ -20,6 +20,9 @@ function isRetryableError(error: unknown): boolean {
   if (error instanceof Error && error.name === "AbortError") {
     return false; // Timeout — don't retry
   }
+  if (typeof error === "object" && error !== null && (error as { retryable?: unknown }).retryable === false) {
+    return false; // Caller marked it final (e.g. ExternalCallError)
+  }
   return true; // Network errors — retry
 }
 

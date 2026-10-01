@@ -5,8 +5,18 @@ import type {
   GCalEventWriteBody,
 } from "./calendar.types.js";
 import { fetchWithRetry } from "../http/fetch-with-retry.js";
+import { ExternalCallError } from "@oneon/domain";
 
 const BASE_URL = "https://www.googleapis.com/calendar/v3";
+
+export class GCalApiError extends Error {
+  constructor(readonly status: number, body: string) {
+    super(`Google Calendar API error ${status}: ${body}`);
+    this.name = "GCalApiError";
+  }
+}
+
+type SendUpdates = "all" | "none";
 
 export interface ListEventsOptions {
   timeMin: string;
@@ -65,20 +75,28 @@ export class GCalHttpClient {
     };
   }
 
+  async getEvent(calendarId: string, eventId: string): Promise<GCalEventResource | null> {
+    try {
+      const response = await this.request(this.eventUrl(calendarId, eventId));
+      return (await response.json()) as GCalEventResource;
+    } catch (error) {
+      if (error instanceof GCalApiError && (error.status === 404 || error.status === 410)) return null;
+      throw error;
+    }
+  }
+
   async insertEvent(
     calendarId: string,
     body: GCalEventWriteBody,
+    options: { sendUpdates: SendUpdates } = { sendUpdates: "none" },
   ): Promise<GCalEventResource> {
-    const url = new URL(
-      `${BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events`,
+    const url = new URL(`${BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events`);
+    url.searchParams.set("sendUpdates", options.sendUpdates);
+    const response = await this.request(
+      url,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+      { retry: false },
     );
-
-    const response = await this.request(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
     return (await response.json()) as GCalEventResource;
   }
 
@@ -86,48 +104,61 @@ export class GCalHttpClient {
     calendarId: string,
     eventId: string,
     body: Partial<GCalEventWriteBody>,
+    options?: { ifMatch?: string; sendUpdates?: SendUpdates },
   ): Promise<GCalEventResource> {
-    const url = new URL(
-      `${BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+    const url = this.eventUrl(calendarId, eventId);
+    if (options?.sendUpdates) url.searchParams.set("sendUpdates", options.sendUpdates);
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (options?.ifMatch) headers["If-Match"] = options.ifMatch;
+    const response = await this.request(
+      url,
+      { method: "PATCH", headers, body: JSON.stringify(body) },
+      { retry: !options?.ifMatch },
     );
-
-    const response = await this.request(url, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
     return (await response.json()) as GCalEventResource;
   }
 
-  private async request(
-    url: URL,
-    init?: RequestInit,
-  ): Promise<Response> {
+  async deleteEvent(
+    calendarId: string,
+    eventId: string,
+    options: { ifMatch: string; sendUpdates: SendUpdates },
+  ): Promise<void> {
+    const url = this.eventUrl(calendarId, eventId);
+    url.searchParams.set("sendUpdates", options.sendUpdates);
+    await this.request(url, { method: "DELETE", headers: { "If-Match": options.ifMatch } }, { retry: false });
+  }
+
+  private eventUrl(calendarId: string, eventId: string): URL {
+    return new URL(`${BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`);
+  }
+
+  private async request(url: URL, init?: RequestInit, options: { retry: boolean } = { retry: true }): Promise<Response> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
-    try {
-      const response = await fetchWithRetry(async () => {
-        const token = await this.tokenProvider.getAccessToken();
-        return fetch(url.toString(), {
-          ...init,
-          headers: {
-            Authorization: `Bearer ${token}`,
-            ...init?.headers,
-          },
-          signal: controller.signal,
-        });
-      },
-      );
-
-      if (!response.ok) {
-        const errorBody = await response.text();
-        throw new Error(
-          `Google Calendar API error ${response.status}: ${errorBody}`,
+    const attempt = async (): Promise<Response> => {
+      let token: string;
+      try {
+        token = await this.tokenProvider.getAccessToken();
+      } catch (error) {
+        throw new ExternalCallError(
+          "definite",
+          "auth",
+          `Google token unavailable: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
+      return fetch(url.toString(), {
+        ...init,
+        headers: { Authorization: `Bearer ${token}`, ...init?.headers },
+        signal: controller.signal,
+      });
+    };
 
+    try {
+      const response = options.retry ? await fetchWithRetry(attempt) : await attempt();
+      if (!response.ok) {
+        throw new GCalApiError(response.status, await response.text());
+      }
       return response;
     } finally {
       clearTimeout(timeout);

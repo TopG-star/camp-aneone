@@ -24,7 +24,14 @@ export type {
 export type { OAuthTokenRepository } from "./oauth-token-repository.port.js";
 export type { IngestionPort, EmailPort } from "./email.port.js";
 export type { LLMPort, IntentExtractionPort, SynthesisPort, ClassificationResult } from "./llm.port.js";
-export type { CalendarPort, CalendarEvent } from "./calendar.port.js";
+export type {
+  CalendarPort,
+  CalendarEvent,
+  CalendarReader,
+  CalendarWriter,
+  CalendarEventDraft,
+  CalendarSendUpdates,
+} from "./calendar.port.js";
 export type { GitHubPort, GitHubNotification, GitHubPullRequest } from "./github.port.js";
 export type { TeamsPort, TeamsMessage } from "./teams.port.js";
 export type { NotificationPort, NotificationWriter, NotificationSendResult } from "./notification.port.js";

@@ -17,6 +17,7 @@ export interface GCalEventsListResponse {
 
 export interface GCalEventResource {
   id: string;
+  etag?: string;
   summary?: string;
   description?: string;
   location?: string;
@@ -52,6 +53,7 @@ export interface GCalAttendee {
 // ── Request body for insert / patch ────────────────────────
 
 export interface GCalEventWriteBody {
+  id?: string;
   summary?: string;
   description?: string | null;
   location?: string | null;

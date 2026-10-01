@@ -1,5 +1,13 @@
-import type { CalendarPort, CalendarEvent } from "@oneon/domain";
-import type { GCalHttpClient } from "./gcal-http-client.js";
+import type {
+  CalendarPort,
+  CalendarEvent,
+  CalendarReader,
+  CalendarWriter,
+  CalendarEventDraft,
+  CalendarSendUpdates,
+} from "@oneon/domain";
+import { ExternalCallError } from "@oneon/domain";
+import { GCalApiError, type GCalHttpClient } from "./gcal-http-client.js";
 import type { GCalEventResource, GCalEventWriteBody } from "./calendar.types.js";
 import type { TTLCache } from "../cache/ttl-cache.js";
 
@@ -21,7 +29,7 @@ export interface GoogleCalendarAdapterConfig {
  * - Calendar-level cache invalidation on writes
  * - All-day events preserve date-only representation (no UTC midnight mapping)
  */
-export class GoogleCalendarAdapter implements CalendarPort {
+export class GoogleCalendarAdapter implements CalendarPort, CalendarReader, CalendarWriter {
   private readonly client: GCalHttpClient;
   private readonly calendarId: string;
   private readonly cache: TTLCache<CalendarEvent[]>;
@@ -69,6 +77,41 @@ export class GoogleCalendarAdapter implements CalendarPort {
     return mapToDomain(updated);
   }
 
+  async getEvent(id: string): Promise<CalendarEvent | null> {
+    const resource = await this.client.getEvent(this.calendarId, id).catch(mapReadError);
+    if (!resource || resource.status === "cancelled") return null;
+    return mapToDomain(resource);
+  }
+
+  async create(
+    event: CalendarEventDraft,
+    options: { eventId: string; sendUpdates: CalendarSendUpdates },
+  ): Promise<CalendarEvent> {
+    const body = { ...mapToWriteBody(event), id: options.eventId };
+    const created = await this.client
+      .insertEvent(this.calendarId, body, { sendUpdates: options.sendUpdates })
+      .catch((error: unknown) => mapWriteError(error, "create"));
+    this.cache.invalidateByPrefix(this.cachePrefix);
+    return mapToDomain(created);
+  }
+
+  async update(
+    id: string,
+    changes: Partial<CalendarEventDraft>,
+    options: { ifMatch: string; sendUpdates: CalendarSendUpdates },
+  ): Promise<CalendarEvent> {
+    const updated = await this.client
+      .patchEvent(this.calendarId, id, mapToPartialWriteBody(changes), options)
+      .catch((error: unknown) => mapWriteError(error, "update"));
+    this.cache.invalidateByPrefix(this.cachePrefix);
+    return mapToDomain(updated);
+  }
+
+  async remove(id: string, options: { ifMatch: string; sendUpdates: CalendarSendUpdates }): Promise<void> {
+    await this.client.deleteEvent(this.calendarId, id, options).catch((error: unknown) => mapWriteError(error, "remove"));
+    this.cache.invalidateByPrefix(this.cachePrefix);
+  }
+
   async searchEvents(
     query: string,
     timeMin?: string,
@@ -109,7 +152,30 @@ function mapToDomain(resource: GCalEventResource): CalendarEvent {
     description: resource.description ?? null,
     attendees: (resource.attendees ?? []).map((a) => a.email),
     location: resource.location ?? null,
+    etag: resource.etag ?? null,
+    updated: resource.updated ?? null,
   };
+}
+
+// Spec §10.4. Reads surface unknown failures as-is; writes classify every failure.
+function mapReadError(error: unknown): never {
+  if (error instanceof ExternalCallError) throw error;
+  if (error instanceof GCalApiError) {
+    throw new ExternalCallError(error.status >= 500 || error.status === 429 ? "unknown" : "definite", "read_failed", error.message);
+  }
+  throw new ExternalCallError("unknown", "google_unreachable", error instanceof Error ? error.message : String(error));
+}
+
+function mapWriteError(error: unknown, op: "create" | "update" | "remove"): never {
+  if (error instanceof ExternalCallError) throw error;
+  if (error instanceof GCalApiError) {
+    if (op === "create" && error.status === 409) throw new ExternalCallError("unknown", "already_exists", error.message);
+    if (error.status === 412) throw new ExternalCallError("definite", "changed_since", error.message);
+    if (error.status === 404 || error.status === 410) throw new ExternalCallError("definite", "not_found", error.message);
+    if (error.status === 429 || error.status >= 500) throw new ExternalCallError("unknown", "google_unavailable", error.message);
+    throw new ExternalCallError("definite", "rejected_by_google", error.message);
+  }
+  throw new ExternalCallError("unknown", "google_unreachable", error instanceof Error ? error.message : String(error));
 }
 
 function mapToWriteBody(event: Omit<CalendarEvent, "id">): GCalEventWriteBody {
