@@ -4,6 +4,8 @@ import { clampPolicy } from "../policy/index.js";
 
 // A valid input per definition. Tasks 7 and 8 add entries.
 const SAMPLES: Record<string, Record<string, unknown>> = {
+  notify: { inboundItemId: "i1", title: "Urgent: Q4", body: "s", deepLink: "/items/i1" },
+  create_reminder: { deadlineId: "d1", inboundItemId: "i1" },
   archive: { inboundItemId: "i1", reason: "spam_classification" },
   label: { inboundItemId: "i1", label: "newsletter", reason: "newsletter_low_priority" },
   draft_reply: { inboundItemId: "i1", reason: "follow_up_needed", summary: "s", from: "a@x.com" },
