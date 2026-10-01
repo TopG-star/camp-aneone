@@ -27,6 +27,6 @@ export type { LLMPort, IntentExtractionPort, SynthesisPort, ClassificationResult
 export type { CalendarPort, CalendarEvent } from "./calendar.port.js";
 export type { GitHubPort, GitHubNotification, GitHubPullRequest } from "./github.port.js";
 export type { TeamsPort, TeamsMessage } from "./teams.port.js";
-export type { NotificationPort } from "./notification.port.js";
+export type { NotificationPort, NotificationWriter, NotificationSendResult } from "./notification.port.js";
 export type { Logger } from "./logger.port.js";
 export type { TransactionRunner } from "./transaction-runner.port.js";

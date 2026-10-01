@@ -69,6 +69,7 @@ export const NotificationEventType = {
   DeadlineApproaching: "deadline_approaching",
   ActionProposed: "action_proposed",
   ActionExecuted: "action_executed",
+  ActionRollbackFailed: "action_rollback_failed",
 } as const;
 export type NotificationEventType =
   (typeof NotificationEventType)[keyof typeof NotificationEventType];

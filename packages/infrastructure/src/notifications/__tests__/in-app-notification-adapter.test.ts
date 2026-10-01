@@ -437,4 +437,30 @@ describe("InAppNotificationAdapter", () => {
       vi.useRealTimers();
     });
   });
+
+  describe("InAppNotificationAdapter.deliver", () => {
+    it("returns the created notification's id", async () => {
+      const created = { id: "n-1" };
+      const notificationRepo = { create: vi.fn().mockReturnValue(created) } as unknown as NotificationRepository;
+      const preferenceRepo = { get: vi.fn().mockReturnValue(null) } as unknown as PreferenceRepository;
+      const adapter = new InAppNotificationAdapter({ notificationRepo, preferenceRepo, logger });
+
+      await expect(
+        adapter.deliver({ eventType: "urgent_item", title: "Urgent: Q4", body: "s", userId: "u1" }),
+      ).resolves.toEqual({ status: "delivered", notificationId: "n-1" });
+    });
+
+    it("reports suppression instead of writing", async () => {
+      const notificationRepo = { create: vi.fn() } as unknown as NotificationRepository;
+      const preferenceRepo = {
+        get: vi.fn((key: string) => (key === "user:u1:notification.enabled.urgent_item" ? "false" : null)),
+      } as unknown as PreferenceRepository;
+      const adapter = new InAppNotificationAdapter({ notificationRepo, preferenceRepo, logger });
+
+      await expect(
+        adapter.deliver({ eventType: "urgent_item", title: "t", body: "b", userId: "u1" }),
+      ).resolves.toEqual({ status: "suppressed", reason: "type_disabled" });
+      expect(notificationRepo.create).not.toHaveBeenCalled();
+    });
+  });
 });
