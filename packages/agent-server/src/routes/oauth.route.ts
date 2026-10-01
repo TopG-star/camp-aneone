@@ -7,6 +7,7 @@ import type {
   PreferenceRepository,
   Logger,
 } from "@oneon/domain";
+import { gmailLastRefreshFailureAtKey } from "../gmail-refresh-state.js";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -233,6 +234,8 @@ export function createOAuthRouter(deps: OAuthRouteDeps): Router {
         updatedAt: new Date().toISOString(),
       });
 
+      preferenceRepo.delete(gmailLastRefreshFailureAtKey(user.id));
+
       logger.info("Google OAuth connected", {
         userId: user.id,
         googleEmail: normalizedGoogleEmail,
@@ -273,6 +276,7 @@ export function createOAuthRouter(deps: OAuthRouteDeps): Router {
       }
 
       oauthTokenRepo.delete("google", userId);
+      preferenceRepo.delete(gmailLastRefreshFailureAtKey(userId));
 
       logger.info("Google OAuth disconnected", { userId });
       res.json({ disconnected: true });

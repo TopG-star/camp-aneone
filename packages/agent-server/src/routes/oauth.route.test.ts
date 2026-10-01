@@ -5,6 +5,7 @@ import { OAuth2Client } from "google-auth-library";
 import { createOAuthRouter } from "./oauth.route.js";
 import type { OAuthRouteDeps } from "./oauth.route.js";
 import type { UserRepository, OAuthTokenRepository, PreferenceRepository } from "@oneon/domain";
+import { gmailLastRefreshFailureAtKey } from "../gmail-refresh-state.js";
 
 function createMockUserRepo(): UserRepository {
   return {
@@ -234,6 +235,49 @@ describe("OAuth Route", () => {
       expect(deps.preferenceRepo.delete).toHaveBeenCalledWith(stateKey);
     });
 
+    it("clears refresh-failure marker after successful Google reconnect", async () => {
+      const deps = createDeps();
+      const stateKey = "oauth_state:test-state";
+      const stateValue = JSON.stringify({
+        returnTo: "/settings",
+        userId: "user-A",
+        createdAt: new Date().toISOString(),
+      });
+
+      (deps.preferenceRepo.get as ReturnType<typeof vi.fn>).mockImplementation(
+        (key: string) => (key === stateKey ? stateValue : null),
+      );
+
+      const getTokenSpy = vi.spyOn(OAuth2Client.prototype, "getToken").mockResolvedValue({
+        tokens: {
+          access_token: "ya29.new-access",
+          refresh_token: "1//new-refresh",
+          token_type: "bearer",
+          scope: "openid email",
+          expiry_date: Date.now() + 3600 * 1000,
+        },
+      } as unknown as Awaited<ReturnType<OAuth2Client["getToken"]>>);
+
+      const requestSpy = vi.spyOn(OAuth2Client.prototype, "request").mockResolvedValue({
+        data: { email: "alice@test.com" },
+      } as unknown as Awaited<ReturnType<OAuth2Client["request"]>>);
+
+      const app = createApp(deps);
+      const res = await request(app)
+        .get("/api/oauth/callback/google")
+        .query({ code: "valid-auth-code", state: "test-state" });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.location).toContain("connected=google");
+      expect(deps.preferenceRepo.delete).toHaveBeenCalledWith(stateKey);
+      expect(deps.preferenceRepo.delete).toHaveBeenCalledWith(
+        gmailLastRefreshFailureAtKey("user-A"),
+      );
+
+      getTokenSpy.mockRestore();
+      requestSpy.mockRestore();
+    });
+
     it("accepts Google callback email regardless of casing", async () => {
       const deps = createDeps();
       const stateKey = "oauth_state:test-state";
@@ -301,6 +345,9 @@ describe("OAuth Route", () => {
       expect(res.status).toBe(200);
       expect(res.body.disconnected).toBe(true);
       expect(deps.oauthTokenRepo.delete).toHaveBeenCalledWith("google", "user-A");
+      expect(deps.preferenceRepo.delete).toHaveBeenCalledWith(
+        gmailLastRefreshFailureAtKey("user-A"),
+      );
     });
 
     it("returns 404 when no token exists", async () => {
