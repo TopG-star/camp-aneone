@@ -22,6 +22,7 @@ import type {
   GitHubPort,
   TeamsPort,
   NotificationPort,
+  NotificationWriter,
   TransactionRunner,
   Logger,
 } from "@oneon/domain";
@@ -73,6 +74,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type { BackgroundLoop } from "./background-loop.js";
+import { createActionsModule, type ActionsModule } from "./actions-wiring.js";
 
 export interface AppContainer {
   // ── Config ────────────────────────────────────────────────
@@ -117,6 +119,10 @@ export interface AppContainer {
 
   // ── Infrastructure Services ───────────────────────────────
   transactionRunner: TransactionRunner;
+
+  // ── Actions (spec: Action Spec framework) ─────────────────
+  actions: ActionsModule;
+  notificationWriter: NotificationWriter;
 
   // ── Background Loop (mutable, set after creation) ─────────
   backgroundLoop: BackgroundLoop | null;
@@ -405,17 +411,15 @@ export function createContainer(env: Env): AppContainer {
   });
   logger.info("Teams: ✓ local search active (inbound_items-backed)");
 
-  const inAppNotificationPort: NotificationPort = new InAppNotificationAdapter({
-    notificationRepo,
-    preferenceRepo,
-    logger,
-  });
+  const inAppNotifications = new InAppNotificationAdapter({ notificationRepo, preferenceRepo, logger });
+  const inAppNotificationPort: NotificationPort = inAppNotifications;
+  let webPushNotifications: WebPushNotificationAdapter | null = null;
 
   let notificationPort: NotificationPort = inAppNotificationPort;
 
   if (env.FEATURE_PUSH_NOTIFICATIONS) {
     if (env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY && env.VAPID_SUBJECT) {
-      const webPushNotificationPort = new WebPushNotificationAdapter({
+      const webPush = new WebPushNotificationAdapter({
         pushSubscriptionRepo,
         preferenceRepo,
         vapidPublicKey: env.VAPID_PUBLIC_KEY,
@@ -423,11 +427,12 @@ export function createContainer(env: Env): AppContainer {
         vapidSubject: env.VAPID_SUBJECT,
         logger,
       });
+      webPushNotifications = webPush;
 
       notificationPort = {
         async send(notification): Promise<void> {
           await inAppNotificationPort.send(notification);
-          await webPushNotificationPort.send(notification);
+          await webPush.send(notification);
         },
       };
 
@@ -441,6 +446,34 @@ export function createContainer(env: Env): AppContainer {
   } else {
     logger.info("Notifications: ✓ in-app mode");
   }
+
+  // The notify executor needs to know what happened; web push stays best effort.
+  const notificationWriter: NotificationWriter = {
+    async deliver(notification) {
+      const result = await inAppNotifications.deliver(notification);
+      if (result.status === "delivered" && webPushNotifications) {
+        await webPushNotifications.send(notification).catch((error: unknown) =>
+          logger.warn("Web push delivery failed", { error: error instanceof Error ? error.message : String(error) }),
+        );
+      }
+      return result;
+    },
+  };
+
+  const actions = createActionsModule({
+    db,
+    publicUrl: env.PUBLIC_URL,
+    calendarId: env.CALENDAR_ID,
+    calendarCacheTtlMs: env.CALENDAR_CACHE_TTL_MS,
+    oauthTokenRepo,
+    deadlines: deadlineRepo,
+    notificationRepo,
+    preferenceRepo,
+    notificationPort,
+    notificationWriter,
+    createGoogleTokenProvider,
+    logger,
+  });
 
   // ── Power Automate status ─────────────────────────────────
   if (env.PA_OUTLOOK_WEBHOOK_SECRET) {
@@ -491,6 +524,8 @@ export function createContainer(env: Env): AppContainer {
     teamsPort,
     notificationPort,
     transactionRunner,
+    actions,
+    notificationWriter,
     backgroundLoop: null,
     logger,
     shutdown,

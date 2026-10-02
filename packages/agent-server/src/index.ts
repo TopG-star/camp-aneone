@@ -13,6 +13,7 @@ import { loadEnv } from "./config/env.js";
 import { createContainer } from "./container.js";
 import { registerRoutes } from "./routes/index.js";
 import { BackgroundLoop } from "./background-loop.js";
+import { runActionStartupTasks } from "./actions-wiring.js";
 import {
   ingestGmail,
   parseBankStatements,
@@ -241,7 +242,7 @@ if (env.FEATURE_BACKGROUND_LOOP) {
       : env.PROCESSING_BATCH_SIZE;
     if (isFirstCycle) isFirstCycle = false;
 
-    return runProcessingCycle(
+    const summary = await runProcessingCycle(
       {
         userId,
         inboundItemRepo: container.inboundItemRepo,
@@ -273,6 +274,10 @@ if (env.FEATURE_BACKGROUND_LOOP) {
         maxDurationMs: env.PROCESSING_MAX_DURATION_MS,
       },
     );
+
+    await container.actions.orchestrator.sweep(userId);
+    await container.actions.orchestrator.expireStale(userId);
+    return summary;
   };
 
   backgroundLoop = new BackgroundLoop(
@@ -293,6 +298,10 @@ if (env.FEATURE_BACKGROUND_LOOP) {
 } else {
   logger.info("Background loop disabled via FEATURE_BACKGROUND_LOOP=false");
 }
+
+void runActionStartupTasks(container, logger).catch((error: unknown) =>
+  logger.error("Action startup tasks failed", { error: error instanceof Error ? error.message : String(error) }),
+);
 
 server = app.listen(env.PORT, () => {
   logger.info(`Server ready on port ${env.PORT}`);
