@@ -70,20 +70,6 @@ export {
 } from "./list-calendar-events.js";
 
 export {
-  createCreateCalendarEventTool,
-  createCalendarEventSchema,
-  type CreateCalendarEventDeps,
-  type CreateCalendarEventInput,
-} from "./create-calendar-event.js";
-
-export {
-  createUpdateCalendarEventTool,
-  updateCalendarEventSchema,
-  type UpdateCalendarEventDeps,
-  type UpdateCalendarEventInput,
-} from "./update-calendar-event.js";
-
-export {
   createSearchCalendarTool,
   searchCalendarSchema,
   type SearchCalendarDeps,

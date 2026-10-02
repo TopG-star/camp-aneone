@@ -29,8 +29,6 @@ function makeDeps(
   return {
     calendarPort: {
       listEvents: vi.fn().mockResolvedValue([]),
-      createEvent: vi.fn(),
-      updateEvent: vi.fn(),
       searchEvents: vi.fn().mockResolvedValue([]),
     },
     ...overrides,
@@ -72,8 +70,6 @@ describe("list_calendar_events tool", () => {
   it("uses resolveCalendarPort when userId is provided", async () => {
     const resolvedPort = {
       listEvents: vi.fn().mockResolvedValue([makeEvent()]),
-      createEvent: vi.fn(),
-      updateEvent: vi.fn(),
       searchEvents: vi.fn().mockResolvedValue([]),
     };
 

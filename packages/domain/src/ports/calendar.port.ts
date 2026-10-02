@@ -16,13 +16,9 @@ export interface CalendarEvent {
   updated?: string | null;
 }
 
+/** Read access used by chat tools, Today and the briefing. Writes go through CalendarWriter. */
 export interface CalendarPort {
   listEvents(timeMin: string, timeMax: string): Promise<CalendarEvent[]>;
-  createEvent(event: Omit<CalendarEvent, "id">): Promise<CalendarEvent>;
-  updateEvent(
-    id: string,
-    updates: Partial<Omit<CalendarEvent, "id">>
-  ): Promise<CalendarEvent>;
   searchEvents(query: string, timeMin?: string, timeMax?: string): Promise<CalendarEvent[]>;
 }
 

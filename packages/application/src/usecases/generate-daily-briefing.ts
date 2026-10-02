@@ -2,13 +2,11 @@ import type {
   ClassificationRepository,
   InboundItemRepository,
   DeadlineRepository,
-  ActionLogRepository,
   CalendarPort,
   CalendarEvent,
   SynthesisPort,
   Logger,
   Deadline,
-  ActionLogEntry,
 } from "@oneon/domain";
 
 // ── Constants ────────────────────────────────────────────────
@@ -19,6 +17,12 @@ const MAX_URGENT_ITEMS = 20;
 export const BRIEFING_PROMPT_VERSION = "1.0";
 
 // ── Types ────────────────────────────────────────────────────
+
+export interface PendingActionSummary {
+  actionType: string;
+  resourceId: string;
+  riskLevel: string;
+}
 
 export interface UrgentItemSummary {
   id: string;
@@ -36,7 +40,7 @@ export interface BriefingData {
   date: string;
   urgentItems: UrgentItemSummary[];
   deadlines: Deadline[];
-  pendingActions: ActionLogEntry[];
+  pendingActions: PendingActionSummary[];
   calendar: {
     status: CalendarStatus;
     events: CalendarEvent[];
@@ -47,7 +51,7 @@ export interface GenerateDailyBriefingDeps {
   classificationRepo: ClassificationRepository;
   inboundItemRepo: InboundItemRepository;
   deadlineRepo: DeadlineRepository;
-  actionLogRepo: ActionLogRepository;
+  listPendingActions(): PendingActionSummary[];
   synthesizer: SynthesisPort;
   calendarPort?: CalendarPort;
   logger: Logger;
@@ -332,7 +336,7 @@ export async function generateDailyBriefing(
   );
 
   // ── 3. Pending actions ──
-  const pendingActions = deps.actionLogRepo.findByStatus("proposed");
+  const pendingActions = deps.listPendingActions();
 
   // ── 4. Calendar events ──
   let calendar: BriefingData["calendar"];

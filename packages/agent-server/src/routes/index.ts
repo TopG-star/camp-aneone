@@ -42,8 +42,6 @@ import {
   createSearchEmailsTool,
   createListDeadlinesTool,
   createListCalendarEventsTool,
-  createCreateCalendarEventTool,
-  createUpdateCalendarEventTool,
   createSearchCalendarTool,
   createListGitHubNotificationsTool,
   createListGitHubPRsTool,
@@ -59,6 +57,7 @@ import {
   createSummarizeFinanceSpendTool,
   createFinanceSpendInsightsTool,
   createSearchPersonalMemoryTool,
+  createChatActionTools,
 } from "@oneon/application";
 
 export function registerRoutes(app: Express, container: AppContainer): void {
@@ -241,7 +240,8 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       deadlineRepo: container.deadlineRepo,
     }));
     toolRegistry.register(createListPendingActionsTool({
-      actionLogRepo: container.actionLogRepo,
+      instanceRepo: container.actions.instanceRepo,
+      registry: container.actions.registry,
     }));
     toolRegistry.register(createListFollowUpsTool({
       classificationRepo: container.classificationRepo,
@@ -292,18 +292,25 @@ export function registerRoutes(app: Express, container: AppContainer): void {
         calendarPort: container.calendarPort,
         resolveCalendarPort,
       } as Parameters<typeof createListCalendarEventsTool>[0]));
-      toolRegistry.register(createCreateCalendarEventTool({
-        calendarPort: container.calendarPort,
-        resolveCalendarPort,
-      } as Parameters<typeof createCreateCalendarEventTool>[0]));
-      toolRegistry.register(createUpdateCalendarEventTool({
-        calendarPort: container.calendarPort,
-        resolveCalendarPort,
-      } as Parameters<typeof createUpdateCalendarEventTool>[0]));
       toolRegistry.register(createSearchCalendarTool({
         calendarPort: container.calendarPort,
         resolveCalendarPort,
       } as Parameters<typeof createSearchCalendarTool>[0]));
+    }
+
+    // Chat action tools: writes go through the action framework, so they are
+    // registered even without a calendar port and fail honestly when it is missing.
+    const aiModel =
+      env.LLM_PROVIDER === "deepseek"
+        ? `deepseek:${env.DEEPSEEK_CLASSIFIER_MODEL ?? "unknown"}`
+        : `anthropic:${env.LLM_CLASSIFIER_MODEL}`;
+    for (const tool of createChatActionTools({
+      requestAction: container.actions.orchestrator.requestAction,
+      registry: container.actions.registry,
+      aiModel,
+      clock: () => new Date(),
+    })) {
+      toolRegistry.register(tool);
     }
 
     // GitHub tools (only if githubPort available)
@@ -331,7 +338,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
         classificationRepo: container.classificationRepo,
         inboundItemRepo: container.inboundItemRepo,
         deadlineRepo: container.deadlineRepo,
-        actionLogRepo: container.actionLogRepo,
+        instanceRepo: container.actions.instanceRepo,
         synthesizer: container.llmPort,
         calendarPort: container.calendarPort ?? undefined,
         logger: chatLogger,
@@ -356,7 +363,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
         inboundItemRepo: container.inboundItemRepo,
         classificationRepo: container.classificationRepo,
         deadlineRepo: container.deadlineRepo,
-        actionLogRepo: container.actionLogRepo,
+        instanceRepo: container.actions.instanceRepo,
         userProfileRepo: container.userProfileRepo,
         intentExtractor: container.llmPort,
         synthesizer: container.llmPort,
@@ -458,7 +465,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       inboundItemRepo: container.inboundItemRepo,
       classificationRepo: container.classificationRepo,
       deadlineRepo: container.deadlineRepo,
-      actionLogRepo: container.actionLogRepo,
+      instanceRepo: container.actions.instanceRepo,
       logger: inboxLogger,
     }),
   );
@@ -511,7 +518,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       classificationRepo: container.classificationRepo,
       inboundItemRepo: container.inboundItemRepo,
       deadlineRepo: container.deadlineRepo,
-      actionLogRepo: container.actionLogRepo,
+      instanceRepo: container.actions.instanceRepo,
       notificationRepo: container.notificationRepo,
       preferenceRepo: container.preferenceRepo,
       calendarPort: container.calendarPort,
@@ -527,7 +534,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     ...userAuth,
     createCycleRouter({
       getBackgroundLoop: () => container.backgroundLoop ?? null,
-      actionLogRepo: container.actionLogRepo,
+      instanceRepo: container.actions.instanceRepo,
       logger: cycleLogger,
     }),
   );

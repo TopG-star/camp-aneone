@@ -3,7 +3,7 @@ import type {
   ClassificationRepository,
   InboundItemRepository,
   DeadlineRepository,
-  ActionLogRepository,
+  ActionInstanceRepository,
   CalendarPort,
   SynthesisPort,
   Logger,
@@ -18,6 +18,7 @@ import {
 
 export const dailyBriefingSchema = z.object({
   timezone: z.string().optional().default("UTC"),
+  userId: z.string().trim().min(1).optional(),
 });
 
 export type DailyBriefingInput = z.infer<typeof dailyBriefingSchema>;
@@ -28,7 +29,7 @@ export interface DailyBriefingDeps {
   classificationRepo: ClassificationRepository;
   inboundItemRepo: InboundItemRepository;
   deadlineRepo: DeadlineRepository;
-  actionLogRepo: ActionLogRepository;
+  instanceRepo: ActionInstanceRepository;
   synthesizer: SynthesisPort;
   calendarPort?: CalendarPort;
   logger: Logger;
@@ -50,7 +51,14 @@ export function createDailyBriefingTool(deps: DailyBriefingDeps): ToolDefinition
         classificationRepo: deps.classificationRepo,
         inboundItemRepo: deps.inboundItemRepo,
         deadlineRepo: deps.deadlineRepo,
-        actionLogRepo: deps.actionLogRepo,
+        listPendingActions: () =>
+          input.userId
+            ? deps.instanceRepo.list(input.userId, { statuses: ["awaiting_approval"], limit: 20 }).map((i) => ({
+                actionType: i.actionType,
+                resourceId: i.resourceRef ?? i.id,
+                riskLevel: String((i.decision as { risk?: string } | null)?.risk ?? "L1"),
+              }))
+            : [],
         synthesizer: deps.synthesizer,
         calendarPort: deps.calendarPort,
         logger: deps.logger,

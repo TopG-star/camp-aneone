@@ -5,13 +5,14 @@ import type {
   InboundItem,
   Classification,
   Deadline,
-  ActionLogEntry,
+  ActionInstance,
   InboundItemRepository,
   ClassificationRepository,
   DeadlineRepository,
-  ActionLogRepository,
+  ActionInstanceRepository,
   Logger,
 } from "@oneon/domain";
+import { InboxDetailResponseSchema } from "@oneon/contracts";
 import { createInboxRouter, type InboxRouteDeps } from "./inbox.route.js";
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -71,22 +72,17 @@ function makeDeadline(overrides: Partial<Deadline> = {}): Deadline {
   };
 }
 
-function makeAction(overrides: Partial<ActionLogEntry> = {}): ActionLogEntry {
+function makeAction(overrides: Partial<ActionInstance> = {}): ActionInstance {
   return {
     id: "act-001",
-    userId: null,
-    resourceId: "item-001",
-    actionType: "draft_reply",
-    riskLevel: "approval_required",
-    status: "proposed",
-    payloadJson: "{}",
-    resultJson: null,
-    errorJson: null,
-    rollbackJson: null,
+    actionType: "create_reminder",
+    status: "awaiting_approval",
+    resourceRef: "inbound_item:item-001",
+    decision: { risk: "L2" },
     createdAt: "2026-04-18T09:02:00Z",
     updatedAt: "2026-04-18T09:02:00Z",
     ...overrides,
-  };
+  } as unknown as ActionInstance;
 }
 
 function createMockRepos() {
@@ -116,14 +112,10 @@ function createMockRepos() {
       updateStatus: vi.fn(),
       count: vi.fn().mockReturnValue(0),
     } satisfies DeadlineRepository,
-    actionLogRepo: {
-      create: vi.fn(),
-      findByResourceAndType: vi.fn(),
-      findByStatus: vi.fn().mockReturnValue([]),
-      updateStatus: vi.fn(),
-      findAll: vi.fn().mockReturnValue([]),
+    instanceRepo: {
+      list: vi.fn().mockReturnValue([]),
       count: vi.fn().mockReturnValue(0),
-    } satisfies ActionLogRepository,
+    } as unknown as ActionInstanceRepository,
   };
 }
 
@@ -287,7 +279,7 @@ describe("Inbox routes", () => {
       vi.mocked(repos.inboundItemRepo.findById).mockReturnValue(item);
       vi.mocked(repos.classificationRepo.findByInboundItemId).mockReturnValue(cls);
       vi.mocked(repos.deadlineRepo.findByInboundItemId).mockReturnValue([deadline]);
-      vi.mocked(repos.actionLogRepo.findAll).mockReturnValue([action]);
+      vi.mocked(repos.instanceRepo.list).mockReturnValue([action]);
 
       const res = await request(app)
         .get("/api/inbox/item-001")
@@ -297,8 +289,11 @@ describe("Inbox routes", () => {
       expect(res.body.classification.category).toBe("urgent");
       expect(res.body.deadlines).toHaveLength(1);
       expect(res.body.deadlines[0].dueDate).toBe("2026-04-25T00:00:00Z");
-      expect(res.body.actions).toHaveLength(1);
-      expect(res.body.actions[0].actionType).toBe("draft_reply");
+      expect(res.body.actions).toEqual([
+        { id: "act-001", actionType: "create_reminder", riskLevel: "L2", status: "awaiting_approval", createdAt: "2026-04-18T09:02:00Z" },
+      ]);
+      expect(repos.instanceRepo.list).toHaveBeenCalledWith("user-A", { resourceRef: "inbound_item:item-001" });
+      expect(InboxDetailResponseSchema.safeParse(res.body).success).toBe(true);
     });
 
     it("returns item with no classification", async () => {
@@ -306,7 +301,7 @@ describe("Inbox routes", () => {
       vi.mocked(repos.inboundItemRepo.findById).mockReturnValue(item);
       vi.mocked(repos.classificationRepo.findByInboundItemId).mockReturnValue(null);
       vi.mocked(repos.deadlineRepo.findByInboundItemId).mockReturnValue([]);
-      vi.mocked(repos.actionLogRepo.findAll).mockReturnValue([]);
+      vi.mocked(repos.instanceRepo.list).mockReturnValue([]);
 
       const res = await request(app)
         .get("/api/inbox/item-001")

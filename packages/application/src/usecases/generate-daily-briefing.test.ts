@@ -5,12 +5,12 @@ import {
   type GenerateDailyBriefingDeps,
   type GenerateDailyBriefingInput,
   type BriefingData,
+  type PendingActionSummary,
 } from "./generate-daily-briefing.js";
 import type {
   ClassificationRepository,
   InboundItemRepository,
   DeadlineRepository,
-  ActionLogRepository,
   CalendarPort,
   CalendarEvent,
   SynthesisPort,
@@ -18,7 +18,6 @@ import type {
   Classification,
   InboundItem,
   Deadline,
-  ActionLogEntry,
   Category,
   Priority,
 } from "@oneon/domain";
@@ -88,22 +87,8 @@ function makeDeadline(
   };
 }
 
-function makeAction(overrides: Partial<ActionLogEntry> = {}): ActionLogEntry {
-  return {
-    id: "action-1",
-    userId: null,
-    resourceId: "item-1",
-    actionType: "notify",
-    riskLevel: "approval_required",
-    status: "proposed",
-    payloadJson: "{}",
-    resultJson: null,
-    errorJson: null,
-    rollbackJson: null,
-    createdAt: "2026-04-17T08:10:00Z",
-    updatedAt: "2026-04-17T08:10:00Z",
-    ...overrides,
-  };
+function makeAction(overrides: Partial<PendingActionSummary> = {}): PendingActionSummary {
+  return { actionType: "create_reminder", resourceId: "deadline:d1", riskLevel: "L1", ...overrides };
 }
 
 function makeCalendarEvent(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
@@ -149,15 +134,6 @@ function createDeps(overrides: Partial<GenerateDailyBriefingDeps> = {}): Generat
     count: vi.fn(() => 0),
   };
 
-  const actionLogRepo: ActionLogRepository = {
-    create: vi.fn() as ActionLogRepository["create"],
-    findByResourceAndType: vi.fn(() => null),
-    findByStatus: vi.fn(() => []),
-    updateStatus: vi.fn(),
-    findAll: vi.fn(() => []),
-    count: vi.fn(() => 0),
-  };
-
   const synthesizer: SynthesisPort = {
     synthesize: vi.fn(async () => "Your morning briefing summary."),
   };
@@ -166,7 +142,7 @@ function createDeps(overrides: Partial<GenerateDailyBriefingDeps> = {}): Generat
     classificationRepo,
     inboundItemRepo,
     deadlineRepo,
-    actionLogRepo,
+    listPendingActions: () => [],
     synthesizer,
     logger: createMockLogger(),
     ...overrides,
@@ -240,17 +216,14 @@ describe("generateDailyBriefing", () => {
     );
   });
 
-  it("populates pendingActions with status=proposed", async () => {
-    const action1 = makeAction({ id: "act-1", status: "proposed", riskLevel: "approval_required" });
-    const action2 = makeAction({ id: "act-2", status: "proposed", riskLevel: "auto" });
-
-    const deps = createDeps();
-    vi.mocked(deps.actionLogRepo.findByStatus).mockReturnValue([action1, action2]);
+  it("populates pendingActions from listPendingActions", async () => {
+    const pending = [makeAction(), makeAction({ actionType: "create_calendar_event", resourceId: "inbound_item:i1", riskLevel: "L2" })];
+    const deps = createDeps({ listPendingActions: vi.fn(() => pending) });
 
     const result = await generateDailyBriefing(deps, defaultInput());
 
-    expect(result.data.pendingActions).toHaveLength(2);
-    expect(deps.actionLogRepo.findByStatus).toHaveBeenCalledWith("proposed");
+    expect(result.data.pendingActions).toEqual(pending);
+    expect(deps.listPendingActions).toHaveBeenCalledTimes(1);
   });
 
   it("returns calendar.status='not_connected' when calendarPort absent", async () => {
@@ -268,8 +241,6 @@ describe("generateDailyBriefing", () => {
 
     const calendarPort: CalendarPort = {
       listEvents: vi.fn(async () => events),
-      createEvent: vi.fn(),
-      updateEvent: vi.fn(),
       searchEvents: vi.fn(),
     };
 
@@ -290,8 +261,6 @@ describe("generateDailyBriefing", () => {
   it("returns calendar.status='error' when calendarPort throws", async () => {
     const calendarPort: CalendarPort = {
       listEvents: vi.fn(async () => { throw new Error("OAuth expired"); }),
-      createEvent: vi.fn(),
-      updateEvent: vi.fn(),
       searchEvents: vi.fn(),
     };
 
@@ -368,8 +337,6 @@ describe("generateDailyBriefing", () => {
   it("uses correct day boundaries across DST start in America/New_York", async () => {
     const calendarPort: CalendarPort = {
       listEvents: vi.fn(async () => []),
-      createEvent: vi.fn(),
-      updateEvent: vi.fn(),
       searchEvents: vi.fn(),
     };
 
@@ -388,8 +355,6 @@ describe("generateDailyBriefing", () => {
   it("uses correct day boundaries for non-hour offset timezone", async () => {
     const calendarPort: CalendarPort = {
       listEvents: vi.fn(async () => []),
-      createEvent: vi.fn(),
-      updateEvent: vi.fn(),
       searchEvents: vi.fn(),
     };
 
@@ -470,12 +435,11 @@ describe("buildBriefingPrompt", () => {
   it("includes pending actions section", () => {
     const data: BriefingData = {
       ...emptyData,
-      pendingActions: [makeAction({ actionType: "draft_reply", riskLevel: "approval_required" })],
+      pendingActions: [makeAction({ actionType: "create_reminder", resourceId: "deadline:d1", riskLevel: "L1" })],
     };
     const prompt = buildBriefingPrompt(data);
     expect(prompt).toContain("Pending");
-    expect(prompt).toContain("draft_reply");
-    expect(prompt).toContain("approval_required");
+    expect(prompt).toContain("- create_reminder on deadline:d1 [L1]");
   });
 
   it("includes calendar error status in prompt", () => {

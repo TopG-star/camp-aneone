@@ -1,13 +1,13 @@
 import { Router } from "express";
 import type { BackgroundLoop } from "../background-loop.js";
-import type { ActionLogRepository, Logger } from "@oneon/domain";
+import type { ActionInstanceRepository, Logger } from "@oneon/domain";
 import { CycleErrorsQuerySchema } from "@oneon/contracts";
 
 // ── Types ────────────────────────────────────────────────────
 
 export interface CycleRouteDeps {
   getBackgroundLoop: () => BackgroundLoop | null;
-  actionLogRepo: ActionLogRepository;
+  instanceRepo: ActionInstanceRepository;
   logger: Logger;
 }
 
@@ -15,7 +15,7 @@ export interface CycleRouteDeps {
 
 export function createCycleRouter(deps: CycleRouteDeps): Router {
   const router = Router();
-  const { getBackgroundLoop, actionLogRepo, logger } = deps;
+  const { getBackgroundLoop, instanceRepo, logger } = deps;
 
   // ── GET /status — Current cycle status ────────────────────
   router.get("/status", (_req, res) => {
@@ -84,19 +84,18 @@ export function createCycleRouter(deps: CycleRouteDeps): Router {
           }))
         : [];
 
-      const failedActionErrors = actionLogRepo
-        .findAll({ status: "approved", userId, limit: limit * 5 })
-        .filter((a) => !!a.errorJson)
-        .map((a) => ({
-          id: `action-${a.id}-${a.updatedAt}`,
-          occurredAt: a.updatedAt,
+      const failedActionErrors = instanceRepo
+        .list(userId, { statuses: ["failed", "rollback_failed"], limit: limit * 5 })
+        .map((i) => ({
+          id: `action-${i.id}-${i.updatedAt}`,
+          occurredAt: i.updatedAt,
           component: "actions",
           stage: "execute",
           scope: "action" as const,
-          userId: a.userId,
-          message: readErrorMessage(a.errorJson),
-          actionId: a.id,
-          actionHref: `/actions#action-${a.id}`,
+          userId: i.userId,
+          message: i.error?.message ?? "Action failed",
+          actionId: i.id,
+          actionHref: `/actions#action-${i.id}`,
         }));
 
       const combined = [...failedActionErrors, ...loopErrors]
@@ -164,17 +163,4 @@ export function createCycleRouter(deps: CycleRouteDeps): Router {
   });
 
   return router;
-}
-
-function readErrorMessage(errorJson: string | null): string {
-  if (!errorJson) return "Unknown action execution error";
-  try {
-    const parsed = JSON.parse(errorJson) as { message?: unknown };
-    if (typeof parsed.message === "string" && parsed.message.trim().length > 0) {
-      return parsed.message;
-    }
-    return errorJson;
-  } catch {
-    return errorJson;
-  }
 }

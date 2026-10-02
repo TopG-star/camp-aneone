@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { OffsetPaginationQuerySchema, OffsetPaginationMetaSchema } from "./pagination.contract.js";
+import { LIFECYCLE_STATUS_VALUES } from "./actions.contract.js";
 
 // ── Source & Category enums ──────────────────────────────────
 
@@ -84,14 +85,8 @@ export const InboxDetailResponseSchema = InboxItemResponseSchema.extend({
     z.object({
       id: z.string(),
       actionType: z.string(),
-      riskLevel: z.enum(["auto", "approval_required"]),
-      status: z.enum([
-        "proposed",
-        "approved",
-        "executed",
-        "rejected",
-        "rolled_back",
-      ]),
+      riskLevel: z.string(),
+      status: z.enum(LIFECYCLE_STATUS_VALUES),
       createdAt: z.string(),
     }),
   ),

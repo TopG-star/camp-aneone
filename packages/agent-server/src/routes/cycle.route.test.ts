@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import request from "supertest";
-import type { ActionLogRepository, Logger } from "@oneon/domain";
+import type { ActionInstanceRepository, Logger } from "@oneon/domain";
 import type { BackgroundLoop } from "../background-loop.js";
 import { createCycleRouter } from "./cycle.route.js";
 
@@ -29,18 +29,14 @@ function makeLoop(overrides: Partial<BackgroundLoop> = {}): BackgroundLoop {
 
 let app: express.Express;
 let loop: BackgroundLoop | null;
-let actionLogRepo: ActionLogRepository;
+let instanceRepo: ActionInstanceRepository;
 
 beforeEach(() => {
   loop = makeLoop();
-  actionLogRepo = {
-    create: vi.fn(),
-    findByResourceAndType: vi.fn(),
-    findByStatus: vi.fn(),
-    updateStatus: vi.fn(),
-    findAll: vi.fn().mockReturnValue([]),
+  instanceRepo = {
+    list: vi.fn().mockReturnValue([]),
     count: vi.fn().mockReturnValue(0),
-  } as unknown as ActionLogRepository;
+  } as unknown as ActionInstanceRepository;
   app = express();
   app.use(express.json());
   // Inject test userId for all requests (simulates authenticated user)
@@ -48,7 +44,7 @@ beforeEach(() => {
     req.userId = "test-user";
     next();
   });
-  app.use("/api/cycle", createCycleRouter({ getBackgroundLoop: () => loop, actionLogRepo, logger }));
+  app.use("/api/cycle", createCycleRouter({ getBackgroundLoop: () => loop, instanceRepo, logger }));
 });
 
 describe("GET /api/cycle/status", () => {
@@ -100,18 +96,13 @@ describe("GET /api/cycle/errors", () => {
       },
     ]);
 
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([
+    vi.mocked(instanceRepo.list).mockReturnValue([
       {
         id: "act-1",
         userId: "test-user",
-        resourceId: "item-1",
         actionType: "archive",
-        riskLevel: "approval_required",
-        status: "approved",
-        payloadJson: "{}",
-        resultJson: null,
-        errorJson: '{"message":"SMTP timeout"}',
-        rollbackJson: null,
+        status: "failed",
+        error: { code: "executor_failed", message: "SMTP timeout", stage: "execute" },
         createdAt: older,
         updatedAt: now,
       },
@@ -119,6 +110,7 @@ describe("GET /api/cycle/errors", () => {
 
     const res = await request(app).get("/api/cycle/errors");
     expect(res.status).toBe(200);
+    expect(instanceRepo.list).toHaveBeenCalledWith("test-user", { statuses: ["failed", "rollback_failed"], limit: 125 });
     expect(res.body.errors).toHaveLength(2);
     expect(res.body.errors[0]).toMatchObject({
       component: "actions",
@@ -142,7 +134,7 @@ describe("GET /api/cycle/errors", () => {
     noAuthApp.use(express.json());
     noAuthApp.use(
       "/api/cycle",
-      createCycleRouter({ getBackgroundLoop: () => loop, actionLogRepo, logger }),
+      createCycleRouter({ getBackgroundLoop: () => loop, instanceRepo, logger }),
     );
 
     const res = await request(noAuthApp).get("/api/cycle/errors");
@@ -161,18 +153,13 @@ describe("GET /api/cycle/errors", () => {
       },
     ]);
 
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([
+    vi.mocked(instanceRepo.list).mockReturnValue([
       {
         id: "act-1",
         userId: "test-user",
-        resourceId: "item-1",
         actionType: "archive",
-        riskLevel: "approval_required",
-        status: "approved",
-        payloadJson: "{}",
-        resultJson: null,
-        errorJson: '{"message":"failed"}',
-        rollbackJson: null,
+        status: "failed",
+        error: { code: "executor_failed", message: "failed", stage: "execute" },
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },
@@ -198,18 +185,13 @@ describe("GET /api/cycle/errors", () => {
       },
     ]);
 
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([
+    vi.mocked(instanceRepo.list).mockReturnValue([
       {
         id: "act-1",
         userId: "test-user",
-        resourceId: "item-1",
         actionType: "archive",
-        riskLevel: "approval_required",
-        status: "approved",
-        payloadJson: "{}",
-        resultJson: null,
-        errorJson: '{"message":"SMTP timeout"}',
-        rollbackJson: null,
+        status: "failed",
+        error: { code: "executor_failed", message: "SMTP timeout", stage: "execute" },
         createdAt: older,
         updatedAt: now,
       },
@@ -247,7 +229,7 @@ describe("POST /api/cycle/run-now", () => {
     noAuthApp.use(express.json());
     noAuthApp.use(
       "/api/cycle",
-      createCycleRouter({ getBackgroundLoop: () => loop, actionLogRepo, logger }),
+      createCycleRouter({ getBackgroundLoop: () => loop, instanceRepo, logger }),
     );
     const res = await request(noAuthApp).post("/api/cycle/run-now");
     expect(res.status).toBe(401);

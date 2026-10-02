@@ -3,7 +3,7 @@ import type {
   InboundItemRepository,
   ClassificationRepository,
   DeadlineRepository,
-  ActionLogRepository,
+  ActionInstanceRepository,
   Logger,
 } from "@oneon/domain";
 import { InboxQuerySchema } from "@oneon/contracts";
@@ -14,7 +14,7 @@ export interface InboxRouteDeps {
   inboundItemRepo: InboundItemRepository;
   classificationRepo: ClassificationRepository;
   deadlineRepo: DeadlineRepository;
-  actionLogRepo: ActionLogRepository;
+  instanceRepo: ActionInstanceRepository;
   logger: Logger;
 }
 
@@ -22,7 +22,7 @@ export interface InboxRouteDeps {
 
 export function createInboxRouter(deps: InboxRouteDeps): Router {
   const router = Router();
-  const { inboundItemRepo, classificationRepo, deadlineRepo, actionLogRepo, logger } = deps;
+  const { inboundItemRepo, classificationRepo, deadlineRepo, instanceRepo, logger } = deps;
 
   // ── GET / — Paginated inbox list ──────────────────────────
   router.get("/", (req, res) => {
@@ -99,8 +99,7 @@ export function createInboxRouter(deps: InboxRouteDeps): Router {
       const deadlines = deadlineRepo.findByInboundItemId(item.id);
 
       // Find actions related to this item
-      const allActions = actionLogRepo.findAll({ limit: 100, userId });
-      const relatedActions = allActions.filter((a) => a.resourceId === item.id);
+      const relatedActions = instanceRepo.list(userId, { resourceRef: `inbound_item:${item.id}` });
 
       res.json({
         id: item.id,
@@ -133,7 +132,7 @@ export function createInboxRouter(deps: InboxRouteDeps): Router {
         actions: relatedActions.map((a) => ({
           id: a.id,
           actionType: a.actionType,
-          riskLevel: a.riskLevel,
+          riskLevel: String((a.decision as { risk?: string } | null)?.risk ?? "L1"),
           status: a.status,
           createdAt: a.createdAt,
         })),

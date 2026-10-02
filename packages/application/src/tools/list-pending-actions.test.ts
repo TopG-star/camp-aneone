@@ -1,175 +1,107 @@
-import { describe, it, expect, vi } from "vitest";
-import type { ActionLogEntry } from "@oneon/domain";
+import { describe, it, expect, beforeEach } from "vitest";
+import type { NewActionInstance } from "@oneon/domain";
 import {
   createListPendingActionsTool,
   listPendingActionsSchema,
-  type ListPendingActionsDeps,
 } from "./list-pending-actions.js";
 import { createToolRegistry } from "./tool-registry.js";
+import { InMemoryActionRepo } from "../actions/__tests__/in-memory-repos.js";
+import { createActionRegistry } from "../actions/registry.js";
+import { createReminderDefinition } from "../actions/definitions/create-reminder.js";
+import type { ToolDefinition } from "./tool-registry.js";
 
 // ── Fixtures ─────────────────────────────────────────────────
 
-function makeAction(overrides: Partial<ActionLogEntry> = {}): ActionLogEntry {
-  return {
-    id: "act-001",
-    userId: null,
-    resourceId: "item-001",
-    actionType: "draft_reply",
-    riskLevel: "approval_required",
-    status: "proposed",
-    payloadJson: JSON.stringify({ to: "alice@example.com" }),
-    resultJson: null,
-    errorJson: null,
-    rollbackJson: null,
-    createdAt: "2026-04-17T08:00:00Z",
-    updatedAt: "2026-04-17T08:00:00Z",
-    ...overrides,
-  };
-}
+const clock = () => new Date("2026-10-01T12:00:00Z");
 
-function makeDeps(
-  overrides: Partial<ListPendingActionsDeps> = {}
-): ListPendingActionsDeps {
-  return {
-    actionLogRepo: {
-      create: vi.fn(),
-      findByResourceAndType: vi.fn().mockReturnValue(null),
-      findByStatus: vi.fn().mockReturnValue([]),
-      updateStatus: vi.fn(),
-      findAll: vi.fn().mockReturnValue([]),
-      count: vi.fn().mockReturnValue(0),
-    },
-    ...overrides,
+function seed(repo: InMemoryActionRepo, id: string, userId: string, status: "proposed" | "awaiting_approval" | "completed" = "awaiting_approval") {
+  const n: NewActionInstance = {
+    id,
+    scope: "personal",
+    ownerId: userId,
+    userId,
+    tenantId: null,
+    locationIds: [],
+    actionType: "create_reminder",
+    definitionVersion: "1",
+    initiator: "system",
+    initiatorUserId: null,
+    input: { deadlineId: "d1", inboundItemId: "i1" },
+    evidence: [],
+    idempotencyKey: `key-${id}`,
+    retryOf: null,
+    attemptNumber: 1,
+    resourceRef: "deadline:d1",
   };
+  repo.create(n, { kind: "system" });
+  if (status === "awaiting_approval") {
+    repo.appendTransition({ actionId: id, expectedStatus: "proposed", toStatus: "validating", actor: { kind: "system" } });
+    repo.appendTransition({ actionId: id, expectedStatus: "validating", toStatus: "awaiting_approval", actor: { kind: "system" } });
+  } else if (status === "completed") {
+    repo.instances.get(id)!.status = "completed";
+  }
 }
-
-// ── Schema Contract Tests ────────────────────────────────────
 
 describe("listPendingActionsSchema", () => {
-  it("accepts empty input with defaults", () => {
+  it("defaults to awaiting_approval and limit 20", () => {
     const result = listPendingActionsSchema.parse({});
-    expect(result.status).toBe("proposed");
+    expect(result.status).toBe("awaiting_approval");
     expect(result.limit).toBe(20);
   });
 
-  it("accepts explicit status filter", () => {
-    const result = listPendingActionsSchema.parse({ status: "approved" });
-    expect(result.status).toBe("approved");
-  });
-
-  it("accepts all valid statuses", () => {
-    for (const s of ["proposed", "approved", "executed", "rejected", "rolled_back"]) {
-      const result = listPendingActionsSchema.parse({ status: s });
-      expect(result.status).toBe(s);
-    }
-  });
-
-  it("rejects invalid status", () => {
+  it("accepts every lifecycle status and rejects unknown ones", () => {
+    expect(listPendingActionsSchema.parse({ status: "completed" }).status).toBe("completed");
     expect(() => listPendingActionsSchema.parse({ status: "unknown" })).toThrow();
+    expect(listPendingActionsSchema.parse({ status: "awaiting_approval" }).status).toBe("awaiting_approval");
   });
 
-  it("clamps limit to max 100", () => {
-    expect(() => listPendingActionsSchema.parse({ limit: 200 })).toThrow();
-  });
-
-  it("rejects non-positive limit", () => {
+  it("bounds limit to 1..50", () => {
     expect(() => listPendingActionsSchema.parse({ limit: 0 })).toThrow();
-    expect(() => listPendingActionsSchema.parse({ limit: -1 })).toThrow();
-  });
-
-  it("accepts actionType filter", () => {
-    const result = listPendingActionsSchema.parse({ actionType: "draft_reply" });
-    expect(result.actionType).toBe("draft_reply");
+    expect(() => listPendingActionsSchema.parse({ limit: 51 })).toThrow();
   });
 });
 
-// ── Tool Execution Tests ─────────────────────────────────────
-
 describe("list_pending_actions tool", () => {
-  it("returns empty list when no actions match", async () => {
-    const deps = makeDeps();
-    const tool = createListPendingActionsTool(deps);
-    const result = await tool.execute(listPendingActionsSchema.parse({}));
+  let repo: InMemoryActionRepo;
+  let tool: ToolDefinition;
 
-    expect(result.data).toEqual([]);
-    expect(result.summary).toBe("Found 0 pending actions.");
-    expect(deps.actionLogRepo.findAll).toHaveBeenCalledWith({
-      status: "proposed",
-      limit: 20,
+  beforeEach(() => {
+    repo = new InMemoryActionRepo(clock);
+    seed(repo, "a-u1", "u1");
+    seed(repo, "a-u2", "u2");
+    tool = createListPendingActionsTool({
+      instanceRepo: repo,
+      registry: createActionRegistry([createReminderDefinition]),
     });
   });
 
-  it("returns proposed actions by default", async () => {
-    const actions = [
-      makeAction({ id: "act-001", actionType: "draft_reply" }),
-      makeAction({ id: "act-002", actionType: "notify" }),
-    ];
-    const deps = makeDeps();
-    vi.mocked(deps.actionLogRepo.findAll).mockReturnValue(actions);
-    const tool = createListPendingActionsTool(deps);
-
-    const result = await tool.execute(listPendingActionsSchema.parse({}));
-
-    expect(result.data).toHaveLength(2);
-    expect(result.summary).toBe("Found 2 pending actions.");
+  it("lists the signed-in user's actions awaiting approval", async () => {
+    const result = await tool.execute(tool.inputSchema.parse({ userId: "u1" }));
+    expect(result.data).toEqual([expect.objectContaining({ id: "a-u1", label: "Create reminder", status: "awaiting_approval" })]);
+    expect(result.summary).toBe("Found 1 action awaiting approval.");
   });
 
-  it("filters by explicit status", async () => {
-    const deps = makeDeps();
-    const tool = createListPendingActionsTool(deps);
-
-    await tool.execute(listPendingActionsSchema.parse({ status: "approved" }));
-
-    expect(deps.actionLogRepo.findAll).toHaveBeenCalledWith({
-      status: "approved",
-      limit: 20,
-    });
+  it("never returns another user's actions", async () => {
+    const result = await tool.execute(tool.inputSchema.parse({ userId: "u2" }));
+    expect((result.data as Array<{ id: string }>).map((a) => a.id)).toEqual(["a-u2"]);
   });
 
-  it("filters by actionType when provided", async () => {
-    const deps = makeDeps();
-    const tool = createListPendingActionsTool(deps);
-
-    await tool.execute(
-      listPendingActionsSchema.parse({ actionType: "draft_reply" })
-    );
-
-    expect(deps.actionLogRepo.findAll).toHaveBeenCalledWith(
-      expect.objectContaining({ actionType: "draft_reply" })
-    );
+  it("returns nothing without a session", async () => {
+    expect((await tool.execute(tool.inputSchema.parse({}))).data).toEqual([]);
   });
 
-  it("respects limit parameter", async () => {
-    const deps = makeDeps();
-    const tool = createListPendingActionsTool(deps);
-
-    await tool.execute(listPendingActionsSchema.parse({ limit: 5 }));
-
-    expect(deps.actionLogRepo.findAll).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: 5 })
-    );
-  });
-
-  it("returns correct summary for single action", async () => {
-    const deps = makeDeps();
-    vi.mocked(deps.actionLogRepo.findAll).mockReturnValue([makeAction()]);
-    const tool = createListPendingActionsTool(deps);
-
-    const result = await tool.execute(listPendingActionsSchema.parse({}));
-
-    expect(result.summary).toBe("Found 1 pending action.");
+  it("filters by an explicit status", async () => {
+    seed(repo, "a-done", "u1", "completed");
+    const result = await tool.execute(tool.inputSchema.parse({ userId: "u1", status: "completed" }));
+    expect((result.data as Array<{ id: string }>).map((a) => a.id)).toEqual(["a-done"]);
+    expect(result.summary).toBe("Found 1 action completed.");
   });
 
   it("works through ToolRegistry async execute", async () => {
-    const deps = makeDeps();
-    vi.mocked(deps.actionLogRepo.findAll).mockReturnValue([makeAction()]);
     const registry = createToolRegistry();
-    registry.register(createListPendingActionsTool(deps));
-
-    const result = await registry.execute("list_pending_actions", {});
-
+    registry.register(tool);
+    const result = await registry.execute("list_pending_actions", { userId: "u1" });
     expect(result.data).toHaveLength(1);
     expect(result.meta.toolName).toBe("list_pending_actions");
-    expect(result.meta.durationMs).toBeGreaterThanOrEqual(0);
   });
 });

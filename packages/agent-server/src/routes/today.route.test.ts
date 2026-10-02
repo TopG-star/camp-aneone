@@ -6,7 +6,8 @@ import type {
   InboundItem,
   InboundItemRepository,
   DeadlineRepository,
-  ActionLogRepository,
+  ActionInstance,
+  ActionInstanceRepository,
   NotificationRepository,
   PreferenceRepository,
   CalendarPort,
@@ -46,10 +47,10 @@ beforeEach(() => {
       findByDateRange: vi.fn().mockReturnValue([]),
       findOverdue: vi.fn().mockReturnValue([]),
     } as unknown as DeadlineRepository,
-    actionLogRepo: {
-      findByStatus: vi.fn().mockReturnValue([]),
+    instanceRepo: {
+      list: vi.fn().mockReturnValue([]),
       count: vi.fn().mockReturnValue(0),
-    } as unknown as ActionLogRepository,
+    } as unknown as ActionInstanceRepository,
     notificationRepo: {
       countUnread: vi.fn().mockReturnValue(0),
     } as unknown as NotificationRepository,
@@ -82,6 +83,28 @@ describe("GET /api/today", () => {
       totalInbox: 0,
       pendingActions: 0,
     });
+  });
+
+  it("lists the session user's actions awaiting approval", async () => {
+    const waiting = [
+      { id: "a1", actionType: "create_reminder", resourceRef: "deadline:d1", decision: { risk: "L2" } },
+      { id: "a2", actionType: "notify", resourceRef: null, decision: null },
+    ] as unknown as ActionInstance[];
+    vi.mocked(deps.instanceRepo.list).mockReturnValue(waiting);
+    vi.mocked(deps.instanceRepo.count).mockReturnValue(7);
+
+    const res = await request(app).get("/api/today");
+
+    expect(deps.instanceRepo.list).toHaveBeenCalledWith("user-A", { statuses: ["awaiting_approval"], limit: 10 });
+    expect(deps.instanceRepo.count).toHaveBeenCalledWith("user-A", { statuses: ["awaiting_approval"] });
+    expect(res.body.pendingActions).toEqual({
+      count: 7,
+      items: [
+        { id: "a1", actionType: "create_reminder", riskLevel: "L2", resourceId: "deadline:d1" },
+        { id: "a2", actionType: "notify", riskLevel: "L1", resourceId: "a2" },
+      ],
+    });
+    expect(res.body.counts.pendingActions).toBe(7);
   });
 
   it("includes urgent items with priority <= 2", async () => {
@@ -125,8 +148,6 @@ describe("GET /api/today", () => {
   it("uses calendar port when available", async () => {
     const calendarPort: CalendarPort = {
       listEvents: vi.fn().mockResolvedValue([{ id: "ev-1", summary: "Meeting" }]),
-      createEvent: vi.fn(),
-      updateEvent: vi.fn(),
       searchEvents: vi.fn(),
     };
     deps.calendarPort = calendarPort;
@@ -140,8 +161,6 @@ describe("GET /api/today", () => {
   it("handles calendar port failure gracefully", async () => {
     const calendarPort: CalendarPort = {
       listEvents: vi.fn().mockRejectedValue(new Error("timeout")),
-      createEvent: vi.fn(),
-      updateEvent: vi.fn(),
       searchEvents: vi.fn(),
     };
     deps.calendarPort = calendarPort;

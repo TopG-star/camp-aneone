@@ -1,63 +1,37 @@
 import { z } from "zod";
-import type { ActionLogRepository } from "@oneon/domain";
+import { LIFECYCLE_STATUSES, type ActionInstanceRepository } from "@oneon/domain";
 import type { ToolDefinition, ToolResult } from "./tool-registry.js";
-
-// ── Input Schema ─────────────────────────────────────────────
+import type { ActionRegistry } from "../actions/registry.js";
+import { describeInstance } from "../actions/orchestrator/shared.js";
 
 export const listPendingActionsSchema = z.object({
-  status: z
-    .enum(["proposed", "approved", "executed", "rejected", "rolled_back"])
-    .optional()
-    .default("proposed"),
-  actionType: z.string().optional(),
-  limit: z
-    .number()
-    .int()
-    .positive()
-    .max(100)
-    .optional()
-    .default(20),
+  status: z.enum(LIFECYCLE_STATUSES).optional().default("awaiting_approval"),
+  limit: z.number().int().min(1).max(50).optional().default(20),
+  userId: z.string().trim().min(1).optional(),
 });
 
 export type ListPendingActionsInput = z.infer<typeof listPendingActionsSchema>;
 
-// ── Deps ─────────────────────────────────────────────────────
-
 export interface ListPendingActionsDeps {
-  actionLogRepo: ActionLogRepository;
+  instanceRepo: ActionInstanceRepository;
+  registry: ActionRegistry;
 }
 
-// ── Factory ──────────────────────────────────────────────────
-
-export function createListPendingActionsTool(
-  deps: ListPendingActionsDeps
-): ToolDefinition {
-  const { actionLogRepo } = deps;
-
+export function createListPendingActionsTool(deps: ListPendingActionsDeps): ToolDefinition {
   return {
     name: "list_pending_actions",
-    version: "1.0.0",
-    description:
-      "List actions awaiting approval or in a given status. Defaults to 'proposed' (pending approval).",
+    version: "2.0.0",
+    description: "List the user's actions in a status. Defaults to actions awaiting approval.",
     inputSchema: listPendingActionsSchema,
     execute(validatedInput: unknown): ToolResult {
-      const input = validatedInput as ListPendingActionsInput;
-
-      const actions = actionLogRepo.findAll({
-        status: input.status as Parameters<ActionLogRepository["findAll"]>[0]["status"],
-        actionType: input.actionType as Parameters<ActionLogRepository["findAll"]>[0]["actionType"],
-        limit: input.limit,
+      const input = validatedInput as z.infer<typeof listPendingActionsSchema>;
+      if (!input.userId) return { data: [], summary: "Found 0 actions." };
+      const actions = deps.instanceRepo.list(input.userId, { statuses: [input.status], limit: input.limit }).map((i) => {
+        const def = deps.registry.get(i.actionType);
+        return { id: i.id, actionType: i.actionType, label: def.label, status: i.status, description: describeInstance(def, i), createdAt: i.createdAt };
       });
-
-      const count = actions.length;
-
-      return {
-        data: actions,
-        summary:
-          count === 0
-            ? "Found 0 pending actions."
-            : `Found ${count} pending action${count === 1 ? "" : "s"}.`,
-      };
+      const noun = input.status === "awaiting_approval" ? "awaiting approval" : input.status;
+      return { data: actions, summary: `Found ${actions.length} action${actions.length === 1 ? "" : "s"} ${noun}.` };
     },
   };
 }

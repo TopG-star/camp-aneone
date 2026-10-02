@@ -7,7 +7,7 @@ import type {
   InboundItemRepository,
   ClassificationRepository,
   DeadlineRepository,
-  ActionLogRepository,
+  ActionInstanceRepository,
   Logger,
 } from "@oneon/domain";
 import {
@@ -22,7 +22,7 @@ export interface ChatRouteDeps {
   inboundItemRepo?: Pick<InboundItemRepository, "count"> | null;
   classificationRepo?: Pick<ClassificationRepository, "count" | "findAll"> | null;
   deadlineRepo?: Pick<DeadlineRepository, "findByDateRange"> | null;
-  actionLogRepo?: Pick<ActionLogRepository, "count"> | null;
+  instanceRepo?: Pick<ActionInstanceRepository, "count"> | null;
   userProfileRepo?: Pick<UserProfileRepository, "findByUserId"> | null;
   intentExtractor?: IntentExtractionPort | null;
   synthesizer?: SynthesisPort | null;
@@ -38,7 +38,7 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
     inboundItemRepo,
     classificationRepo,
     deadlineRepo,
-    actionLogRepo,
+    instanceRepo,
     intentExtractor,
     synthesizer,
     toolRegistry,
@@ -78,7 +78,7 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
       inboundItemRepo,
       classificationRepo,
       deadlineRepo,
-      actionLogRepo,
+      instanceRepo,
       userId,
       now: new Date(),
     });
@@ -114,6 +114,7 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
           assistantMessageId: result.assistantMessageId,
           conversationId: result.conversationId,
           history: result.history,
+          actions: result.actions,
         });
       })
       .catch((error) => {
@@ -131,7 +132,7 @@ function buildChatStats(input: {
   inboundItemRepo?: Pick<InboundItemRepository, "count"> | null;
   classificationRepo?: Pick<ClassificationRepository, "count" | "findAll"> | null;
   deadlineRepo?: Pick<DeadlineRepository, "findByDateRange"> | null;
-  actionLogRepo?: Pick<ActionLogRepository, "count"> | null;
+  instanceRepo?: Pick<ActionInstanceRepository, "count"> | null;
   userId: string;
   now: Date;
 }): ChatContextStats | null {
@@ -139,12 +140,12 @@ function buildChatStats(input: {
     inboundItemRepo,
     classificationRepo,
     deadlineRepo,
-    actionLogRepo,
+    instanceRepo,
     userId,
     now,
   } = input;
 
-  if (!inboundItemRepo || !classificationRepo || !deadlineRepo || !actionLogRepo) {
+  if (!inboundItemRepo || !classificationRepo || !deadlineRepo || !instanceRepo) {
     return null;
   }
 
@@ -163,7 +164,7 @@ function buildChatStats(input: {
   return {
     totalInboxItems: inboundItemRepo.count({ userId }),
     unreadUrgentCount: classificationRepo.count({ category: "urgent", userId }),
-    pendingActionsCount: actionLogRepo.count({ status: "proposed", userId }),
+    pendingActionsCount: instanceRepo.count(userId, { statuses: ["awaiting_approval"] }),
     upcomingDeadlinesCount,
     followUpCount,
   };

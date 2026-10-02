@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import request from "supertest";
+import { z } from "zod";
 import type {
   ConversationMessage,
   ConversationRepository,
   Logger,
 } from "@oneon/domain";
+import { createToolRegistry } from "@oneon/application";
 import { createChatRouter, type ChatRouteDeps } from "./chat.route.js";
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -132,6 +134,62 @@ describe("POST /api/chat", () => {
       .expect(200);
 
     expect(Array.isArray(res.body.history)).toBe(true);
+  });
+
+  it("returns an empty actions array when no action was requested", async () => {
+    const res = await request(app)
+      .post("/api/chat")
+      .send({ message: "Hello" })
+      .expect(200);
+
+    expect(res.body.actions).toEqual([]);
+  });
+
+  it("returns the actions the use case reports", async () => {
+    const action = {
+      id: "a1",
+      actionType: "create_calendar_event",
+      label: "Create calendar event",
+      status: "awaiting_approval",
+    };
+    const toolRegistry = createToolRegistry();
+    toolRegistry.register({
+      name: "create_calendar_event",
+      version: "2.0.0",
+      description: "stub",
+      inputSchema: z.object({}).passthrough(),
+      execute: () => ({ data: { action }, summary: "Waiting for your approval." }),
+    });
+    const intentExtractor = {
+      extractIntents: vi
+        .fn()
+        .mockResolvedValueOnce([{ tool: "create_calendar_event", parameters: {} }])
+        .mockResolvedValue([{ tool: "none", parameters: {} }]),
+    };
+    app = buildApp({ conversationRepo, logger, intentExtractor, toolRegistry });
+
+    const res = await request(app)
+      .post("/api/chat")
+      .send({ message: "Set up a call" })
+      .expect(200);
+
+    expect(res.body.actions).toEqual([action]);
+  });
+
+  it("counts only the session user's actions awaiting approval", async () => {
+    const instanceRepo = { count: vi.fn().mockReturnValue(3) };
+    app = buildApp({
+      conversationRepo,
+      logger,
+      inboundItemRepo: { count: vi.fn().mockReturnValue(0) },
+      classificationRepo: { count: vi.fn().mockReturnValue(0), findAll: vi.fn().mockReturnValue([]) },
+      deadlineRepo: { findByDateRange: vi.fn().mockReturnValue([]) },
+      instanceRepo,
+    });
+
+    await request(app).post("/api/chat").send({ message: "Hello" }).expect(200);
+
+    expect(instanceRepo.count).toHaveBeenCalledWith("user-A", { statuses: ["awaiting_approval"] });
   });
 
   // ── Error handling ─────────────────────────────────────────

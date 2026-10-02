@@ -60,23 +60,6 @@ export class GoogleCalendarAdapter implements CalendarPort, CalendarReader, Cale
     );
   }
 
-  async createEvent(event: Omit<CalendarEvent, "id">): Promise<CalendarEvent> {
-    const body = mapToWriteBody(event);
-    const created = await this.client.insertEvent(this.calendarId, body);
-    this.cache.invalidateByPrefix(this.cachePrefix);
-    return mapToDomain(created);
-  }
-
-  async updateEvent(
-    id: string,
-    updates: Partial<Omit<CalendarEvent, "id">>,
-  ): Promise<CalendarEvent> {
-    const body = mapToPartialWriteBody(updates);
-    const updated = await this.client.patchEvent(this.calendarId, id, body);
-    this.cache.invalidateByPrefix(this.cachePrefix);
-    return mapToDomain(updated);
-  }
-
   async getEvent(id: string): Promise<CalendarEvent | null> {
     const resource = await this.client.getEvent(this.calendarId, id).catch(mapReadError);
     if (!resource || resource.status === "cancelled") return null;

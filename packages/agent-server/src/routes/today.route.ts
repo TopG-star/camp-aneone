@@ -7,7 +7,7 @@ import type {
   InboundItem,
   PreferenceRepository,
   DeadlineRepository,
-  ActionLogRepository,
+  ActionInstanceRepository,
   NotificationRepository,
   CalendarPort,
   Logger,
@@ -19,7 +19,7 @@ export interface TodayRouteDeps {
   classificationRepo: ClassificationRepository;
   inboundItemRepo: InboundItemRepository;
   deadlineRepo: DeadlineRepository;
-  actionLogRepo: ActionLogRepository;
+  instanceRepo: ActionInstanceRepository;
   notificationRepo: NotificationRepository;
   preferenceRepo: PreferenceRepository;
   calendarPort?: CalendarPort | null;
@@ -73,7 +73,7 @@ export function createTodayRouter(deps: TodayRouteDeps): Router {
     classificationRepo,
     inboundItemRepo,
     deadlineRepo,
-    actionLogRepo,
+    instanceRepo,
     notificationRepo,
     preferenceRepo,
     calendarPort,
@@ -326,8 +326,14 @@ export function createTodayRouter(deps: TodayRouteDeps): Router {
       );
 
       // Pending actions
-      const pendingActions = actionLogRepo.findByStatus("proposed", 10, userId);
-      const pendingCount = actionLogRepo.count({ status: "proposed", userId });
+      const waiting = instanceRepo.list(userId, { statuses: ["awaiting_approval"], limit: 10 });
+      const pendingActions = waiting.map((i) => ({
+        id: i.id,
+        actionType: i.actionType,
+        riskLevel: String((i.decision as { risk?: string } | null)?.risk ?? "L1"),
+        resourceId: i.resourceRef ?? i.id,
+      }));
+      const pendingCount = instanceRepo.count(userId, { statuses: ["awaiting_approval"] });
 
       // Counts
       const unreadNotifications = notificationRepo.countUnread(userId);
