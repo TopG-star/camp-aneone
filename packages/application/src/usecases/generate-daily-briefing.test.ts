@@ -256,6 +256,40 @@ describe("generateDailyBriefing", () => {
     expect(deps.deadlineRepo.findByDateRange).not.toHaveBeenCalled();
   });
 
+  it("reads the user's own calendar and never the global port when a user is set", async () => {
+    const own: CalendarPort = { listEvents: vi.fn(async () => [makeCalendarEvent({ title: "A's call" })]), searchEvents: vi.fn() };
+    const global: CalendarPort = { listEvents: vi.fn(async () => [makeCalendarEvent({ title: "Env owner's call" })]), searchEvents: vi.fn() };
+    const resolveCalendarPort = vi.fn((userId: string) => (userId === "user-A" ? own : null));
+    const deps = createDeps({ calendarPort: global, resolveCalendarPort });
+
+    const result = await generateDailyBriefing(deps, defaultInput({ userId: "user-A" }));
+
+    expect(resolveCalendarPort).toHaveBeenCalledWith("user-A");
+    expect(result.data.calendar.events.map((e) => e.title)).toEqual(["A's call"]);
+    expect(global.listEvents).not.toHaveBeenCalled();
+  });
+
+  it("reports no calendar when the user has none, without falling back to the global port", async () => {
+    const global: CalendarPort = { listEvents: vi.fn(async () => [makeCalendarEvent()]), searchEvents: vi.fn() };
+    const deps = createDeps({ calendarPort: global, resolveCalendarPort: () => null });
+
+    const result = await generateDailyBriefing(deps, defaultInput({ userId: "user-B" }));
+
+    expect(result.data.calendar).toEqual({ status: "not_connected", events: [] });
+    expect(global.listEvents).not.toHaveBeenCalled();
+  });
+
+  it("uses the global port only when there is no user", async () => {
+    const global: CalendarPort = { listEvents: vi.fn(async () => [makeCalendarEvent()]), searchEvents: vi.fn() };
+    const resolveCalendarPort = vi.fn(() => null);
+    const deps = createDeps({ calendarPort: global, resolveCalendarPort });
+
+    const result = await generateDailyBriefing(deps, defaultInput({ userId: undefined }));
+
+    expect(resolveCalendarPort).not.toHaveBeenCalled();
+    expect(result.data.calendar.status).toBe("connected");
+  });
+
   it("populates pendingActions from listPendingActions", async () => {
     const pending = [makeAction(), makeAction({ actionType: "create_calendar_event", resourceId: "inbound_item:i1", riskLevel: "L2" })];
     const deps = createDeps({ listPendingActions: vi.fn(() => pending) });

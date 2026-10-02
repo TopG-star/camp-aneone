@@ -321,6 +321,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
         instanceRepo: container.actions.instanceRepo,
         synthesizer: container.llmPort,
         calendarPort: container.calendarPort ?? undefined,
+        resolveCalendarPort,
         logger: chatLogger,
       }));
     }

@@ -32,6 +32,7 @@ export interface DailyBriefingDeps {
   instanceRepo: ActionInstanceRepository;
   synthesizer: SynthesisPort;
   calendarPort?: CalendarPort;
+  resolveCalendarPort?: (userId: string) => CalendarPort | null;
   logger: Logger;
 }
 
@@ -61,6 +62,7 @@ export function createDailyBriefingTool(deps: DailyBriefingDeps): ToolDefinition
             : [],
         synthesizer: deps.synthesizer,
         calendarPort: deps.calendarPort,
+        resolveCalendarPort: deps.resolveCalendarPort,
         logger: deps.logger,
       };
 

@@ -179,4 +179,17 @@ describe("createDailyBriefingTool", () => {
     const anonymous = await tool.execute(dailyBriefingSchema.parse({})) as ToolResult;
     expect((anonymous.data as { pendingActions: unknown[] }).pendingActions).toEqual([]);
   });
+
+  it("passes the session user to resolveCalendarPort and ignores the global port", async () => {
+    const own = { listEvents: vi.fn(async () => []), searchEvents: vi.fn() };
+    const global = { listEvents: vi.fn(async () => []), searchEvents: vi.fn() };
+    const resolveCalendarPort = vi.fn(() => own);
+    const tool = createDailyBriefingTool(createToolDeps({ calendarPort: global, resolveCalendarPort }));
+
+    await tool.execute(dailyBriefingSchema.parse({ userId: "u1" }));
+
+    expect(resolveCalendarPort).toHaveBeenCalledWith("u1");
+    expect(own.listEvents).toHaveBeenCalledTimes(1);
+    expect(global.listEvents).not.toHaveBeenCalled();
+  });
 });

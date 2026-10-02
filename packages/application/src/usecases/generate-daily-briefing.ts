@@ -54,6 +54,7 @@ export interface GenerateDailyBriefingDeps {
   listPendingActions(): PendingActionSummary[];
   synthesizer: SynthesisPort;
   calendarPort?: CalendarPort;
+  resolveCalendarPort?: (userId: string) => CalendarPort | null;
   logger: Logger;
 }
 
@@ -343,11 +344,14 @@ export async function generateDailyBriefing(
 
   // ── 4. Calendar events ──
   let calendar: BriefingData["calendar"];
-  if (!deps.calendarPort) {
+  // Same rule as list_calendar_events: a user's briefing never reads the global port.
+  const calendarPort =
+    input.userId && deps.resolveCalendarPort ? deps.resolveCalendarPort(input.userId) : (deps.calendarPort ?? null);
+  if (!calendarPort) {
     calendar = { status: "not_connected", events: [] };
   } else {
     try {
-      const events = await deps.calendarPort.listEvents(dayStartUTC, nextDayUTC);
+      const events = await calendarPort.listEvents(dayStartUTC, nextDayUTC);
       calendar = { status: "connected", events };
     } catch (error) {
       logger.error("Calendar fetch failed during briefing", {
