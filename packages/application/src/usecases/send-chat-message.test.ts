@@ -282,6 +282,28 @@ describe("sendChatMessage", () => {
     expect(synthesizer.synthesize).toHaveBeenCalled();
   });
 
+  it("passes the turn id to tools and returns the actions they requested", async () => {
+    const extractor = createMockExtractor([
+      [{ tool: "create_calendar_event", parameters: { title: "Call" } }],
+      [{ tool: "none", parameters: {} }],
+    ]);
+    const action = { id: "a1", actionType: "create_calendar_event", label: "Create calendar event", status: "awaiting_approval" };
+    const registry = createMockToolRegistry({
+      create_calendar_event: makeToolResult("create_calendar_event", "Waiting…", { action }),
+    });
+
+    const result = await sendChatMessage(
+      { conversationRepo, logger, intentExtractor: extractor, toolRegistry: registry },
+      { message: "Set up a call", now: NOW, userId: "user-A" }
+    );
+
+    expect(result.actions).toEqual([action]);
+    expect(registry.execute).toHaveBeenCalledWith(
+      "create_calendar_event",
+      expect.objectContaining({ turnId: result.userMessageId, turnExcerpt: "Set up a call" })
+    );
+  });
+
   it("persists tool calls JSON in assistant message", async () => {
     const extractor = createMockExtractor([
       [{ tool: "list_deadlines", parameters: {} }],

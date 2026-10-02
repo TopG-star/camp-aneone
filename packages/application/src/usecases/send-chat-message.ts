@@ -6,6 +6,7 @@ import type {
   Logger,
 } from "@oneon/domain";
 import type { ToolRegistry } from "../tools/tool-registry.js";
+import type { ChatActionRef } from "../actions/chat-action-tools.js";
 import { truncateHistory } from "./truncate-history.js";
 import { runIntentLoop } from "./run-intent-loop.js";
 import { synthesizeResponse } from "./synthesize-response.js";
@@ -40,6 +41,7 @@ export interface SendChatMessageResult {
   conversationId: string;
   response: string;
   history: ConversationMessage[];
+  actions: ChatActionRef[];
 }
 
 // ── Constants ────────────────────────────────────────────────
@@ -82,6 +84,7 @@ export async function sendChatMessage(
   // 3. Generate response — intent loop or placeholder
   let response: string;
   let toolCallsJson: string | null = null;
+  let actions: ChatActionRef[] = [];
 
   const canRunLoop =
     deps.intentExtractor != null &&
@@ -97,6 +100,7 @@ export async function sendChatMessage(
       {
         userMessage: input.message,
         userId,
+        turnId: userMsg.id,
         history: truncateHistory(history, TRUNCATE_OPTIONS),
         toolDefinitions: deps.toolRegistry!.list(),
         stats: deps.stats ?? defaultStats(),
@@ -105,6 +109,10 @@ export async function sendChatMessage(
         persona: input.persona ?? null,
       }
     );
+
+    actions = loopResult.toolCalls
+      .map((tc) => (tc.result?.data as { action?: ChatActionRef } | null | undefined)?.action)
+      .filter((a): a is ChatActionRef => !!a);
 
     // Refinement #7: persist tool calls for audit
     if (loopResult.toolCalls.length > 0) {
@@ -168,6 +176,7 @@ export async function sendChatMessage(
     conversationId,
     response,
     history,
+    actions,
   };
 }
 
