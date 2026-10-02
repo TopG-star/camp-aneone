@@ -1,7 +1,6 @@
 export type { InboundItemRepository } from "./inbound-item-repository.port.js";
 export type { ClassificationRepository, ClassificationFeedbackRepository } from "./classification-repository.port.js";
 export type { DeadlineRepository } from "./deadline-repository.port.js";
-export type { ActionLogRepository } from "./action-log-repository.port.js";
 export type { NotificationRepository } from "./notification-repository.port.js";
 export type { PushSubscriptionRepository } from "./push-subscription-repository.port.js";
 export type { ConversationRepository } from "./conversation-repository.port.js";

@@ -33,25 +33,6 @@ describe("evaluateReminderPriorityPolicy", () => {
     expect(decision.reason).toBe("urgent_priority_below_threshold");
   });
 
-  it("allows action proposed notifications only for approval required risk", () => {
-    const allowed = evaluateReminderPriorityPolicy({
-      eventType: NotificationEventType.ActionProposed,
-      userId: "user-1",
-      riskLevel: "approval_required",
-    });
-
-    const suppressed = evaluateReminderPriorityPolicy({
-      eventType: NotificationEventType.ActionProposed,
-      userId: "user-1",
-      riskLevel: "auto",
-    });
-
-    expect(allowed.shouldNotify).toBe(true);
-    expect(allowed.reason).toBe("action_requires_approval");
-    expect(suppressed.shouldNotify).toBe(false);
-    expect(suppressed.reason).toBe("action_auto_risk_not_notified");
-  });
-
   it("allows deadline approaching notifications when confidence is above threshold", () => {
     const decision = evaluateReminderPriorityPolicy({
       eventType: NotificationEventType.DeadlineApproaching,

@@ -4,7 +4,6 @@ import type {
   ClassificationRepository,
   ClassificationFeedbackRepository,
   DeadlineRepository,
-  ActionLogRepository,
   NotificationRepository,
   ConversationRepository,
   PreferenceRepository,
@@ -34,7 +33,6 @@ import {
   SqliteClassificationRepository,
   SqliteClassificationFeedbackRepository,
   SqliteDeadlineRepository,
-  SqliteActionLogRepository,
   SqliteNotificationRepository,
   SqliteConversationRepository,
   SqlitePreferenceRepository,
@@ -88,7 +86,6 @@ export interface AppContainer {
   classificationRepo: ClassificationRepository;
   classificationFeedbackRepo: ClassificationFeedbackRepository;
   deadlineRepo: DeadlineRepository;
-  actionLogRepo: ActionLogRepository;
   notificationRepo: NotificationRepository;
   conversationRepo: ConversationRepository;
   preferenceRepo: PreferenceRepository;
@@ -149,7 +146,6 @@ export function createContainer(env: Env): AppContainer {
   const classificationFeedbackRepo =
     new SqliteClassificationFeedbackRepository(db);
   const deadlineRepo = new SqliteDeadlineRepository(db);
-  const actionLogRepo = new SqliteActionLogRepository(db);
   const notificationRepo = new SqliteNotificationRepository(db);
   const conversationRepo = new SqliteConversationRepository(db);
   const preferenceRepo = new SqlitePreferenceRepository(db);
@@ -502,7 +498,6 @@ export function createContainer(env: Env): AppContainer {
     classificationRepo,
     classificationFeedbackRepo,
     deadlineRepo,
-    actionLogRepo,
     notificationRepo,
     conversationRepo,
     preferenceRepo,

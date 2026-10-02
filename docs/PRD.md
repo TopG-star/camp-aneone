@@ -119,15 +119,15 @@ execution. *LLM decides; software guarantees.*
 
 | ID | Requirement | Priority |
 |----|------------|----------|
-| FR-026 | Rules engine evaluates classification → proposes one or more actions | P0 |
-| FR-027 | Actions follow lifecycle: Proposed → Approved → Executed (or Rejected / RolledBack) | P0 |
-| FR-028 | Risk levels: Auto (Classify, Notify, DraftReply, CreateReminder) and ApprovalRequired (Archive, Delete, Send, Forward) | P0 |
-| FR-029 | Idempotent: no duplicate proposals for same `(resourceId, actionType)` | P0 |
-| FR-030 | Append-only audit log — never UPDATE or DELETE `action_log` rows | P0 |
-| FR-031 | Store rollback data for destructive actions | P1 |
-| FR-032 | Dashboard approval queue with approve/reject buttons + quick-action deep links | P0 |
-| FR-033 | Auto-execute low-risk actions immediately upon proposal | P0 |
-| FR-034 | Failed execution leaves action in Approved state (retryable), does not roll back to Proposed | P1 |
+| FR-026 | Inbox rules and chat request actions through the code registry; unregistered types are refused | P0 |
+| FR-027 | Actions follow a 15-status forward-only lifecycle (see ADR-011) | P0 |
+| FR-028 | Risk tiers L0–L4 and per-action approval policy, configurable but never looser than the code floor | P0 |
+| FR-029 | Idempotent: one action per (scope, owner, type, idempotency key) | P0 |
+| FR-030 | Every status change is an immutable event; the instance row is a projection | P0 |
+| FR-031 | Undo is verified, version-checked, and refused for irreversible actions | P1 |
+| FR-032 | Action Center shows origin, plan, evidence, policy reasons, checks and timeline; buttons follow policy | P0 |
+| FR-033 | Actions whose policy outcome is auto run immediately after validation | P0 |
+| FR-034 | Retrying a failed or expired action creates a new linked action | P1 |
 
 ### 5.5 Daily Briefing
 
@@ -233,7 +233,11 @@ execution. *LLM decides; software guarantees.*
 | `inbound_items` | Unified inbox across all sources | Upsert on `(source, external_id)` |
 | `classifications` | AI classification results | Unique on `inbound_item_id`; raw item untouched |
 | `deadlines` | Extracted deadlines from items | Linked to `inbound_items`; status: open/done/dismissed |
-| `action_log` | Append-only action state machine | Never UPDATE/DELETE; full lifecycle audit trail |
+| `action_instances` | Current state of each action (projection) | Changed only through the transition repository |
+| `action_events` | Immutable action history | UPDATE/DELETE abort by trigger |
+| `action_definition_configs` | Per-owner action policy | Clamped to the code floor on read |
+| `action_definition_config_history` | Who changed action policy, and how | Append-only by trigger |
+| `action_log_legacy` | MVP1 action rows, read-only | UPDATE/DELETE abort by trigger |
 | `notifications` | In-app notification queue | Read status tracking; deep links |
 | `conversations` | Chat message history | Chronological order; never edited/deleted |
 | `bank_statements` | Idempotent intake registry for bank-statement candidates (FIN-001a) | Unique on `(user_id, source, external_id)` |
@@ -263,6 +267,8 @@ execution. *LLM decides; software guarantees.*
 | `daily_briefing` | Generate today's full briefing | `{}` (no input) |
 | `search_personal_memory` | Retrieve user notes, explicit pins, and curated docs for grounding | `query, limit?, includeNotes?, includePins?, includeDocs?` |
 | `none` | Signal no more tools needed (stop loop) | `{}` (no input) |
+
+`create_calendar_event` and `update_calendar_event` request actions; they never write to Google directly.
 
 ---
 
@@ -307,9 +313,8 @@ execution. *LLM decides; software guarantees.*
 
 These are explicitly deferred to future phases:
 
-- Multi-user / multi-tenant authentication and data isolation
+- Tenant linking and ERP actions — planned as Action Spec sub-projects B and C.
 - Full finance pipeline beyond FIN-001a foundation (PDF parsing, transaction extraction, conversational finance insights, finance dashboard)
-- Pharmaceutical ERP / sales management system integration
 - Deployed software monitoring and alerting
 - Embedding/vector index for memory retrieval (lexical+ranked retrieval is sufficient for v1)
 - Automatic ingestion of all prior conversation outputs into memory (v1 remains explicit pin-only)

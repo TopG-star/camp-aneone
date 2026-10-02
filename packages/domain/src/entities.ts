@@ -44,21 +44,6 @@ export interface Deadline {
   updatedAt: string;
 }
 
-export interface ActionLogEntry {
-  id: string;
-  userId: string | null;
-  resourceId: string;
-  actionType: string;
-  riskLevel: "auto" | "approval_required";
-  status: "proposed" | "approved" | "executed" | "rejected" | "rolled_back";
-  payloadJson: string;
-  resultJson: string | null;
-  errorJson: string | null;
-  rollbackJson: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface Notification {
   id: string;
   userId: string | null;
