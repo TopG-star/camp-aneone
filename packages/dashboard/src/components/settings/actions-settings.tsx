@@ -40,7 +40,7 @@ export function ActionsSettings() {
     <Card>
       <CardHeader>
         <CardTitle>Actions</CardTitle>
-        <p className="text-label-sm meta-copy">What Oneon may do on its own, and what needs your approval. Options stricter than each action's minimum are the only ones shown.</p>
+        <p className="text-label-sm meta-copy">What Oneon may do on its own, and what needs your approval. Only options at or above each action's minimum are shown.</p>
       </CardHeader>
       <CardContent>
         {!response && error ? (

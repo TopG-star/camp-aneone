@@ -30,7 +30,9 @@ contract, enforceable policy, verification and honest undo. Design:
 3. **Lifecycle.** Fifteen statuses: proposed, validating, awaiting_approval, approved,
    executing, verifying, completed, partially_completed, rejected, expired, cancelled, failed,
    rolling_back, rolled_back, rollback_failed. Transitions are forward-only; retrying creates a
-   new linked action. An unknown executor outcome goes to verification, never to failed.
+   new linked action. An unknown executor outcome goes to verification, never to failed; the
+   executor's abort signal comes from the definition's timeout, and a missing effect after an
+   unknown outcome is recorded as failed only once the recovery threshold has passed.
 4. **Storage.** `action_events` is the authoritative history; SQLite triggers abort any UPDATE
    or DELETE. `action_instances` is an explicitly mutable projection. Its status changes only
    through one transactional method that checks the expected status; heartbeat and undo-start
@@ -44,7 +46,9 @@ contract, enforceable policy, verification and honest undo. Design:
 
 ## Consequences
 
-**Easier:** a complete, tamper-resistant audit trail; every action explains its origin,
+**Easier:** a complete audit trail whose history the app cannot rewrite (SQLite triggers abort
+UPDATE and DELETE on the event, config-history and legacy tables; this does not stop someone with
+direct access to the database file); every action explains its origin,
 evidence, policy decision and checks; undo is verified and refused when the target changed
 since; ERP actions are designed to plug into the same contract (sub-project C, not built).
 
