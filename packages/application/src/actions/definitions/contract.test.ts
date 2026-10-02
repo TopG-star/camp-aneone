@@ -6,6 +6,8 @@ import { clampPolicy } from "../policy/index.js";
 const SAMPLES: Record<string, Record<string, unknown>> = {
   notify: { inboundItemId: "i1", title: "Urgent: Q4", body: "s", deepLink: "/items/i1" },
   create_reminder: { deadlineId: "d1", inboundItemId: "i1" },
+  create_calendar_event: { title: "Call", start: "2026-10-07T10:00:00+00:00", end: "2026-10-07T10:30:00+00:00" },
+  update_calendar_event: { eventId: "ev1", title: "Deep work" },
   archive: { inboundItemId: "i1", reason: "spam_classification" },
   label: { inboundItemId: "i1", label: "newsletter", reason: "newsletter_low_priority" },
   draft_reply: { inboundItemId: "i1", reason: "follow_up_needed", summary: "s", from: "a@x.com" },
@@ -46,6 +48,12 @@ describe.each(createActionDefinitions().map((d) => [d.type, d] as const))("defin
   it("is unavailable exactly when it has no executor", () => {
     expect(def.execute === null).toBe(def.unavailableReason !== null);
   });
+});
+
+it("registers exactly the 10 definitions in spec §9", () => {
+  expect(createActionDefinitions().map((d) => d.type).sort()).toEqual(
+    ["archive", "create_calendar_event", "create_reminder", "delete", "draft_reply", "forward", "label", "notify", "send", "update_calendar_event"],
+  );
 });
 
 describe("Gmail definitions", () => {
