@@ -233,7 +233,7 @@ execution. *LLM decides; software guarantees.*
 | `inbound_items` | Unified inbox across all sources | Upsert on `(source, external_id)` |
 | `classifications` | AI classification results | Unique on `inbound_item_id`; raw item untouched |
 | `deadlines` | Extracted deadlines from items | Linked to `inbound_items`; status: open/done/dismissed |
-| `action_instances` | Current state of each action (projection) | Changed only through the transition repository |
+| `action_instances` | Current state of each action (projection) | Status changes only through the transition repository |
 | `action_events` | Immutable action history | UPDATE/DELETE abort by trigger |
 | `action_definition_configs` | Per-owner action policy | Clamped to the code floor on read |
 | `action_definition_config_history` | Who changed action policy, and how | Append-only by trigger |
@@ -257,7 +257,8 @@ execution. *LLM decides; software guarantees.*
 | `list_inbox` | List recent inbox items by priority threshold | `maxPriority?, source?, since?, limit?` |
 | `list_deadlines` | List deadlines in date range | `from?, to?, status?` |
 | `list_calendar_events` | List Google Calendar events | `timeMin, timeMax` |
-| `create_calendar_event` | Create a new calendar event | `title, start, end, attendees?, description?` |
+| `create_calendar_event` | Request a new calendar event | `title, start, end, attendees?, description?` |
+| `update_calendar_event` | Request a change to an existing calendar event | `eventId + fields` |
 | `search_calendar` | Search events by keyword | `query, timeMin?, timeMax?` |
 | `list_github_notifications` | List GitHub notifications | `all?, participating?` |
 | `list_github_prs` | List open PRs | `state?, author?, repo?` |
@@ -351,7 +352,7 @@ These are explicitly deferred to future phases:
 | **Classification** | AI-generated metadata for an inbound item: category, priority, summary, action items, follow-up flag |
 | **Deadline** | An explicit or implied due date extracted from an inbound item's text |
 | **Action** | A proposed operation on an inbound item: archive, delete, draft reply, create reminder, notify, etc. |
-| **Risk Level** | Whether an action auto-executes (Auto) or requires dashboard approval (ApprovalRequired) |
+| **Risk Tier** | L0–L4 classification of an action; the approval policy decides auto-run or approval, never looser than the code floor |
 | **Agent Loop** | The background polling cycle: ingest → deduplicate → classify → extract deadlines → propose actions |
 | **Chat Turn** | One user message → multi-round intent extraction/execution → synthesized response |
 | **Tool Registry** | Central catalog of all capabilities available to the chat system |
