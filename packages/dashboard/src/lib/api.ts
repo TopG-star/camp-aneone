@@ -20,7 +20,10 @@ async function readErrorMessage(res: Response): Promise<string> {
   if (shouldAttemptJson(contentType)) {
     const body = await res.json().catch(() => ({}));
     if (typeof body.error === "string" && body.error.trim().length > 0) {
-      return body.error;
+      const issues: string[] = Array.isArray(body.issues)
+        ? body.issues.filter((i: unknown): i is string => typeof i === "string")
+        : [];
+      return issues.length > 0 ? `${body.error}: ${issues.join("; ")}` : body.error;
     }
   }
 
@@ -72,6 +75,7 @@ function maybeRedirectToSignIn(status: number): void {
 export async function apiFetch<T>(
   path: string,
   init?: RequestInit,
+  options?: { redirectOnAuth?: boolean },
 ): Promise<T> {
   const url = `${API_BASE}${path}`;
   const headers: HeadersInit = {
@@ -82,7 +86,9 @@ export async function apiFetch<T>(
   const res = await fetch(url, { ...init, headers, credentials: "include" });
 
   if (!res.ok) {
-    maybeRedirectToSignIn(res.status);
+    if (options?.redirectOnAuth !== false || res.status === 401) {
+      maybeRedirectToSignIn(res.status);
+    }
     const message = await readErrorMessage(res);
     throw new ApiError(res.status, message);
   }

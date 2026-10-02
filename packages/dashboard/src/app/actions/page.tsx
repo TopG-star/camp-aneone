@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ActionView, ActionViewListResponse } from "@oneon/contracts";
 import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { AlertTriangle, Zap } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAction, useActions } from "@/lib/hooks";
@@ -11,6 +10,7 @@ import { GROUP_FILTERS, actionsQuery, type ActionFilter } from "@/lib/action-ui"
 import { getMotionDelayClass } from "@/lib/motion-utils";
 import { ActionCard } from "@/components/actions/action-card";
 import { LegacyList } from "@/components/actions/legacy-list";
+import { Pager } from "@/components/actions/pager";
 
 const LIMIT = 25;
 
@@ -23,7 +23,7 @@ export default function ActionsPage() {
 
   const query = actionsQuery(filter, offset, LIMIT);
   const { data, error, isLoading, mutate } = useActions(query ?? undefined, { isPaused: () => query === null });
-  const { data: targetData, mutate: mutateTarget } = useAction(targetId);
+  const { data: targetData, error: targetError, mutate: mutateTarget } = useAction(targetId);
   const response = data as ActionViewListResponse | undefined;
   const target = targetData as ActionView | undefined;
 
@@ -42,17 +42,21 @@ export default function ActionsPage() {
     if (!target || list.some((a) => a.id === target.id)) return list;
     return [target, ...list];
   }, [response, target]);
+  const linkedOutsideList = !!response && !!target && !response.actions.some((a) => a.id === target.id);
 
   const runOperation = async (id: string, op: ActionView["allowedOperations"][number]) => {
     setBusyId(id);
     setOpError(null);
     try {
-      await apiFetch(`/api/actions/${id}/${op}`, { method: "POST" });
+      await apiFetch(`/api/actions/${id}/${op}`, { method: "POST" }, { redirectOnAuth: false });
     } catch (err) {
       setOpError(err instanceof Error ? err.message : "That didn't work. Reload and try again.");
     } finally {
-      setBusyId(null);
-      await Promise.all([mutate(), mutateTarget()]);
+      try {
+        await Promise.all([mutate(), mutateTarget()]);
+      } finally {
+        setBusyId(null);
+      }
     }
   };
 
@@ -69,7 +73,7 @@ export default function ActionsPage() {
           {GROUP_FILTERS.map((f) => (
             <button
               key={f.key}
-              onClick={() => { setFilter(f.key); setOffset(0); }}
+              onClick={() => { setFilter(f.key); setOffset(0); setOpError(null); }}
               className={`filter-chip ${filter === f.key ? "filter-chip-active" : "filter-chip-idle"}`}
             >
               {f.label}
@@ -85,9 +89,19 @@ export default function ActionsPage() {
       )}
 
       {filter === "legacy" ? (
-        <LegacyList query={`limit=${LIMIT}&offset=${offset}`} />
+        <LegacyList query={`limit=${LIMIT}&offset=${offset}`} onOffsetChange={setOffset} />
       ) : (
         <>
+          {targetId && targetError && (
+            <Card className="border-amber-500/35 bg-amber-500/10 dark:border-amber-400/40 dark:bg-amber-500/15">
+              <CardContent className="py-3 text-label-sm text-amber-900 dark:text-amber-100">Linked action not found.</CardContent>
+            </Card>
+          )}
+          {linkedOutsideList && (
+            <Card className="border-amber-500/35 bg-amber-500/10 dark:border-amber-400/40 dark:bg-amber-500/15">
+              <CardContent className="py-3 text-label-sm text-amber-900 dark:text-amber-100">Linked action loaded outside current page/filter.</CardContent>
+            </Card>
+          )}
           {isLoading && <div className="state-skeleton h-24" />}
           {error && (
             <Card>
@@ -116,17 +130,7 @@ export default function ActionsPage() {
               />
             ))}
           </div>
-          {response && (
-            <div className="flex flex-col gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-label-md meta-copy">
-                Showing {response.pagination.total === 0 ? 0 : offset + 1}–{Math.min(offset + LIMIT, response.pagination.total)} of {response.pagination.total}
-              </p>
-              <div className="flex w-full gap-2 sm:w-auto">
-                <Button variant="secondary" size="sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - LIMIT))}>Previous</Button>
-                <Button variant="secondary" size="sm" disabled={!response.pagination.hasMore} onClick={() => setOffset(offset + LIMIT)}>Next</Button>
-              </div>
-            </div>
-          )}
+          {response && <Pager pagination={response.pagination} onOffsetChange={setOffset} />}
         </>
       )}
     </div>
