@@ -10,6 +10,7 @@ import { apiFetch } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useThemeMode } from "@/components/theme-provider";
+import { ActionsSettings } from "@/components/settings/actions-settings";
 import {
   Wifi,
   WifiOff,
@@ -720,6 +721,8 @@ export default function SettingsPage() {
           )}
         </CardContent>
       </Card>
+
+      <ActionsSettings />
 
       {/* Notification Preferences */}
       <Card>

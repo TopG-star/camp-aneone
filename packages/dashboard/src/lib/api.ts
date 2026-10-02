@@ -25,6 +25,13 @@ async function readErrorMessage(res: Response): Promise<string> {
         : [];
       return issues.length > 0 ? `${body.error}: ${issues.join("; ")}` : body.error;
     }
+    if (Array.isArray(body.errors)) {
+      const fields: string[] = body.errors
+        .filter((e: unknown): e is { field: string; message: string } =>
+          typeof e === "object" && e !== null && typeof (e as { field?: unknown }).field === "string" && typeof (e as { message?: unknown }).message === "string")
+        .map((e: { field: string; message: string }) => `${e.field}: ${e.message}`);
+      if (fields.length > 0) return fields.join("; ");
+    }
   }
 
   const text = await res.text().catch(() => "");

@@ -43,4 +43,17 @@ describe("apiFetch error message", () => {
     stubBrowser(422, { error: "Retry refused", issues: ["a is bad", "b is bad"] });
     await expect(apiFetch("/x")).rejects.toMatchObject({ message: "Retry refused: a is bad; b is bad" });
   });
+
+  it("formats an errors array of { field, message } when there is no error string", async () => {
+    stubBrowser(422, { errors: [{ field: "approval.mode", message: "looser than allowed" }, { field: "(body)", message: "Unrecognized key" }] });
+    await expect(apiFetch("/x")).rejects.toMatchObject({
+      status: 422,
+      message: "approval.mode: looser than allowed; (body): Unrecognized key",
+    });
+  });
+
+  it("prefers the error string over an errors array", async () => {
+    stubBrowser(422, { error: "Nope", errors: [{ field: "a", message: "b" }] });
+    await expect(apiFetch("/x")).rejects.toMatchObject({ message: "Nope" });
+  });
 });
