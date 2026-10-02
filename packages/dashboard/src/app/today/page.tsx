@@ -321,7 +321,7 @@ export default function TodayPage() {
                 <div className="flex items-center justify-between">
                   <CardTitle className="flex items-center gap-2">
                     <Zap className="h-4 w-4" />
-                    Pending Actions
+                    Needs your approval
                   </CardTitle>
                   <Link
                     href="/actions"

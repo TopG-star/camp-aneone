@@ -15,12 +15,15 @@ import {
   BookmarkCheck,
 } from "lucide-react";
 import { getMotionDelayClass } from "@/lib/motion-utils";
+import { chatChip } from "@/lib/action-ui";
+import type { ChatActionRef } from "@oneon/contracts";
 
 interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
   createdAt?: string;
+  actions?: ChatActionRef[];
 }
 
 interface ChatResponse {
@@ -29,6 +32,7 @@ interface ChatResponse {
   assistantMessageId: string;
   conversationId: string;
   history: ChatMessage[];
+  actions?: ChatActionRef[];
 }
 
 interface CreateMemoryPinResponse {
@@ -101,7 +105,7 @@ export default function ChatPage() {
         return [
           ...withoutTemp,
           { id: result.userMessageId, role: "user" as const, content: trimmed },
-          { id: result.assistantMessageId, role: "assistant" as const, content: result.response },
+          { id: result.assistantMessageId, role: "assistant" as const, content: result.response, actions: result.actions ?? [] },
         ];
       });
     } catch (err) {
@@ -220,24 +224,42 @@ export default function ChatPage() {
               >
                 <p className="text-body-md whitespace-pre-wrap leading-relaxed">{msg.content}</p>
                 {msg.role === "assistant" && (
-                  <div className="mt-3 flex justify-end">
-                    <button
-                      type="button"
-                      onClick={() => handlePinAssistantMessage(msg)}
-                      disabled={pinningMessageId === msg.id || pinnedMessageIds.has(msg.id)}
-                      className="motion-interactive inline-flex items-center gap-1 rounded-six border border-outline-variant/30 px-2 py-1 text-label-sm text-on-surface-variant dark:border-dark-outline-variant/30 dark:text-dark-on-surface-variant disabled:opacity-60"
-                      aria-label={pinnedMessageIds.has(msg.id) ? "Pinned" : "Pin this output"}
-                    >
-                      {pinnedMessageIds.has(msg.id) ? (
-                        <BookmarkCheck className="h-3.5 w-3.5" />
-                      ) : pinningMessageId === msg.id ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <Bookmark className="h-3.5 w-3.5" />
-                      )}
-                      <span>{pinnedMessageIds.has(msg.id) ? "Pinned" : "Pin"}</span>
-                    </button>
-                  </div>
+                  <>
+                    {msg.actions && msg.actions.length > 0 && (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {msg.actions.map((ref) => {
+                          const chip = chatChip(ref);
+                          return (
+                            <a
+                              key={ref.id}
+                              href={chip.href}
+                              className="motion-interactive inline-flex items-center gap-1 rounded-six border border-outline-variant/40 px-2 py-1 text-label-sm text-on-surface dark:border-dark-outline-variant/40 dark:text-dark-on-surface"
+                            >
+                              {ref.label}: {chip.text}
+                            </a>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <div className="mt-3 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => handlePinAssistantMessage(msg)}
+                        disabled={pinningMessageId === msg.id || pinnedMessageIds.has(msg.id)}
+                        className="motion-interactive inline-flex items-center gap-1 rounded-six border border-outline-variant/30 px-2 py-1 text-label-sm text-on-surface-variant dark:border-dark-outline-variant/30 dark:text-dark-on-surface-variant disabled:opacity-60"
+                        aria-label={pinnedMessageIds.has(msg.id) ? "Pinned" : "Pin this output"}
+                      >
+                        {pinnedMessageIds.has(msg.id) ? (
+                          <BookmarkCheck className="h-3.5 w-3.5" />
+                        ) : pinningMessageId === msg.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Bookmark className="h-3.5 w-3.5" />
+                        )}
+                        <span>{pinnedMessageIds.has(msg.id) ? "Pinned" : "Pin"}</span>
+                      </button>
+                    </div>
+                  </>
                 )}
               </div>
               {msg.role === "user" && (
