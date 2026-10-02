@@ -1,4 +1,5 @@
 export * from "./definition.js";
+export { describeActionError } from "./error-text.js";
 export * from "./registry.js";
 export * from "./idempotency.js";
 export * from "./policy/index.js";

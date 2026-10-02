@@ -249,10 +249,22 @@ export async function runProcessingCycle(
       summary.classification.classified++;
 
       // ── Step 2: Request actions; notify is the only urgent-notification path ──
+      // The item is already marked classified, so nothing retries a skipped request: one failing
+      // request must not stop the item's other requests (I4).
+      let requests: ReturnType<typeof deriveInboxActionRequests> = [];
       try {
         const deadlines = deps.deadlineRepo.findByInboundItemId(item.id);
         const now = (deps.clock ?? (() => new Date()))();
-        for (const request of deriveInboxActionRequests({ classification, item, deadlines, now })) {
+        requests = deriveInboxActionRequests({ classification, item, deadlines, now });
+      } catch (error) {
+        summary.actionErrors++;
+        logger.error("Action requests could not be derived", {
+          itemId: item.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      for (const request of requests) {
+        try {
           const outcome = await deps.requestAction({ ...request, actor: personalActor(deps.userId) });
           if (outcome.kind === "refused") {
             summary.actionErrors++;
@@ -265,13 +277,14 @@ export async function runProcessingCycle(
             summary.actionsAutoExecuted++;
             if (request.type === "notify") summary.notificationsSent++;
           }
+        } catch (error) {
+          summary.actionErrors++;
+          logger.error("Action request failed", {
+            itemId: item.id,
+            type: request.type,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
-      } catch (error) {
-        summary.actionErrors++;
-        logger.error("Action request failed", {
-          itemId: item.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
       }
     } catch (error) {
       summary.classification.failed++;

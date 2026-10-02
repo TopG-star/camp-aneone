@@ -227,6 +227,10 @@ async function executeApproved(
     outcome = fromExternalError(error);
   }
 
+  if (outcome.kind !== "succeeded") {
+    // The raw message (possibly a Google response body) stays in logs and storage; the API maps codes to text.
+    deps.logger.warn("Executor did not succeed", { actionId: executing.id, outcome: outcome.kind, code: outcome.code, message: outcome.message });
+  }
   if (outcome.kind === "succeeded") {
     return move(deps, executing, "verifying", SYSTEM, { outcome: "succeeded" }, { result: outcome.result, undo: outcome.undoData, error: null });
   }
@@ -249,6 +253,8 @@ async function verify(
   if (!def.postconditions) {
     return move(deps, instance, "failed", SYSTEM, {}, { error: { code: "no_verification", message: "This action cannot be verified.", stage: "verification" } });
   }
+  // Each attempt is recorded so the card can say when Oneon last checked (spec §10.5).
+  deps.repo.recordHeartbeat(instance.id, deps.clock().toISOString());
   let verification;
   try {
     verification = await def.postconditions({

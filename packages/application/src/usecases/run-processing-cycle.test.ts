@@ -334,6 +334,36 @@ describe("runProcessingCycle", () => {
     expect(deps.logger.error).toHaveBeenCalled();
   });
 
+  it("keeps requesting an item's other actions, and the next item's, after one request throws (I4)", async () => {
+    const items = [makeItem("item-1"), makeItem("item-2")];
+    const deps = createDeps();
+    vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue(items);
+    vi.mocked(deps.llmPort.classify).mockResolvedValue({
+      category: "urgent" as Category,
+      priority: 1 as Priority,
+      summary: "Urgent with a deadline",
+      actionItems: [],
+      followUpNeeded: false,
+      deadlines: [],
+    });
+    vi.mocked(deps.classificationRepo.create).mockImplementation((c) => makeClassification(c.inboundItemId, { category: "urgent" as Category, priority: 1 as Priority }));
+    vi.mocked(deps.deadlineRepo.findByInboundItemId).mockImplementation((itemId) => [makeDeadline(itemId, { dueDate: "2099-01-01" })]);
+    // The first request (item-1's notify) throws, e.g. capabilitiesFor failing.
+    vi.mocked(deps.requestAction).mockRejectedValueOnce(new Error("token provider construction failed"));
+
+    const summary = await runProcessingCycle(deps, defaultOptions());
+
+    const requested = vi.mocked(deps.requestAction).mock.calls.map(([req]) => `${req.resourceRef}:${req.type}`);
+    expect(requested).toEqual([
+      expect.stringMatching(/item-1.*:notify$/),
+      expect.stringMatching(/:create_reminder$/),
+      expect.stringMatching(/item-2.*:notify$/),
+      expect.stringMatching(/:create_reminder$/),
+    ]);
+    expect(summary.actionErrors).toBe(1);
+    expect(summary.actionsProposed).toBe(3);
+  });
+
   function arrangePriority1Item(deps: RunProcessingCycleDeps) {
     const item1 = makeItem("item-1");
     const cls1 = makeClassification("item-1", { category: "urgent" as Category, priority: 1 as Priority });

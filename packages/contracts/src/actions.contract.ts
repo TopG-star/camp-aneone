@@ -56,13 +56,15 @@ export const ActionViewSchema = z.object({
   evidence: z.array(EvidenceItemSchema),
   decision: z.object({ outcome: z.enum(["refuse", "needs_approval", "auto"]), reasons: z.array(z.object({ code: z.string(), text: z.string() })) }).nullable(),
   checks: z.array(CheckResultSchema),
-  undo: z.object({ rollbackClass: z.enum(["reversible", "conditional", "irreversible"]), text: z.string(), warning: z.string().nullable() }),
+  /** `text` is null when no undo statement is true for this card (I3). */
+  undo: z.object({ rollbackClass: z.enum(["reversible", "conditional", "irreversible"]), text: z.string().nullable(), warning: z.string().nullable() }),
   error: z.object({ code: z.string(), message: z.string(), stage: z.string() }).nullable(),
   allowedOperations: z.array(OperationSchema),
   retryOf: z.string().nullable(),
   attemptNumber: z.number(),
   resourceRef: z.string().nullable(),
-  verifyingSince: z.string().nullable(),
+  /** While verifying: when Oneon last tried to confirm the outcome. */
+  lastCheckedAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
   timeline: z.array(ActionEventViewSchema),

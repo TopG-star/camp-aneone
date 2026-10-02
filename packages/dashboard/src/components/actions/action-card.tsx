@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Zap } from "lucide-react";
-import { GROUP_BADGE, actorLabel, evidenceSummary, operationLabel, statusLabel, verifyingNote } from "@/lib/action-ui";
+import { GROUP_BADGE, actorLabel, evidenceSummary, operationLabel, statusLabel, undoNote, verifyingNote } from "@/lib/action-ui";
 
 type Operation = ActionView["allowedOperations"][number];
 
@@ -19,6 +19,7 @@ export function ActionCard(props: {
   const { view, busy, highlighted, onOperation } = props;
   const [confirmingUndo, setConfirmingUndo] = useState(false);
   const note = verifyingNote(view);
+  const undoLine = undoNote(view);
 
   return (
     <Card id={`action-${view.id}`} className={highlighted ? "ring-1 ring-amber-500/45 dark:ring-amber-300/45" : ""}>
@@ -98,10 +99,7 @@ export function ActionCard(props: {
           </section>
         )}
 
-        <p className="text-label-sm meta-copy">
-          {view.undo.text}
-          {view.attemptNumber > 1 ? ` · Attempt ${view.attemptNumber}` : ""}
-        </p>
+        {undoLine && <p className="text-label-sm meta-copy">{undoLine}</p>}
 
         <details className="rounded-eight bg-surface-low p-3 dark:bg-dark-surface-low">
           <summary className="cursor-pointer text-label-sm meta-copy">Timeline ({view.timeline.length})</summary>

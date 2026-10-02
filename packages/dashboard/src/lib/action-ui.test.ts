@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { STATUS_GROUPS } from "@oneon/contracts";
 import {
-  GROUP_BADGE, GROUP_FILTERS, actionsQuery, actorLabel, chatChip, evidenceSummary, operationLabel, statusLabel, verifyingNote,
+  GROUP_BADGE, GROUP_FILTERS, actionsQuery, actorLabel, chatChip, evidenceSummary, operationLabel, statusLabel, undoNote, verifyingNote,
 } from "./action-ui";
 
 describe("action UI helpers", () => {
@@ -46,8 +46,19 @@ describe("action UI helpers", () => {
     expect(chatChip({ id: "a2", actionType: "x", label: "x", status: "completed" }).text).toBe("Done · Open");
   });
 
-  it("explains an unconfirmed outcome", () => {
-    expect(verifyingNote({ verifyingSince: "2026-10-01T12:00:00.000Z" } as never)).toMatch(/^Couldn't confirm yet; Oneon will check again automatically \(last checked /);
-    expect(verifyingNote({ verifyingSince: null } as never)).toBeNull();
+  it("explains an unconfirmed outcome with the last verification attempt's time", () => {
+    const at = new Date("2026-10-01T12:09:00.000Z").toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    expect(verifyingNote({ lastCheckedAt: "2026-10-01T12:09:00.000Z" } as never)).toBe(
+      `Couldn't confirm yet; Oneon will check again automatically (last checked ${at}).`,
+    );
+    expect(verifyingNote({ lastCheckedAt: null } as never)).toBeNull();
+  });
+
+  it("shows the undo line only when the view has one (I3)", () => {
+    const undo = (text: string | null) => ({ rollbackClass: "reversible" as const, text, warning: null });
+    expect(undoNote({ undo: undo(null), attemptNumber: 1 })).toBeNull();
+    expect(undoNote({ undo: undo("Can be undone"), attemptNumber: 1 })).toBe("Can be undone");
+    expect(undoNote({ undo: undo("Can be undone"), attemptNumber: 2 })).toBe("Can be undone · Attempt 2");
+    expect(undoNote({ undo: undo(null), attemptNumber: 3 })).toBe("Attempt 3");
   });
 });

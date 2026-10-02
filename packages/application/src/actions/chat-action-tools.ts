@@ -4,6 +4,7 @@ import type { ToolDefinition, ToolResult } from "../tools/tool-registry.js";
 import type { ActionRegistry } from "./registry.js";
 import { describeReason, type PolicyDecision } from "./policy/index.js";
 import { describeInstance } from "./orchestrator/shared.js";
+import { describeActionError } from "./error-text.js";
 import type { ActionRequest, RequestOutcome } from "./orchestrator/types.js";
 
 export interface ChatActionRef {
@@ -46,7 +47,7 @@ function statusSummary(deps: ChatActionToolDeps, instance: ActionInstance): stri
     }
     case "failed":
     case "cancelled":
-      return `Not done (${instance.status}): ${instance.error?.message ?? instance.status}`;
+      return `Not done (${instance.status}): ${instance.error ? describeActionError(instance.error, instance.actionType) : instance.status}`;
     default:
       return `In progress (${instance.status}); see Action Center.`;
   }

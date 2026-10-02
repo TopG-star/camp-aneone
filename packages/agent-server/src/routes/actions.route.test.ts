@@ -30,7 +30,8 @@ describe("GET /api/actions", () => {
       origin: { kind: "rule", label: "Inbox rule · deadline reminder" },
       description: 'Add an all-day reminder "Due: Submit Q4" on 7 Oct 2026 to your calendar.',
       allowedOperations: ["approve", "reject", "cancel"],
-      undo: { rollbackClass: "reversible", text: "Can be undone" },
+      // I3: nothing has run yet, so no undo claim is made.
+      undo: { rollbackClass: "reversible", text: null },
     });
     expect(res.body.actions[0].decision.reasons[0].text).toBe("Create reminder is set to always ask before running.");
     expect(res.body.actions[0].timeline.map((e: { toStatus: string }) => e.toStatus)).toEqual(["proposed", "validating", "awaiting_approval"]);
@@ -50,7 +51,7 @@ describe("operations", () => {
     const a = await proposeReminder(t);
     const approved = await request(t.app).post(`/api/actions/${a.id}/approve`);
     expect(approved.status).toBe(200);
-    expect(approved.body).toMatchObject({ status: "completed", allowedOperations: ["undo"] });
+    expect(approved.body).toMatchObject({ status: "completed", allowedOperations: ["undo"], undo: { text: "Can be undone" } });
     expect(t.events.size).toBe(1);
     expect((await request(t.app).post(`/api/actions/${a.id}/approve`)).status).toBe(409);
     const undone = await request(t.app).post(`/api/actions/${a.id}/undo`);

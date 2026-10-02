@@ -2,6 +2,7 @@ import { groupOf, type ActionView } from "@oneon/contracts";
 import type { ActionEvent, ActionInstance, ActorContext, CheckResult } from "@oneon/domain";
 import {
   allowedOperations,
+  describeActionError,
   describeInstance,
   describeReason,
   type ActionRegistry,
@@ -23,6 +24,24 @@ const UNDO_TEXT = {
   irreversible: "This action cannot be automatically reversed.",
 } as const;
 
+const NOT_YET_RUN = new Set(["proposed", "validating", "awaiting_approval", "approved"]);
+
+/** I3: only statements that are true for this instance, for this viewer. */
+function undoText(
+  instance: ActionInstance,
+  def: ReturnType<ActionRegistry["get"]>,
+  operations: readonly string[],
+): string | null {
+  const settled = instance.status === "completed" || instance.status === "partially_completed";
+  if (def.rollbackClass === "irreversible") return settled || NOT_YET_RUN.has(instance.status) ? UNDO_TEXT.irreversible : null;
+  if (operations.includes("undo")) return UNDO_TEXT[def.rollbackClass];
+  if (settled && (!def.undo || !instance.undo)) {
+    const calendar = def.effects.writes.some((w) => w.startsWith("Google Calendar"));
+    return `Oneon couldn't record how to undo this, so it can't be undone from here.${calendar ? " Change it in Google Calendar if you need to." : ""}`;
+  }
+  return null;
+}
+
 function originOf(instance: ActionInstance): ActionView["origin"] {
   if (instance.initiator.startsWith("rule:")) {
     const id = instance.initiator.slice(5);
@@ -43,6 +62,12 @@ function latestChecks(events: ActionEvent[]): CheckResult[] {
   return [];
 }
 
+/** Verification records each attempt in last_heartbeat_at; entering verifying is the first. */
+function lastChecked(instance: ActionInstance): string {
+  const heartbeat = instance.lastHeartbeatAt;
+  return heartbeat && Date.parse(heartbeat) > Date.parse(instance.updatedAt) ? heartbeat : instance.updatedAt;
+}
+
 export function toActionView(
   instance: ActionInstance,
   ctx: { registry: ActionRegistry; events: ActionEvent[]; viewer: ActorContext; policy: EffectivePolicy },
@@ -50,6 +75,12 @@ export function toActionView(
   const def = ctx.registry.get(instance.actionType);
   const decision = instance.decision as unknown as PolicyDecision | null;
   const settled = instance.status === "completed" || instance.status === "partially_completed";
+  const operations = allowedOperations(ctx.viewer, instance, {
+    policy: ctx.policy,
+    rollbackClass: def.rollbackClass,
+    hasUndo: def.undo !== null && instance.undo !== null,
+    executorAvailable: def.execute !== null,
+  });
   return {
     id: instance.id,
     actionType: instance.actionType,
@@ -64,20 +95,18 @@ export function toActionView(
     checks: latestChecks(ctx.events),
     undo: {
       rollbackClass: def.rollbackClass,
-      text: UNDO_TEXT[def.rollbackClass],
+      text: undoText(instance, def, operations),
       warning: settled && def.undo && instance.resolved ? def.undo.warning(instance.resolved) : null,
     },
-    error: instance.error,
-    allowedOperations: allowedOperations(ctx.viewer, instance, {
-      policy: ctx.policy,
-      rollbackClass: def.rollbackClass,
-      hasUndo: def.undo !== null && instance.undo !== null,
-      executorAvailable: def.execute !== null,
-    }),
+    // I5: raw messages (codes, Google bodies) stay in storage and logs; the owner sees plain text.
+    error: instance.error
+      ? { code: instance.error.code, stage: instance.error.stage, message: describeActionError(instance.error, instance.actionType) }
+      : null,
+    allowedOperations: operations,
     retryOf: instance.retryOf,
     attemptNumber: instance.attemptNumber,
     resourceRef: instance.resourceRef,
-    verifyingSince: instance.status === "verifying" ? instance.updatedAt : null,
+    lastCheckedAt: instance.status === "verifying" ? lastChecked(instance) : null,
     createdAt: instance.createdAt,
     updatedAt: instance.updatedAt,
     timeline: ctx.events.map((e) => ({ seq: e.seq, fromStatus: e.fromStatus, toStatus: e.toStatus, actor: e.actor, data: e.data, createdAt: e.createdAt })),

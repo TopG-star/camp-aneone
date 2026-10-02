@@ -132,6 +132,15 @@ describe("advance: execution and verification", () => {
     const instance = await created(harness([probeDefinition({ postconditions: async () => { throw new Error("Google down"); } })]));
     expect(instance.status).toBe("verifying");
   });
+
+  it("records when each verification attempt ran, for the card's \"last checked\" time", async () => {
+    const h = harness([probeDefinition({ postconditions: async () => { throw new Error("Google down"); } })]);
+    const instance = await created(h);
+    expect(h.repo.findById("u1", instance.id)!.lastHeartbeatAt).toBe("2026-10-01T12:00:00.000Z");
+    h.advanceClock(7 * 60_000);
+    await h.orchestrator.advance("u1", instance.id);
+    expect(h.repo.findById("u1", instance.id)).toMatchObject({ status: "verifying", lastHeartbeatAt: "2026-10-01T12:07:00.000Z" });
+  });
 });
 
 describe("advance: re-check before execution", () => {

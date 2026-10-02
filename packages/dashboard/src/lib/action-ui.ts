@@ -92,8 +92,14 @@ export function chatChip(ref: ChatActionRef): { href: string; text: string } {
   return { href: `/actions#action-${ref.id}`, text: `${CHIP_TEXT[ref.status] ?? statusLabel(ref.status)} · Open` };
 }
 
-export function verifyingNote(view: Pick<ActionView, "verifyingSince">): string | null {
-  if (!view.verifyingSince) return null;
-  const at = new Date(view.verifyingSince).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+export function verifyingNote(view: Pick<ActionView, "lastCheckedAt">): string | null {
+  if (!view.lastCheckedAt) return null;
+  const at = new Date(view.lastCheckedAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
   return `Couldn't confirm yet; Oneon will check again automatically (last checked ${at}).`;
+}
+
+/** I3: the server sends undo text only when it is true for this card; null means say nothing. */
+export function undoNote(view: Pick<ActionView, "undo" | "attemptNumber">): string | null {
+  const parts = [view.undo.text, view.attemptNumber > 1 ? `Attempt ${view.attemptNumber}` : null].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : null;
 }

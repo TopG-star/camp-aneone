@@ -56,7 +56,8 @@ describe("chat action tools", () => {
     [instance({ status: "awaiting_approval" }), /^Waiting for your approval in Action Center\. Do not describe this action as done\./],
     [instance({ status: "completed" }), /^Completed: /],
     [instance({ status: "verifying" }), /^Sent to Google; couldn't confirm yet\./],
-    [instance({ status: "failed", error: { code: "calendar_connected", message: "Precondition not met: calendar_connected", stage: "validation" } }), /^Not done \(failed\): Precondition not met: calendar_connected/],
+    [instance({ status: "failed", error: { code: "calendar_connected", message: "Precondition not met: calendar_connected", stage: "validation" } }), /^Not done \(failed\): Google Calendar isn't connected\./],
+    [instance({ status: "failed", error: { code: "rejected_by_google", message: 'Google Calendar API error 400: {"error":{}}', stage: "execution" } }), /^Not done \(failed\): Google Calendar refused the change, so nothing was changed\.$/],
   ])("tells the AI the truth for %#", async (inst, pattern) => {
     const { create } = tools({ kind: "created", instance: inst });
     const result = await create.execute(create.inputSchema.parse(args));

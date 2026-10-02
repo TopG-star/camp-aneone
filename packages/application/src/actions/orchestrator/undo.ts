@@ -10,6 +10,7 @@ export function createUndo(deps: OrchestratorDeps) {
   const reload = (instance: ActionInstance) => deps.repo.findById(instance.ownerId, instance.id)!;
 
   async function fail(instance: ActionInstance, def: AnyActionDefinition, code: string, message: string, data: JsonObject) {
+    deps.logger.warn("Undo did not finish", { actionId: instance.id, code, message });
     const failed = move(deps, reload(instance), "rollback_failed", SYSTEM, data, { error: { code, message, stage: "undo" } });
     await quietly(deps, "rollback failure notification", () =>
       deps.notifier.rollbackFailed(failed, `Undo of: ${describeInstance(def, failed)}`),
