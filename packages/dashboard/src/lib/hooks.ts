@@ -139,3 +139,13 @@ export function useFinanceInsights(query?: string, config?: SWRConfiguration) {
     ...config,
   });
 }
+
+/** Legacy MVP1 actions (read-only) */
+export function useLegacyActions(query: string | null, config?: SWRConfiguration) {
+  return useSWR(query === null ? null : `/api/actions/legacy?${query}`, fetcher, config);
+}
+
+/** Settings → Actions */
+export function useActionDefinitions(config?: SWRConfiguration) {
+  return useSWR("/api/action-definitions", fetcher, config);
+}
