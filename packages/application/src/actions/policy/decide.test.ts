@@ -32,6 +32,8 @@ describe("decide", () => {
     ["always ask", input({ policy: { ...POLICY, approval: { mode: "always", thresholds: {} } } }), "needs_approval", "mode_always"],
     ["threshold exceeded", input({ metrics: { others_involved: 2 } }), "needs_approval", "threshold_exceeded"],
     ["metric missing", input({ metrics: {} }), "needs_approval", "threshold_metric_missing"],
+    ["metric NaN (fails closed)", input({ metrics: { others_involved: Number.NaN } }), "needs_approval", "threshold_metric_missing"],
+    ["metric infinite (fails closed)", input({ metrics: { others_involved: Number.NEGATIVE_INFINITY } }), "needs_approval", "threshold_metric_missing"],
     ["within policy", input(), "auto", "within_policy"],
   ])("%s → %s", (_name, args, outcome, code) => {
     const decision = decide(args);

@@ -95,8 +95,11 @@ export class InMemoryActionRepo implements ActionInstanceRepository {
     this.instances.get(actionId)!.lastHeartbeatAt = at;
   }
 
-  markUndoStarted(actionId: string, at: string): void {
-    this.instances.get(actionId)!.undoStartedAt = at;
+  markUndoStarted(actionId: string, at: string): boolean {
+    const instance = this.instances.get(actionId)!;
+    if (instance.undoStartedAt !== null) return false;
+    instance.undoStartedAt = at;
+    return true;
   }
 
   trail(actionId: string): string[] {

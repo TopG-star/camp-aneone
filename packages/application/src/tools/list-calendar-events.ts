@@ -33,8 +33,9 @@ export function createListCalendarEventsTool(
     async execute(validatedInput: unknown): Promise<ToolResult> {
       const input = validatedInput as ListCalendarEventsInput;
 
-      const calendarPort = input.userId && deps.resolveCalendarPort
-        ? deps.resolveCalendarPort(input.userId)
+      // With a userId, only that user's own calendar may answer; never the global env-token port.
+      const calendarPort = input.userId
+        ? deps.resolveCalendarPort?.(input.userId) ?? null
         : deps.calendarPort ?? null;
 
       if (!calendarPort) {

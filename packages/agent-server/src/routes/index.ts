@@ -266,17 +266,16 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     }
 
 
-    // Calendar tools (only if calendarPort available)
-    if (container.calendarPort) {
-      toolRegistry.register(createListCalendarEventsTool({
-        calendarPort: container.calendarPort,
-        resolveCalendarPort,
-      } as Parameters<typeof createListCalendarEventsTool>[0]));
-      toolRegistry.register(createSearchCalendarTool({
-        calendarPort: container.calendarPort,
-        resolveCalendarPort,
-      } as Parameters<typeof createSearchCalendarTool>[0]));
-    }
+    // Calendar read tools: registered even without the env-token port, because
+    // resolveCalendarPort serves each signed-in user's own calendar (OAuth-only deployments).
+    toolRegistry.register(createListCalendarEventsTool({
+      calendarPort: container.calendarPort ?? undefined,
+      resolveCalendarPort,
+    }));
+    toolRegistry.register(createSearchCalendarTool({
+      calendarPort: container.calendarPort ?? undefined,
+      resolveCalendarPort,
+    }));
 
     // Chat action tools: writes go through the action framework, so they are
     // registered even without a calendar port and fail honestly when it is missing.

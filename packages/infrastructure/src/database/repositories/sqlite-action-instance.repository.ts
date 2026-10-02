@@ -239,8 +239,11 @@ export class SqliteActionInstanceRepository implements ActionInstanceRepository 
     this.db.prepare("UPDATE action_instances SET last_heartbeat_at = ? WHERE id = ?").run(at, actionId);
   }
 
-  markUndoStarted(actionId: string, at: string): void {
-    this.db.prepare("UPDATE action_instances SET undo_started_at = ? WHERE id = ?").run(at, actionId);
+  markUndoStarted(actionId: string, at: string): boolean {
+    const result = this.db
+      .prepare("UPDATE action_instances SET undo_started_at = ? WHERE id = ? AND undo_started_at IS NULL")
+      .run(at, actionId);
+    return result.changes === 1;
   }
 
   private where(ownerId: string, filter: Omit<InstanceListFilter, "limit" | "offset">) {

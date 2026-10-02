@@ -59,6 +59,18 @@ export function decisionOf(instance: ActionInstance): PolicyDecision | null {
   return instance.decision as unknown as PolicyDecision | null;
 }
 
+export const HOUR = 3_600_000;
+
+/** The approval window recorded with the decision, else the current effective policy's. */
+export function expiryHoursOf(deps: OrchestratorDeps, instance: ActionInstance, def: AnyActionDefinition): number {
+  return decisionOf(instance)?.policy?.expiryHours ?? effectivePolicyFor(deps, instance.scope, instance.ownerId, def).policy.expiryHours;
+}
+
+/** Spec §7.2: an approval request is expired once its window has passed since it started waiting. */
+export function approvalExpired(deps: OrchestratorDeps, instance: ActionInstance, def: AnyActionDefinition, now: number): boolean {
+  return now - Date.parse(instance.updatedAt) > expiryHoursOf(deps, instance, def) * HOUR;
+}
+
 export function consequencesDiffer(keys: readonly string[], approved: JsonObject | null, current: JsonObject): boolean {
   return keys.some((k) => canonicalJson(approved?.[k] ?? null) !== canonicalJson(current[k] ?? null));
 }

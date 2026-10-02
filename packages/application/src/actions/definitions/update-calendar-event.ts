@@ -79,6 +79,8 @@ export const updateCalendarEventDefinition: ActionDefinition<UpdateCalendarEvent
       changes[f] = f === "attendees" ? normalizeAttendees(input.attendees!) : input[f];
       previous[f] = current[f];
     }
+    // M2: an all-day event's previous dates are date-only and must be written back as dates on undo.
+    if ("start" in changes || "end" in changes) previous.allDay = current.allDay;
     const start = (changes.start as string | undefined) ?? current.start;
     const end = (changes.end as string | undefined) ?? current.end;
     if (Date.parse(start) >= Date.parse(end)) {
@@ -112,7 +114,7 @@ export const updateCalendarEventDefinition: ActionDefinition<UpdateCalendarEvent
       return `${k} to "${v ?? ""}"`;
     });
     const base = `Change "${resolved.eventTitle}": ${parts.join("; ")}.`;
-    return resolved.sendUpdates === "all"
+    return resolved.sendUpdates === "all" && resolved.othersInvolved.length > 0
       ? `${base} Google will email the update to ${resolved.othersInvolved.join(", ")}.`
       : base;
   },
@@ -205,6 +207,8 @@ export const updateCalendarEventDefinition: ActionDefinition<UpdateCalendarEvent
       }));
     },
     warning: (resolved) =>
-      resolved.sendUpdates === "all" ? `Google will email the change back to ${resolved.othersInvolved.join(", ")}.` : null,
+      resolved.sendUpdates === "all" && resolved.othersInvolved.length > 0
+        ? `Google will email the change back to ${resolved.othersInvolved.join(", ")}.`
+        : null,
   },
 };

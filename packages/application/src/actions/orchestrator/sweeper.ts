@@ -1,18 +1,13 @@
 import { IN_PROGRESS_STATUSES, TransitionConflictError, type ActionInstance } from "@oneon/domain";
 import type { AnyActionDefinition } from "../definition.js";
-import { SWEEPER, SYSTEM, decisionOf, effectivePolicyFor, move } from "./shared.js";
+import { HOUR, SWEEPER, SYSTEM, approvalExpired, expiryHoursOf, move } from "./shared.js";
 import type { OrchestratorDeps } from "./types.js";
-
-const HOUR = 3_600_000;
 
 export function createSweeper(
   deps: OrchestratorDeps,
   advance: (ownerId: string, actionId: string) => Promise<ActionInstance>,
   continueUndo: (instance: ActionInstance) => Promise<ActionInstance>,
 ) {
-  const expiryHoursOf = (instance: ActionInstance, def: AnyActionDefinition) =>
-    decisionOf(instance)?.policy?.expiryHours ?? effectivePolicyFor(deps, instance.scope, instance.ownerId, def).policy.expiryHours;
-
   async function recover(instance: ActionInstance, def: AnyActionDefinition, now: number): Promise<void> {
     switch (instance.status) {
       case "proposed":
@@ -21,7 +16,7 @@ export function createSweeper(
         await advance(instance.ownerId, instance.id);
         return;
       case "approved":
-        if (now - Date.parse(instance.updatedAt) > expiryHoursOf(instance, def) * HOUR) {
+        if (now - Date.parse(instance.updatedAt) > expiryHoursOf(deps, instance, def) * HOUR) {
           move(deps, instance, "cancelled", SWEEPER, { reason: "stale_approval" });
           return;
         }
@@ -64,8 +59,9 @@ export function createSweeper(
     let expired = 0;
     for (const instance of deps.repo.list(ownerId, { statuses: ["awaiting_approval"], limit: 500 })) {
       if (!deps.registry.has(instance.actionType)) continue;
-      const hours = expiryHoursOf(instance, deps.registry.get(instance.actionType));
-      if (now - Date.parse(instance.updatedAt) <= hours * HOUR) continue;
+      const def = deps.registry.get(instance.actionType);
+      if (!approvalExpired(deps, instance, def, now)) continue;
+      const hours = expiryHoursOf(deps, instance, def);
       try {
         move(deps, instance, "expired", SYSTEM, { expiryHours: hours });
         expired++;

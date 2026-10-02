@@ -45,7 +45,12 @@ export function createUndo(deps: OrchestratorDeps) {
       if (refused) {
         return fail(instance, def, refused.failureCode, `Undo refused: ${refused.failureCode}`, { checks } as unknown as JsonObject);
       }
-      deps.repo.markUndoStarted(instance.id, deps.clock().toISOString());
+      // Compare-and-set: if another run (a person's undo racing the sweeper) already started the
+      // undo executor, this run must not call it again; that run, or the sweeper, finishes it.
+      if (!deps.repo.markUndoStarted(instance.id, deps.clock().toISOString())) {
+        deps.logger.info("Undo already started by another run", { actionId: instance.id });
+        return reload(instance);
+      }
       let outcome: ExecutionOutcome;
       try {
         outcome = await withTimeout(def.undo.execute(ctx), def.executionTimeoutMs, () => ({

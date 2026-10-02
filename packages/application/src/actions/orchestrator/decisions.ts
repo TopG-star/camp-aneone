@@ -8,7 +8,7 @@ import {
 } from "@oneon/domain";
 import { canAct, canApprove, decide } from "../policy/index.js";
 import type { AnyActionDefinition } from "../definition.js";
-import { POLICY, effectivePolicyFor, move } from "./shared.js";
+import { POLICY, SYSTEM, approvalExpired, effectivePolicyFor, expiryHoursOf, move } from "./shared.js";
 import { ActionOperationError, type ActionRequest, type OrchestratorDeps, type RequestOutcome } from "./types.js";
 
 const CANCELLABLE = new Set(["proposed", "validating", "awaiting_approval", "approved"]);
@@ -41,6 +41,10 @@ export function createDecisions(
     const { instance, def, ownerId, policy } = loadOwned(deps, actor, actionId);
     if (instance.status !== "awaiting_approval") throw new ActionOperationError("conflict", `Cannot approve an action that is ${instance.status}.`);
     if (!canApprove(actor, instance, policy)) throw new ActionOperationError("not_allowed", "You can't approve this action.");
+    // M1: past the window the request is expired (spec §7.2), whether or not the sweeper has run yet.
+    if (approvalExpired(deps, instance, def, deps.clock().getTime())) {
+      return guard(() => move(deps, instance, "expired", SYSTEM, { expiryHours: expiryHoursOf(deps, instance, def), attemptedBy: actor.userId }));
+    }
     const resolved = instance.resolved ?? { metrics: {} };
     const decision = decide({
       scope: def.scope,

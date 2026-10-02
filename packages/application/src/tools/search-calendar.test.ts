@@ -100,6 +100,17 @@ describe("search_calendar tool", () => {
     expect(resolvedPort.searchEvents).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    ["the resolver finds no calendar for the user", { resolveCalendarPort: vi.fn().mockReturnValue(null) }],
+    ["no resolver is wired", {}],
+  ])("never falls back to the global port when a userId is present: %s", async (_name, extra) => {
+    const deps = makeDeps(extra);
+    const tool = createSearchCalendarTool(deps);
+    const result = await tool.execute(tool.inputSchema.parse({ query: "standup", userId: "user-A" }));
+    expect(deps.calendarPort!.searchEvents).not.toHaveBeenCalled();
+    expect(result.summary).toBe("Calendar integration is not configured for this user.");
+  });
+
   it("returns matching events in data field", async () => {
     const deps = makeDeps();
     (deps.calendarPort!.searchEvents as ReturnType<typeof vi.fn>).mockResolvedValue([

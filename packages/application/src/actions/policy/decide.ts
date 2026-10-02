@@ -35,7 +35,8 @@ export function decide(input: DecideInput): PolicyDecision {
     const reasons: PolicyReason[] = [];
     for (const [metric, limit] of Object.entries(thresholds)) {
       const value = input.metrics[metric];
-      if (value === undefined) reasons.push({ code: "threshold_metric_missing", detail: { metric } });
+      // A missing or non-finite metric (NaN compares false with everything) fails closed.
+      if (value === undefined || !Number.isFinite(value)) reasons.push({ code: "threshold_metric_missing", detail: { metric } });
       else if (value > limit) reasons.push({ code: "threshold_exceeded", detail: { metric, value, limit } });
     }
     if (reasons.length > 0) return make("needs_approval", reasons);

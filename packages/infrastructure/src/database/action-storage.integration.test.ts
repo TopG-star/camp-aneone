@@ -145,9 +145,16 @@ describe("SqliteActionInstanceRepository", () => {
   it("records heartbeats and undo starts without touching status or events", () => {
     repo.create(newInstance(), USER);
     repo.recordHeartbeat("act-1", "2026-10-01T12:01:00.000Z");
-    repo.markUndoStarted("act-1", "2026-10-01T12:02:00.000Z");
+    expect(repo.markUndoStarted("act-1", "2026-10-01T12:02:00.000Z")).toBe(true);
     const after = repo.findById("user-A", "act-1")!;
     expect(after).toMatchObject({ status: "proposed", lastHeartbeatAt: "2026-10-01T12:01:00.000Z", undoStartedAt: "2026-10-01T12:02:00.000Z", lastEventSeq: 1 });
+  });
+
+  it("marks the undo started only once (compare-and-set)", () => {
+    repo.create(newInstance(), USER);
+    expect(repo.markUndoStarted("act-1", "2026-10-01T12:02:00.000Z")).toBe(true);
+    expect(repo.markUndoStarted("act-1", "2026-10-01T12:03:00.000Z")).toBe(false);
+    expect(repo.findById("user-A", "act-1")!.undoStartedAt).toBe("2026-10-01T12:02:00.000Z");
   });
 });
 

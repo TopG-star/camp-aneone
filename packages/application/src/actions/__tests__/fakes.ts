@@ -35,7 +35,9 @@ export function fakeCalendar(ownerEmail = "owner@test.com") {
       const current = events.get(id);
       if (!current) throw new ExternalCallError("definite", "not_found", "missing");
       if (current.etag !== options.ifMatch) throw new ExternalCallError("definite", "changed_since", "412");
-      const updated = stamp({ ...current, ...changes, id });
+      // Like the adapter: a start/end written without allDay: true is a dateTime, so the event becomes timed.
+      const timing = changes.start !== undefined || changes.end !== undefined ? { allDay: changes.allDay ?? false } : {};
+      const updated = stamp({ ...current, ...changes, ...timing, id });
       events.set(id, updated);
       return updated;
     },

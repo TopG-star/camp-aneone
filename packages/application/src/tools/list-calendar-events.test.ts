@@ -86,6 +86,20 @@ describe("list_calendar_events tool", () => {
     expect(resolvedPort.listEvents).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    ["the resolver finds no calendar for the user", { resolveCalendarPort: vi.fn().mockReturnValue(null) }],
+    ["no resolver is wired", {}],
+  ])("never falls back to the global port when a userId is present: %s", async (_name, extra) => {
+    const deps = makeDeps(extra);
+    const result = await createListCalendarEventsTool(deps).execute({
+      timeMin: "2026-04-18T00:00:00Z",
+      timeMax: "2026-04-19T00:00:00Z",
+      userId: "user-A",
+    });
+    expect(deps.calendarPort!.listEvents).not.toHaveBeenCalled();
+    expect(result.summary).toBe("Calendar integration is not configured for this user.");
+  });
+
   it("returns events in data field", async () => {
     const deps = makeDeps();
     (deps.calendarPort!.listEvents as ReturnType<typeof vi.fn>).mockResolvedValue([

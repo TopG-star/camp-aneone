@@ -33,6 +33,25 @@ describe("approve / reject / cancel", () => {
     await expect(h.orchestrator.approve(personalActor("u2"), w.id)).rejects.toMatchObject({ code: "not_found" });
   });
 
+  it("expires instead of approving once the approval window has passed (M1)", async () => {
+    let executions = 0;
+    const def = askFirst();
+    const h = harness([{ ...def, execute: async () => { executions++; return { kind: "succeeded", result: {}, undoData: null }; } }]);
+    const w = await waiting(h);
+    h.advanceClock(24 * 3_600_000 + 1);
+    const after = await h.orchestrator.approve(personalActor("u1"), w.id);
+    expect(after.status).toBe("expired");
+    expect(h.repo.trail(w.id)).not.toContain("approved");
+    expect(executions).toBe(0);
+  });
+
+  it("still approves just inside the approval window", async () => {
+    const h = harness([askFirst()]);
+    const w = await waiting(h);
+    h.advanceClock(24 * 3_600_000);
+    expect((await h.orchestrator.approve(personalActor("u1"), w.id)).status).toBe("completed");
+  });
+
   it("rejects instead of approving when policy now refuses", async () => {
     const h = harness([askFirst()]);
     const w = await waiting(h);

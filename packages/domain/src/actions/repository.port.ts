@@ -71,7 +71,8 @@ export interface ActionInstanceRepository {
   /** The only way to change a status (spec §8.3 invariant 2). */
   appendTransition(request: TransitionRequest): ActionInstance;
   recordHeartbeat(actionId: string, at: string): void;
-  markUndoStarted(actionId: string, at: string): void;
+  /** Compare-and-set: records the time only if no undo start is recorded; true when this call set it. */
+  markUndoStarted(actionId: string, at: string): boolean;
 }
 
 export interface ActionConfigRecord {
