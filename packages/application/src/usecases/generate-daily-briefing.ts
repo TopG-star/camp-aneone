@@ -60,6 +60,8 @@ export interface GenerateDailyBriefingDeps {
 export interface GenerateDailyBriefingInput {
   now: Date;
   timezone: string;
+  /** Whose briefing this is. Without it, user-owned sections are empty rather than unscoped. */
+  userId?: string;
 }
 
 export interface GenerateDailyBriefingResult {
@@ -307,10 +309,13 @@ export async function generateDailyBriefing(
   const nextDayUTC = startOfDayUTC(addDaysToDateString(dateStr, 1), input.timezone);
 
   // ── 1. Urgent items (priority ≤ 2) ──
-  const classifications = deps.classificationRepo.findAll({
-    minPriority: MAX_URGENT_PRIORITY as 1 | 2 | 3 | 4 | 5,
-    limit: MAX_URGENT_ITEMS,
-  });
+  const classifications = input.userId
+    ? deps.classificationRepo.findAll({
+        minPriority: MAX_URGENT_PRIORITY as 1 | 2 | 3 | 4 | 5,
+        limit: MAX_URGENT_ITEMS,
+        userId: input.userId,
+      })
+    : [];
 
   const urgentItems: UrgentItemSummary[] = [];
   for (const cls of classifications) {
@@ -329,11 +334,9 @@ export async function generateDailyBriefing(
   }
 
   // ── 2. Deadlines (next 7 days, open only) ──
-  const deadlines = deps.deadlineRepo.findByDateRange(
-    dayStartUTC,
-    weekEndUTC,
-    "open"
-  );
+  const deadlines = input.userId
+    ? deps.deadlineRepo.findByDateRange(dayStartUTC, weekEndUTC, "open", input.userId)
+    : [];
 
   // ── 3. Pending actions ──
   const pendingActions = deps.listPendingActions();

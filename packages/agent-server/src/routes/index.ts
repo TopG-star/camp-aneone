@@ -29,13 +29,11 @@ import {
   LocalDocMemoryProvider,
   StructuredLogger,
   TTLCache,
-  GCalHttpClient,
-  GoogleCalendarAdapter,
   GitHubHttpClient,
   GitHubAdapter,
 } from "@oneon/infrastructure";
 import type { RequestHandler } from "express";
-import type { CalendarEvent, GitHubNotification, GitHubPullRequest } from "@oneon/domain";
+import type { GitHubNotification, GitHubPullRequest } from "@oneon/domain";
 import {
   createToolRegistry,
   createListInboxTool,
@@ -89,6 +87,10 @@ export function registerRoutes(app: Express, container: AppContainer): void {
 
   // System routes: Bearer token only (admin scripts, CI triggers)
   const systemAuth: RequestHandler[] = [tokenAuth];
+
+  // One calendar adapter (and cache) per user, shared with the action executors, so a
+  // calendar write is visible to chat reads and Today without waiting for the cache TTL.
+  const resolveCalendarPort = (userId: string) => container.actions.calendarReaderFor(userId);
 
   // ── Webhook user resolution ───────────────────────────────
   // For MVP: if exactly one user exists, assign webhook items to them.
@@ -163,28 +165,6 @@ export function registerRoutes(app: Express, container: AppContainer): void {
   // ── Chat Endpoint ─────────────────────────────────────────
   if (env.FEATURE_CHAT) {
     const chatLogger = new StructuredLogger("chat", env.LOG_LEVEL);
-    const calendarPortByUser = new Map<string, NonNullable<typeof container.calendarPort>>();
-    const resolveCalendarPort = (userId: string) => {
-      if (calendarPortByUser.has(userId)) {
-        return calendarPortByUser.get(userId)!;
-      }
-
-      const tokenProvider = container.createGoogleTokenProvider(userId);
-      if (!tokenProvider) {
-        return null;
-      }
-
-      const port = new GoogleCalendarAdapter({
-        client: new GCalHttpClient(tokenProvider),
-        calendarId: env.CALENDAR_ID,
-        cache: new TTLCache<CalendarEvent[]>(),
-        cacheTtlMs: env.CALENDAR_CACHE_TTL_MS,
-      });
-
-      calendarPortByUser.set(userId, port);
-      return port;
-    };
-
     const githubPortByUser = new Map<
       string,
       {
@@ -521,7 +501,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       instanceRepo: container.actions.instanceRepo,
       notificationRepo: container.notificationRepo,
       preferenceRepo: container.preferenceRepo,
-      calendarPort: container.calendarPort,
+      resolveCalendarPort,
       logger: todayLogger,
     }),
   );

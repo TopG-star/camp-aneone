@@ -153,6 +153,7 @@ function defaultInput(overrides: Partial<GenerateDailyBriefingInput> = {}): Gene
   return {
     now: new Date("2026-04-17T07:00:00Z"),
     timezone: "UTC",
+    userId: "user-A",
     ...overrides,
   };
 }
@@ -212,8 +213,47 @@ describe("generateDailyBriefing", () => {
     expect(deps.deadlineRepo.findByDateRange).toHaveBeenCalledWith(
       "2026-04-17T00:00:00.000Z",
       "2026-04-24T00:00:00.000Z",
-      "open"
+      "open",
+      "user-A"
     );
+  });
+
+  it("scopes urgent items and deadlines to the briefing's user", async () => {
+    const itemA = makeItem("item-A", { userId: "user-A" });
+    const itemB = makeItem("item-B", { userId: "user-B" });
+    const clsA = makeClassification("item-A", { userId: "user-A" });
+    const clsB = makeClassification("item-B", { userId: "user-B" });
+    const dlA = makeDeadline("item-A", { userId: "user-A" });
+    const dlB = makeDeadline("item-B", { userId: "user-B" });
+    const deps = createDeps();
+    // Fakes honour the user filter the way the SQLite repositories do.
+    vi.mocked(deps.classificationRepo.findAll).mockImplementation((o) =>
+      [clsA, clsB].filter((c) => !o.userId || c.userId === o.userId),
+    );
+    vi.mocked(deps.inboundItemRepo.findById).mockImplementation((id) => [itemA, itemB].find((i) => i.id === id) ?? null);
+    vi.mocked(deps.deadlineRepo.findByDateRange).mockImplementation((_f, _t, _s, userId) =>
+      [dlA, dlB].filter((d) => !userId || d.userId === userId),
+    );
+
+    const result = await generateDailyBriefing(deps, defaultInput({ userId: "user-A" }));
+
+    expect(result.data.urgentItems.map((i) => i.id)).toEqual(["item-A"]);
+    expect(result.data.deadlines.map((d) => d.id)).toEqual(["dl-item-A"]);
+    expect(deps.classificationRepo.findAll).toHaveBeenCalledWith(expect.objectContaining({ userId: "user-A" }));
+  });
+
+  it("returns empty urgent items and deadlines without a user", async () => {
+    const deps = createDeps();
+    vi.mocked(deps.classificationRepo.findAll).mockReturnValue([makeClassification("item-B", { userId: "user-B" })]);
+    vi.mocked(deps.inboundItemRepo.findById).mockReturnValue(makeItem("item-B", { userId: "user-B" }));
+    vi.mocked(deps.deadlineRepo.findByDateRange).mockReturnValue([makeDeadline("item-B", { userId: "user-B" })]);
+
+    const result = await generateDailyBriefing(deps, defaultInput({ userId: undefined }));
+
+    expect(result.data.urgentItems).toEqual([]);
+    expect(result.data.deadlines).toEqual([]);
+    expect(deps.classificationRepo.findAll).not.toHaveBeenCalled();
+    expect(deps.deadlineRepo.findByDateRange).not.toHaveBeenCalled();
   });
 
   it("populates pendingActions from listPendingActions", async () => {
@@ -308,7 +348,8 @@ describe("generateDailyBriefing", () => {
     expect(deps.deadlineRepo.findByDateRange).toHaveBeenCalledWith(
       "2026-04-18T00:00:00.000Z",
       "2026-04-25T00:00:00.000Z",
-      "open"
+      "open",
+      "user-A"
     );
   });
 

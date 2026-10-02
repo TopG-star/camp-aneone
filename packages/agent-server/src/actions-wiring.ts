@@ -58,6 +58,11 @@ export interface ActionsModule {
   configRepo: ActionConfigRepository;
   legacyRepo: LegacyActionRepository;
   capabilitiesFor(userId: string): ActionCapabilities;
+  /**
+   * Read-only view of the same per-user adapter the executors write through, so a write
+   * invalidates the cache every reader (chat, Today) sees. Null when the user has no Google token.
+   */
+  calendarReaderFor(userId: string): CalendarReader | null;
 }
 
 /** The only place outside infrastructure that holds a CalendarWriter (spec §5, Task 15 test). */
@@ -123,7 +128,7 @@ export function createActionsModule(deps: ActionsWiringDeps): ActionsModule {
     newId: randomUUID,
   });
 
-  return { orchestrator, registry, instanceRepo, configRepo, legacyRepo, capabilitiesFor };
+  return { orchestrator, registry, instanceRepo, configRepo, legacyRepo, capabilitiesFor, calendarReaderFor: calendarFor };
 }
 
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));

@@ -67,6 +67,7 @@ export function createDailyBriefingTool(deps: DailyBriefingDeps): ToolDefinition
       const result = await generateDailyBriefing(briefingDeps, {
         now: new Date(),
         timezone: input.timezone,
+        userId: input.userId,
       });
 
       return {

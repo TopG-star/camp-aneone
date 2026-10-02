@@ -60,7 +60,7 @@ beforeEach(() => {
       getAll: vi.fn().mockReturnValue([]),
       delete: vi.fn(),
     } as unknown as PreferenceRepository,
-    calendarPort: null,
+    resolveCalendarPort: () => null,
     logger,
   };
 
@@ -150,12 +150,13 @@ describe("GET /api/today", () => {
       listEvents: vi.fn().mockResolvedValue([{ id: "ev-1", summary: "Meeting" }]),
       searchEvents: vi.fn(),
     };
-    deps.calendarPort = calendarPort;
+    deps.resolveCalendarPort = vi.fn(() => calendarPort);
     mountApp();
 
     const res = await request(app).get("/api/today");
     expect(res.body.calendar.status).toBe("connected");
     expect(res.body.calendar.events).toHaveLength(1);
+    expect(deps.resolveCalendarPort).toHaveBeenCalledWith("user-A");
   });
 
   it("handles calendar port failure gracefully", async () => {
@@ -163,7 +164,7 @@ describe("GET /api/today", () => {
       listEvents: vi.fn().mockRejectedValue(new Error("timeout")),
       searchEvents: vi.fn(),
     };
-    deps.calendarPort = calendarPort;
+    deps.resolveCalendarPort = vi.fn(() => calendarPort);
     mountApp();
 
     const res = await request(app).get("/api/today");

@@ -22,7 +22,8 @@ export interface TodayRouteDeps {
   instanceRepo: ActionInstanceRepository;
   notificationRepo: NotificationRepository;
   preferenceRepo: PreferenceRepository;
-  calendarPort?: CalendarPort | null;
+  /** The signed-in user's own calendar, or null when they have not connected Google. */
+  resolveCalendarPort?: ((userId: string) => CalendarPort | null) | null;
   logger: Logger;
 }
 
@@ -76,7 +77,7 @@ export function createTodayRouter(deps: TodayRouteDeps): Router {
     instanceRepo,
     notificationRepo,
     preferenceRepo,
-    calendarPort,
+    resolveCalendarPort,
     logger,
   } = deps;
 
@@ -170,6 +171,7 @@ export function createTodayRouter(deps: TodayRouteDeps): Router {
       // Calendar events (today only)
       let calendarStatus: "connected" | "unavailable" = "unavailable";
       let calendarEvents: unknown[] = [];
+      const calendarPort = resolveCalendarPort?.(userId) ?? null;
       if (calendarPort) {
         try {
           const endOfDay = `${dateStr}T23:59:59.999Z`;

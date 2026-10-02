@@ -139,11 +139,11 @@ describe("createDailyBriefingTool", () => {
   it("passes timezone through to the use case", async () => {
     const deps = createToolDeps();
     const tool = createDailyBriefingTool(deps);
-    await tool.execute({ timezone: "Asia/Tokyo" });
+    await tool.execute({ timezone: "Asia/Tokyo", userId: "u1" });
 
     // If timezone is respected, the date queried from repos should differ
     // We just verify it ran without errors — timezone logic tested in use case tests
-    expect(deps.classificationRepo.findAll).toHaveBeenCalled();
+    expect(deps.classificationRepo.findAll).toHaveBeenCalledWith(expect.objectContaining({ userId: "u1" }));
   });
 
   it("handles execute being async (returns Promise)", async () => {
