@@ -1,335 +1,165 @@
-import { Router } from "express";
-import type {
-  ActionLogEntry,
-  ActionLogRepository,
-  InboundItemRepository,
-  Logger,
+import { Router, type Response } from "express";
+import { ActionViewQuerySchema, LEGACY_BANNER, STATUS_GROUPS } from "@oneon/contracts";
+import {
+  personalActor,
+  type ActionConfigRepository,
+  type ActionInstance,
+  type ActionInstanceRepository,
+  type LegacyActionRepository,
+  type Logger,
 } from "@oneon/domain";
-import { ActionsQuerySchema } from "@oneon/contracts";
-
-// ── Types ────────────────────────────────────────────────────
+import {
+  ActionOperationError,
+  clampPolicy,
+  type ActionOrchestrator,
+  type ActionRegistry,
+  type RequestOutcome,
+} from "@oneon/application";
+import { toActionView } from "./action-views.js";
 
 export interface ActionsRouteDeps {
-  actionLogRepo: ActionLogRepository;
-  inboundItemRepo: InboundItemRepository;
+  orchestrator: ActionOrchestrator;
+  registry: ActionRegistry;
+  instanceRepo: ActionInstanceRepository;
+  configRepo: ActionConfigRepository;
+  legacyRepo: LegacyActionRepository;
   logger: Logger;
-  manualExecuteRequired?: boolean;
 }
-
-type ActionExecutionStatus =
-  | "not_started"
-  | "running"
-  | "succeeded"
-  | "failed";
-
-// ── Router ───────────────────────────────────────────────────
 
 export function createActionsRouter(deps: ActionsRouteDeps): Router {
   const router = Router();
-  const {
-    actionLogRepo,
-    inboundItemRepo,
-    logger,
-    manualExecuteRequired = false,
-  } = deps;
 
-  // ── GET / — Paginated action list ─────────────────────────
+  const view = (userId: string, instance: ActionInstance) => {
+    const def = deps.registry.get(instance.actionType);
+    const stored = deps.configRepo.get(instance.scope, instance.ownerId, def.type);
+    const { policy } = clampPolicy({
+      floor: def.floor,
+      defaults: def.defaults,
+      storedJson: stored?.configJson ?? null,
+      declaredMetrics: Object.keys(def.thresholdMetrics),
+      executorAvailable: def.execute !== null,
+    });
+    return toActionView(instance, {
+      registry: deps.registry,
+      events: deps.instanceRepo.listEvents(userId, instance.id),
+      viewer: personalActor(userId),
+      policy,
+    });
+  };
+
+  const fail = (res: Response, error: unknown, context: Record<string, unknown>) => {
+    if (error instanceof ActionOperationError) {
+      const status = error.code === "not_found" ? 404 : error.code === "not_allowed" ? 403 : 409;
+      res.status(status).json({ error: error.message });
+      return;
+    }
+    deps.logger.error("Action request failed", { ...context, error: error instanceof Error ? error.message : String(error) });
+    res.status(500).json({ error: "Internal server error" });
+  };
+
   router.get("/", (req, res) => {
+    const parsed = ActionViewQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid query parameters", details: parsed.error.format() });
+      return;
+    }
+    const userId = req.userId!;
+    const { limit, offset, status, group } = parsed.data;
+    const statuses = status ? [status] : group ? [...STATUS_GROUPS[group]] : undefined;
     try {
-      const parsed = ActionsQuerySchema.safeParse(req.query);
-      if (!parsed.success) {
-        logger.warn("Invalid actions list query", {
-          query: req.query,
-        });
-        res.status(400).json({ error: "Invalid query parameters", details: parsed.error.format() });
-        return;
-      }
-
-      const { limit, offset, status } = parsed.data;
-      const userId = req.userId!;
-
-      const actions = actionLogRepo.findAll({ status, limit, offset, userId });
-      const total = actionLogRepo.count({ status, userId });
-
-      const enriched = actions.map((a) => {
-        const item = inboundItemRepo.findById(a.resourceId);
-        return toActionResponse(a, {
-          itemFrom: item?.from ?? null,
-          itemSource: item?.source ?? null,
-          itemSubject: item?.subject ?? null,
-        });
-      });
-
-      logger.info("Fetched actions list", {
-        userId,
-        status: status ?? null,
-        limit,
-        offset,
-        returned: enriched.length,
-        total,
-      });
-
-      res.json({
-        actions: enriched,
-        pagination: {
-          limit,
-          offset,
-          total,
-          hasMore: offset + limit < total,
-        },
-      });
+      const actions = deps.instanceRepo.list(userId, { statuses, limit, offset }).map((i) => view(userId, i));
+      const total = deps.instanceRepo.count(userId, { statuses });
+      res.json({ actions, pagination: { limit, offset, total, hasMore: offset + limit < total } });
     } catch (error) {
-      logger.error("Failed to fetch actions", { error: error instanceof Error ? error.message : String(error) });
-      res.status(500).json({ error: "Internal server error" });
+      fail(res, error, { route: "list" });
     }
   });
 
-  // ── GET /:id — Single action detail for deep-link fallback ─
+  router.get("/legacy", (req, res) => {
+    const userId = req.userId!;
+    const limit = Math.min(Number(req.query.limit ?? 25) || 25, 100);
+    const offset = Math.max(Number(req.query.offset ?? 0) || 0, 0);
+    try {
+      const rows = deps.legacyRepo.listForUser(userId, { limit, offset });
+      const total = deps.legacyRepo.countForUser(userId);
+      res.json({
+        banner: LEGACY_BANNER,
+        actions: rows.map((r) => {
+          let payload: Record<string, unknown> = {};
+          try {
+            payload = JSON.parse(r.payloadJson) as Record<string, unknown>;
+          } catch {
+            payload = {};
+          }
+          return { id: r.id, actionType: r.actionType, status: r.status, payload, createdAt: r.createdAt };
+        }),
+        pagination: { limit, offset, total, hasMore: offset + limit < total },
+      });
+    } catch (error) {
+      fail(res, error, { route: "legacy" });
+    }
+  });
+
   router.get("/:id", (req, res) => {
+    const userId = req.userId!;
     try {
-      const userId = req.userId!;
-      const actions = actionLogRepo.findAll({ limit: 1000, userId });
-      const action = actions.find((a) => a.id === req.params.id);
-      if (!action) {
-        logger.warn("Action detail not found", { userId, actionId: req.params.id });
+      const instance = deps.instanceRepo.findById(userId, req.params.id);
+      if (!instance) {
         res.status(404).json({ error: "Action not found" });
         return;
       }
-
-      const item = inboundItemRepo.findById(action.resourceId);
-      logger.info("Fetched action detail", { userId, actionId: action.id, status: action.status });
-      res.json(toActionResponse(action, {
-        itemFrom: item?.from ?? null,
-        itemSource: item?.source ?? null,
-        itemSubject: item?.subject ?? null,
-      }));
+      res.json(view(userId, instance));
     } catch (error) {
-      logger.error("Failed to fetch action", {
-        actionId: req.params.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      res.status(500).json({ error: "Internal server error" });
+      fail(res, error, { route: "get", actionId: req.params.id });
     }
   });
 
-  // ── POST /:id/approve ─────────────────────────────────────
-  router.post("/:id/approve", (req, res) => {
+  router.get("/:id/events", (req, res) => {
+    const userId = req.userId!;
     try {
-      const userId = req.userId!;
-      const actions = actionLogRepo.findAll({ limit: 1000, userId });
-      const action = actions.find((a) => a.id === req.params.id);
-      if (!action) {
-        logger.warn("Approve action not found", { userId, actionId: req.params.id });
+      if (!deps.instanceRepo.findById(userId, req.params.id)) {
         res.status(404).json({ error: "Action not found" });
         return;
       }
-
-      if (action.status !== "proposed") {
-        logger.warn("Approve action conflict", {
-          userId,
-          actionId: action.id,
-          status: action.status,
-        });
-        res.status(409).json({
-          error: `Cannot approve action in "${action.status}" status`,
-        });
-        return;
-      }
-
-      actionLogRepo.updateStatus(action.id, "approved", { errorJson: null, resultJson: null });
-      logger.info("Action approved", { actionId: action.id });
-
-      if (manualExecuteRequired) {
-        res.json({
-          id: action.id,
-          status: "approved",
-          executionStatus: "running",
-        });
-        return;
-      }
-
-      const execution = executeApprovedAction(actionLogRepo, logger, action.id, "approve");
-      res.json({
-        id: action.id,
-        status: execution.status,
-        executionStatus: execution.executionStatus,
-        resultJson: execution.resultJson,
-        errorJson: execution.errorJson,
-      });
+      res.json({ events: deps.instanceRepo.listEvents(userId, req.params.id) });
     } catch (error) {
-      logger.error("Failed to approve action", { error: error instanceof Error ? error.message : String(error) });
-      res.status(500).json({ error: "Internal server error" });
+      fail(res, error, { route: "events", actionId: req.params.id });
     }
   });
 
-  // ── POST /:id/retry-execution ───────────────────────────
-  router.post("/:id/retry-execution", (req, res) => {
-    try {
+  type Op = "approve" | "reject" | "cancel" | "undo";
+  const run: Record<Op, (userId: string, id: string, body: { reason?: unknown }) => Promise<ActionInstance>> = {
+    approve: (u, id) => deps.orchestrator.approve(personalActor(u), id),
+    reject: (u, id, b) => deps.orchestrator.reject(personalActor(u), id, typeof b.reason === "string" ? b.reason : undefined),
+    cancel: (u, id) => deps.orchestrator.cancel(personalActor(u), id),
+    undo: (u, id) => deps.orchestrator.requestUndo(personalActor(u), id),
+  };
+  for (const op of Object.keys(run) as Op[]) {
+    router.post(`/:id/${op}`, async (req, res) => {
       const userId = req.userId!;
-      const actions = actionLogRepo.findAll({ limit: 1000, userId });
-      const action = actions.find((a) => a.id === req.params.id);
-      if (!action) {
-        logger.warn("Retry execution action not found", { userId, actionId: req.params.id });
-        res.status(404).json({ error: "Action not found" });
-        return;
+      try {
+        // Execution never depends on this request's connection (spec §10.2).
+        const instance = await run[op](userId, req.params.id, req.body ?? {});
+        res.json(view(userId, instance));
+      } catch (error) {
+        fail(res, error, { route: op, actionId: req.params.id });
       }
+    });
+  }
 
-      if (action.status !== "approved") {
-        logger.warn("Retry execution conflict", {
-          userId,
-          actionId: action.id,
-          status: action.status,
-        });
-        res.status(409).json({
-          error: `Cannot retry execution for action in "${action.status}" status`,
-        });
-        return;
-      }
-
-      const execution = executeApprovedAction(actionLogRepo, logger, action.id, "retry");
-      res.json({
-        id: action.id,
-        status: execution.status,
-        executionStatus: execution.executionStatus,
-        resultJson: execution.resultJson,
-        errorJson: execution.errorJson,
-      });
-    } catch (error) {
-      logger.error("Failed to retry action execution", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      res.status(500).json({ error: "Internal server error" });
-    }
-  });
-
-  // ── POST /:id/reject ──────────────────────────────────────
-  router.post("/:id/reject", (req, res) => {
+  router.post("/:id/retry", async (req, res) => {
+    const userId = req.userId!;
     try {
-      const userId = req.userId!;
-      const actions = actionLogRepo.findAll({ limit: 1000, userId });
-      const action = actions.find((a) => a.id === req.params.id);
-      if (!action) {
-        logger.warn("Reject action not found", { userId, actionId: req.params.id });
-        res.status(404).json({ error: "Action not found" });
+      const outcome: RequestOutcome = await deps.orchestrator.retry(personalActor(userId), req.params.id);
+      if (outcome.kind === "refused") {
+        res.status(422).json({ error: "Retry refused", issues: outcome.issues });
         return;
       }
-
-      if (action.status !== "proposed") {
-        logger.warn("Reject action conflict", {
-          userId,
-          actionId: action.id,
-          status: action.status,
-        });
-        res.status(409).json({
-          error: `Cannot reject action in "${action.status}" status`,
-        });
-        return;
-      }
-
-      actionLogRepo.updateStatus(action.id, "rejected");
-      logger.info("Action rejected", { actionId: action.id });
-      res.json({ id: action.id, status: "rejected", executionStatus: "not_started" });
+      res.json(view(userId, outcome.instance));
     } catch (error) {
-      logger.error("Failed to reject action", { error: error instanceof Error ? error.message : String(error) });
-      res.status(500).json({ error: "Internal server error" });
+      fail(res, error, { route: "retry", actionId: req.params.id });
     }
   });
 
   return router;
-}
-
-function deriveExecutionStatus(action: Pick<ActionLogEntry, "status" | "resultJson" | "errorJson">): ActionExecutionStatus {
-  if (action.status === "executed") return "succeeded";
-
-  if (action.status === "approved") {
-    if (action.errorJson) return "failed";
-    if (action.resultJson) return "succeeded";
-    return "running";
-  }
-
-  return "not_started";
-}
-
-function toActionResponse(
-  action: ActionLogEntry,
-  item: {
-    itemFrom: string | null;
-    itemSource: string | null;
-    itemSubject: string | null;
-  },
-) {
-  return {
-    id: action.id,
-    resourceId: action.resourceId,
-    actionType: action.actionType,
-    riskLevel: action.riskLevel,
-    status: action.status,
-    executionStatus: deriveExecutionStatus(action),
-    payloadJson: action.payloadJson,
-    resultJson: action.resultJson,
-    errorJson: action.errorJson,
-    createdAt: action.createdAt,
-    updatedAt: action.updatedAt,
-    itemFrom: item.itemFrom,
-    itemSource: item.itemSource,
-    itemSubject: item.itemSubject,
-  };
-}
-
-function executeApprovedAction(
-  actionLogRepo: ActionLogRepository,
-  logger: Logger,
-  actionId: string,
-  reason: "approve" | "retry",
-): {
-  status: "approved" | "executed";
-  executionStatus: "failed" | "succeeded";
-  resultJson: string | null;
-  errorJson: string | null;
-} {
-  try {
-    const resultJson = JSON.stringify({
-      executedAt: new Date().toISOString(),
-      mode: "manual",
-      reason,
-    });
-
-    actionLogRepo.updateStatus(actionId, "executed", {
-      resultJson,
-      errorJson: null,
-    });
-
-    logger.info("Action executed from actions route", { actionId, reason });
-
-    return {
-      status: "executed",
-      executionStatus: "succeeded",
-      resultJson,
-      errorJson: null,
-    };
-  } catch (error) {
-    const errorJson = JSON.stringify({
-      message: error instanceof Error ? error.message : String(error),
-      attemptedAt: new Date().toISOString(),
-      reason,
-    });
-
-    actionLogRepo.updateStatus(actionId, "approved", {
-      errorJson,
-      resultJson: null,
-    });
-
-    logger.error("Action execution failed after approval", {
-      actionId,
-      reason,
-      error: error instanceof Error ? error.message : String(error),
-    });
-
-    return {
-      status: "approved",
-      executionStatus: "failed",
-      resultJson: null,
-      errorJson,
-    };
-  }
 }

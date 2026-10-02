@@ -22,12 +22,22 @@ export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 
 // ── Chat Response ────────────────────────────────────────────
 
+export const ChatActionRefSchema = z.object({
+  id: z.string(),
+  actionType: z.string(),
+  label: z.string(),
+  status: z.string(),
+});
+
+export type ChatActionRef = z.infer<typeof ChatActionRefSchema>;
+
 export const ChatResponseSchema = z.object({
   response: z.string(),
   userMessageId: z.string(),
   assistantMessageId: z.string(),
   conversationId: z.string(),
   history: z.array(ChatMessageSchema),
+  actions: z.array(ChatActionRefSchema).default([]),
 });
 
 export type ChatResponse = z.infer<typeof ChatResponseSchema>;

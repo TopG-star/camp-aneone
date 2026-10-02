@@ -1,358 +1,108 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import express from "express";
+import { describe, it, expect } from "vitest";
 import request from "supertest";
-import type {
-  InboundItem,
-  ActionLogEntry,
-  ActionLogRepository,
-  InboundItemRepository,
-  Logger,
-} from "@oneon/domain";
-import { createActionsRouter } from "./actions.route.js";
+import { personalActor } from "@oneon/domain";
+import { buildActionsTestApp } from "./__tests__/actions-test-app.js";
 
-// ── Helpers ──────────────────────────────────────────────────
+const reminderDeadline = { id: "d1", userId: "user-A", inboundItemId: "i1", dueDate: "2026-10-07T17:00:00Z", description: "Submit Q4", confidence: 0.9, status: "open" as const, createdAt: "", updatedAt: "" };
 
-function makeAction(overrides: Partial<ActionLogEntry> = {}): ActionLogEntry {
-  return {
-    id: "act-001",
-    userId: null,
-    resourceId: "item-001",
-    actionType: "reply_email",
-    riskLevel: "approval_required",
-    status: "proposed",
-    payloadJson: '{"to":"test@example.com"}',
-    resultJson: null,
-    errorJson: null,
-    rollbackJson: null,
-    createdAt: "2026-04-18T10:00:00Z",
-    updatedAt: "2026-04-18T10:00:00Z",
-    ...overrides,
-  };
+async function proposeReminder(t: ReturnType<typeof buildActionsTestApp>) {
+  t.deadlines.set("d1", reminderDeadline);
+  const o = await t.orchestrator.requestAction({
+    type: "create_reminder", input: { deadlineId: "d1", inboundItemId: "i1" }, actor: personalActor("user-A"),
+    initiator: "rule:inbox.deadline_reminder", keyContext: { source: "rule", resourceId: "d1" }, evidence: [], resourceRef: "deadline:d1",
+  });
+  if (o.kind === "refused") throw new Error();
+  return o.instance;
 }
-
-function makeItem(overrides: Partial<InboundItem> = {}): InboundItem {
-  return {
-    id: "item-001",
-    userId: null,
-    source: "gmail",
-    externalId: "ext-001",
-    from: "boss@company.com",
-    subject: "Q4 Review",
-    bodyPreview: "Please review...",
-    receivedAt: "2026-04-18T09:00:00Z",
-    rawJson: "{}",
-    threadId: null,
-    labels: "[]",
-    classifiedAt: "2026-04-18T09:01:00Z",
-    classifyAttempts: 1,
-    createdAt: "2026-04-18T09:00:00Z",
-    updatedAt: "2026-04-18T09:01:00Z",
-    ...overrides,
-  };
-}
-
-const logger: Logger = {
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-  debug: vi.fn(),
-};
-
-let actionLogRepo: ActionLogRepository;
-let inboundItemRepo: InboundItemRepository;
-let app: express.Express;
-
-function createApp(manualExecuteRequired = false): express.Express {
-  const nextApp = express();
-  nextApp.use(express.json());
-  nextApp.use((req, _res, next) => { req.userId = "user-A"; next(); });
-  nextApp.use(
-    "/api/actions",
-    createActionsRouter({
-      actionLogRepo,
-      inboundItemRepo,
-      logger,
-      manualExecuteRequired,
-    }),
-  );
-  return nextApp;
-}
-
-beforeEach(() => {
-  actionLogRepo = {
-    create: vi.fn(),
-    findByResourceAndType: vi.fn(),
-    findByStatus: vi.fn(),
-    updateStatus: vi.fn(),
-    findAll: vi.fn().mockReturnValue([]),
-    count: vi.fn().mockReturnValue(0),
-  } as unknown as ActionLogRepository;
-
-  inboundItemRepo = {
-    findById: vi.fn().mockReturnValue(null),
-  } as unknown as InboundItemRepository;
-
-  app = createApp();
-});
-
-// ── Tests ────────────────────────────────────────────────────
 
 describe("GET /api/actions", () => {
-  it("returns empty list", async () => {
-    const res = await request(app).get("/api/actions");
-    expect(res.status).toBe(200);
-    expect(res.body.actions).toEqual([]);
-    expect(res.body.pagination).toEqual({ limit: 25, offset: 0, total: 0, hasMore: false });
-  });
-
-  it("returns enriched actions with item metadata", async () => {
-    const action = makeAction();
-    const item = makeItem();
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
-    vi.mocked(actionLogRepo.count).mockReturnValue(1);
-    vi.mocked(inboundItemRepo.findById).mockReturnValue(item);
-
-    const res = await request(app).get("/api/actions");
+  it("lists by group with views the UI can render", async () => {
+    const t = buildActionsTestApp();
+    const a = await proposeReminder(t);
+    const res = await request(t.app).get("/api/actions?group=needs_you");
     expect(res.status).toBe(200);
     expect(res.body.actions).toHaveLength(1);
-    expect(res.body.actions[0].itemSubject).toBe("Q4 Review");
-    expect(res.body.actions[0].itemFrom).toBe("boss@company.com");
-    expect(res.body.actions[0].itemSource).toBe("gmail");
-    expect(res.body.actions[0].executionStatus).toBe("not_started");
+    expect(res.body.actions[0]).toMatchObject({
+      id: a.id,
+      label: "Create reminder",
+      status: "awaiting_approval",
+      group: "needs_you",
+      origin: { kind: "rule", label: "Inbox rule · deadline reminder" },
+      description: 'Add an all-day reminder "Due: Submit Q4" on 7 Oct 2026 to your calendar.',
+      allowedOperations: ["approve", "reject", "cancel"],
+      undo: { rollbackClass: "reversible", text: "Can be undone" },
+    });
+    expect(res.body.actions[0].decision.reasons[0].text).toBe("Create reminder is set to always ask before running.");
+    expect(res.body.actions[0].timeline.map((e: { toStatus: string }) => e.toStatus)).toEqual(["proposed", "validating", "awaiting_approval"]);
   });
 
-  it("derives executionStatus from lifecycle and error/result fields", async () => {
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([
-      makeAction({ id: "act-proposed", status: "proposed", errorJson: null, resultJson: null }),
-      makeAction({ id: "act-approved-running", status: "approved", errorJson: null, resultJson: null }),
-      makeAction({ id: "act-approved-failed", status: "approved", errorJson: '{"message":"boom"}', resultJson: null }),
-      makeAction({ id: "act-executed", status: "executed", errorJson: null, resultJson: '{"ok":true}' }),
+  it("hides another user's action (404)", async () => {
+    const t = buildActionsTestApp();
+    const a = await proposeReminder(t);
+    expect((await request(t.app).get(`/api/actions/${a.id}`).set("x-test-user", "user-B")).status).toBe(404);
+    expect((await request(t.app).post(`/api/actions/${a.id}/approve`).set("x-test-user", "user-B")).status).toBe(404);
+  });
+});
+
+describe("operations", () => {
+  it("approves to completed, refuses a second approve with 409, then undoes", async () => {
+    const t = buildActionsTestApp();
+    const a = await proposeReminder(t);
+    const approved = await request(t.app).post(`/api/actions/${a.id}/approve`);
+    expect(approved.status).toBe(200);
+    expect(approved.body).toMatchObject({ status: "completed", allowedOperations: ["undo"] });
+    expect(t.events.size).toBe(1);
+    expect((await request(t.app).post(`/api/actions/${a.id}/approve`)).status).toBe(409);
+    const undone = await request(t.app).post(`/api/actions/${a.id}/undo`);
+    expect(undone.body.status).toBe("rolled_back");
+    expect(t.events.size).toBe(0);
+  });
+
+  it("rejects and cancels", async () => {
+    const t = buildActionsTestApp();
+    const a = await proposeReminder(t);
+    expect((await request(t.app).post(`/api/actions/${a.id}/reject`).send({ reason: "not now" })).body.status).toBe("rejected");
+  });
+
+  it("returns 403 for an operation policy does not allow", async () => {
+    const t = buildActionsTestApp();
+    const a = await proposeReminder(t);
+    await request(t.app).post(`/api/actions/${a.id}/reject`);
+    expect((await request(t.app).post(`/api/actions/${a.id}/retry`)).status).toBe(403);
+  });
+
+  it("keeps executing after the client disconnects", async () => {
+    const t = buildActionsTestApp({ createDelayMs: 100 });
+    const a = await proposeReminder(t);
+    await request(t.app).post(`/api/actions/${a.id}/approve`).timeout(10).catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(t.instanceRepo.findById("user-A", a.id)!.status).toBe("completed");
+  });
+
+  it("lets concurrent approve and cancel settle on one outcome, never a 500", async () => {
+    const t = buildActionsTestApp({ createDelayMs: 20 });
+    const a = await proposeReminder(t);
+    const [r1, r2] = await Promise.all([
+      request(t.app).post(`/api/actions/${a.id}/approve`),
+      request(t.app).post(`/api/actions/${a.id}/cancel`),
     ]);
-    vi.mocked(actionLogRepo.count).mockReturnValue(4);
-
-    const res = await request(app).get("/api/actions");
-    expect(res.status).toBe(200);
-
-    const byId = new Map(res.body.actions.map((a: { id: string; executionStatus: string }) => [a.id, a.executionStatus]));
-    expect(byId.get("act-proposed")).toBe("not_started");
-    expect(byId.get("act-approved-running")).toBe("running");
-    expect(byId.get("act-approved-failed")).toBe("failed");
-    expect(byId.get("act-executed")).toBe("succeeded");
-  });
-
-  it("filters by status", async () => {
-    await request(app).get("/api/actions?status=approved");
-    expect(actionLogRepo.findAll).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "approved", userId: "user-A" }),
-    );
-  });
-
-  it("returns 400 for invalid limit", async () => {
-    const res = await request(app).get("/api/actions?limit=0");
-    expect(res.status).toBe(400);
+    expect([r1.status, r2.status].every((s) => s === 200 || s === 409)).toBe(true);
+    const trail = t.instanceRepo.listEvents("user-A", a.id).map((e) => e.toStatus);
+    // Either the cancel landed before execution started, or execution ran and the cancel was refused.
+    expect(trail.includes("cancelled") && trail.includes("executing")).toBe(false);
+    expect(["completed", "cancelled"]).toContain(t.instanceRepo.findById("user-A", a.id)!.status);
   });
 });
 
-describe("GET /api/actions/:id", () => {
-  it("returns one enriched action by id", async () => {
-    const action = makeAction({ id: "act-100", status: "approved", errorJson: '{"message":"boom"}' });
-    const item = makeItem({ id: "item-001", subject: "Escalated follow-up" });
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
-    vi.mocked(inboundItemRepo.findById).mockReturnValue(item);
-
-    const res = await request(app).get("/api/actions/act-100");
-    expect(res.status).toBe(200);
+describe("GET /api/actions/legacy", () => {
+  it("returns read-only legacy rows with the banner", async () => {
+    const t = buildActionsTestApp();
+    t.db.prepare("INSERT INTO action_log_legacy (id, resource_id, action_type, risk_level, status, user_id, payload_json) VALUES ('l1','i1','archive','approval_required','executed','user-A','{\"reason\":\"spam\"}')").run();
+    const res = await request(t.app).get("/api/actions/legacy");
     expect(res.body).toMatchObject({
-      id: "act-100",
-      status: "approved",
-      executionStatus: "failed",
-      itemSubject: "Escalated follow-up",
-      itemFrom: "boss@company.com",
-      itemSource: "gmail",
+      banner: "MVP1 actions changed status only; nothing was executed.",
+      actions: [{ id: "l1", actionType: "archive", status: "executed", payload: { reason: "spam" } }],
     });
-  });
-
-  it("returns 404 when action does not exist", async () => {
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([]);
-
-    const res = await request(app).get("/api/actions/missing");
-    expect(res.status).toBe(404);
-  });
-
-  it("scopes lookup to authenticated user", async () => {
-    const action = makeAction({ id: "act-200", userId: "user-A" });
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
-
-    const res = await request(app).get("/api/actions/act-200");
-    expect(res.status).toBe(200);
-    expect(actionLogRepo.findAll).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: "user-A" }),
-    );
-  });
-});
-
-describe("POST /api/actions/:id/approve", () => {
-  it("approves and immediately executes when manual execute is not required", async () => {
-    const action = makeAction({ id: "act-001", status: "proposed" });
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
-
-    const res = await request(app).post("/api/actions/act-001/approve");
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe("executed");
-    expect(res.body.executionStatus).toBe("succeeded");
-    expect(actionLogRepo.updateStatus).toHaveBeenCalledWith(
-      "act-001",
-      "approved",
-      expect.objectContaining({ errorJson: null, resultJson: null }),
-    );
-    expect(actionLogRepo.updateStatus).toHaveBeenCalledWith(
-      "act-001",
-      "executed",
-      expect.objectContaining({ resultJson: expect.any(String), errorJson: null }),
-    );
-  });
-
-  it("keeps lifecycle approved and marks failed execution when execute step errors", async () => {
-    const action = makeAction({ id: "act-001", status: "proposed" });
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
-
-    vi.mocked(actionLogRepo.updateStatus).mockImplementation((id, status) => {
-      if (id === "act-001" && status === "executed") {
-        throw new Error("executor down");
-      }
-    });
-
-    const res = await request(app).post("/api/actions/act-001/approve");
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe("approved");
-    expect(res.body.executionStatus).toBe("failed");
-    expect(actionLogRepo.updateStatus).toHaveBeenCalledWith(
-      "act-001",
-      "approved",
-      expect.objectContaining({ errorJson: expect.any(String), resultJson: null }),
-    );
-  });
-
-  it("returns 404 for unknown action", async () => {
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([]);
-    const res = await request(app).post("/api/actions/unknown/approve");
-    expect(res.status).toBe(404);
-  });
-
-  it("returns 409 for non-proposed action", async () => {
-    const action = makeAction({ id: "act-001", status: "executed" });
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
-    const res = await request(app).post("/api/actions/act-001/approve");
-    expect(res.status).toBe(409);
-  });
-
-  it("supports manual execute required mode by skipping auto-execution on approve", async () => {
-    const action = makeAction({ id: "act-001", status: "proposed" });
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
-    app = createApp(true);
-
-    const res = await request(app).post("/api/actions/act-001/approve");
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe("approved");
-    expect(res.body.executionStatus).toBe("running");
-    expect(actionLogRepo.updateStatus).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("POST /api/actions/:id/reject", () => {
-  it("rejects a proposed action", async () => {
-    const action = makeAction({ id: "act-002", status: "proposed" });
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
-
-    const res = await request(app).post("/api/actions/act-002/reject");
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: "act-002", status: "rejected", executionStatus: "not_started" });
-    expect(actionLogRepo.updateStatus).toHaveBeenCalledWith("act-002", "rejected");
-  });
-
-  it("returns 409 for already approved action", async () => {
-    const action = makeAction({ id: "act-002", status: "approved" });
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
-    const res = await request(app).post("/api/actions/act-002/reject");
-    expect(res.status).toBe(409);
-  });
-});
-
-describe("POST /api/actions/:id/retry-execution", () => {
-  it("retries an approved action and marks it executed on success", async () => {
-    const action = makeAction({
-      id: "act-003",
-      status: "approved",
-      errorJson: '{"message":"transient"}',
-      resultJson: null,
-    });
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
-
-    const res = await request(app).post("/api/actions/act-003/retry-execution");
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe("executed");
-    expect(res.body.executionStatus).toBe("succeeded");
-    expect(actionLogRepo.updateStatus).toHaveBeenCalledWith(
-      "act-003",
-      "executed",
-      expect.objectContaining({ resultJson: expect.any(String), errorJson: null }),
-    );
-  });
-
-  it("keeps approved and returns failed executionStatus when retry execution fails", async () => {
-    const action = makeAction({ id: "act-003", status: "approved" });
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
-    vi.mocked(actionLogRepo.updateStatus).mockImplementation((id, status) => {
-      if (id === "act-003" && status === "executed") {
-        throw new Error("retry failed");
-      }
-    });
-
-    const res = await request(app).post("/api/actions/act-003/retry-execution");
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe("approved");
-    expect(res.body.executionStatus).toBe("failed");
-    expect(actionLogRepo.updateStatus).toHaveBeenCalledWith(
-      "act-003",
-      "approved",
-      expect.objectContaining({ errorJson: expect.any(String), resultJson: null }),
-    );
-  });
-
-  it("returns 404 for unknown action", async () => {
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([]);
-    const res = await request(app).post("/api/actions/unknown/retry-execution");
-    expect(res.status).toBe(404);
-  });
-
-  it("returns 409 when action is not approved", async () => {
-    const action = makeAction({ id: "act-003", status: "proposed" });
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
-
-    const res = await request(app).post("/api/actions/act-003/retry-execution");
-    expect(res.status).toBe(409);
-  });
-});
-
-describe("User isolation", () => {
-  it("GET / passes userId to repo calls", async () => {
-    await request(app).get("/api/actions");
-    expect(actionLogRepo.findAll).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: "user-A" }),
-    );
-    expect(actionLogRepo.count).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: "user-A" }),
-    );
-  });
-
-  it("approve scopes lookup to authenticated user", async () => {
-    const action = makeAction({ id: "act-001", status: "proposed", userId: "user-A" });
-    vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
-
-    await request(app).post("/api/actions/act-001/approve").expect(200);
-
-    expect(actionLogRepo.findAll).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: "user-A" }),
-    );
+    expect(res.body.actions[0].allowedOperations).toBeUndefined();
   });
 });

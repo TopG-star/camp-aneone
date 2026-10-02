@@ -13,6 +13,7 @@ import { createFinanceStatementsRouter } from "./finance-statements.route.js";
 import { createDevFinanceRouter } from "./dev-finance.route.js";
 import { createInboxRouter } from "./inbox.route.js";
 import { createActionsRouter } from "./actions.route.js";
+import { createActionDefinitionsRouter } from "./action-definitions.route.js";
 import { createTodayRouter } from "./today.route.js";
 import { createCycleRouter } from "./cycle.route.js";
 import { createStatusRouter } from "./status.route.js";
@@ -469,12 +470,24 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     "/api/actions",
     ...userAuth,
     createActionsRouter({
-      actionLogRepo: container.actionLogRepo,
-      inboundItemRepo: container.inboundItemRepo,
+      orchestrator: container.actions.orchestrator,
+      registry: container.actions.registry,
+      instanceRepo: container.actions.instanceRepo,
+      configRepo: container.actions.configRepo,
+      legacyRepo: container.actions.legacyRepo,
       logger: actionsLogger,
     }),
   );
-  actionsLogger.info("Actions routes registered at /api/actions");
+  app.use(
+    "/api/action-definitions",
+    ...userAuth,
+    createActionDefinitionsRouter({
+      registry: container.actions.registry,
+      configRepo: container.actions.configRepo,
+      logger: actionsLogger,
+    }),
+  );
+  actionsLogger.info("Actions routes registered at /api/actions and /api/action-definitions");
 
   // ── Deadlines ─────────────────────────────────────────────
   const deadlinesLogger = new StructuredLogger("deadlines", env.LOG_LEVEL);
