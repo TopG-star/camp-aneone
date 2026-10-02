@@ -104,4 +104,55 @@ describe("createContainer", () => {
       container.shutdown();
     }
   });
+
+  it("scopes deadline and notification readers to the requesting user", async () => {
+    stubEnv();
+    const container = createContainer(loadEnv());
+    try {
+      container.userRepo!.upsert({ id: "user-A", email: "alice@test.com" });
+      container.userRepo!.upsert({ id: "user-B", email: "bob@test.com" });
+      container.oauthTokenRepo!.upsert({
+        provider: "google",
+        userId: "user-A",
+        accessToken: "a",
+        refreshToken: "r",
+        tokenType: "bearer",
+        scope: "openid email",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        providerEmail: "alice@test.com",
+        createdAt: "2026-09-01T00:00:00.000Z",
+        updatedAt: "2026-09-01T00:00:00.000Z",
+      });
+      const itemB = container.inboundItemRepo.upsert({
+        userId: "user-B", source: "gmail", externalId: "ext-b", from: "x@y.com", subject: "s", bodyPreview: "b",
+        receivedAt: "2026-10-01T00:00:00.000Z", rawJson: "{}", threadId: null, labels: "[]", classifiedAt: null, classifyAttempts: 0,
+      });
+      const deadlineB = container.deadlineRepo.create({
+        userId: "user-B", inboundItemId: itemB.id, dueDate: "2099-01-01", description: "B's deadline", confidence: 0.9, status: "open",
+      });
+      const noteB = container.notificationRepo.create({
+        eventType: "x", title: "t", body: "b", deepLink: null, read: false, userId: "user-B",
+      });
+
+      const readersA = container.actions.capabilitiesFor("user-A").readers;
+      const readersB = container.actions.capabilitiesFor("user-B").readers;
+      expect(readersA.deadlines.findById(deadlineB.id)).toBeNull();
+      expect(readersB.deadlines.findById(deadlineB.id)?.id).toBe(deadlineB.id);
+      expect(readersA.notifications.findById(noteB.id)).toBeNull();
+      expect(readersB.notifications.findById(noteB.id)?.id).toBe(noteB.id);
+
+      const outcome = await container.actions.orchestrator.requestAction({
+        type: "create_reminder",
+        input: { deadlineId: deadlineB.id, inboundItemId: itemB.id },
+        actor: personalActor("user-A"),
+        initiator: "rule:inbox.deadline_reminder",
+        keyContext: { source: "rule", resourceId: deadlineB.id },
+        evidence: [],
+        resourceRef: `deadline:${deadlineB.id}`,
+      });
+      expect(outcome).toMatchObject({ kind: "created", instance: { status: "cancelled" } });
+    } finally {
+      container.shutdown();
+    }
+  });
 });

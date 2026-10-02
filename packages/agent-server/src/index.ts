@@ -13,7 +13,7 @@ import { loadEnv } from "./config/env.js";
 import { createContainer } from "./container.js";
 import { registerRoutes } from "./routes/index.js";
 import { BackgroundLoop } from "./background-loop.js";
-import { runActionStartupTasks } from "./actions-wiring.js";
+import { runActionRecovery, runActionStartupTasks } from "./actions-wiring.js";
 import {
   ingestGmail,
   parseBankStatements,
@@ -178,7 +178,7 @@ if (env.FEATURE_BACKGROUND_LOOP) {
     );
   }
 
-  const userCycleRunner = async (userId: string) => {
+  const runUserCycle = async (userId: string) => {
     // 1. Create per-user Google token provider
     const tokenProvider = container.createGoogleTokenProvider(userId);
     if (!tokenProvider) {
@@ -242,7 +242,7 @@ if (env.FEATURE_BACKGROUND_LOOP) {
       : env.PROCESSING_BATCH_SIZE;
     if (isFirstCycle) isFirstCycle = false;
 
-    const summary = await runProcessingCycle(
+    return runProcessingCycle(
       {
         userId,
         inboundItemRepo: container.inboundItemRepo,
@@ -274,10 +274,15 @@ if (env.FEATURE_BACKGROUND_LOOP) {
         maxDurationMs: env.PROCESSING_MAX_DURATION_MS,
       },
     );
+  };
 
-    await container.actions.orchestrator.sweep(userId);
-    await container.actions.orchestrator.expireStale(userId);
-    return summary;
+  // Spec §7.4: recovery runs on every cycle for the user (no-LLM, success or failure) and never fails it.
+  const userCycleRunner = async (userId: string) => {
+    try {
+      return await runUserCycle(userId);
+    } finally {
+      await runActionRecovery(container.actions, userId, logger);
+    }
   };
 
   backgroundLoop = new BackgroundLoop(

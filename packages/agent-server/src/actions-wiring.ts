@@ -90,11 +90,20 @@ export function createActionsModule(deps: ActionsWiringDeps): ActionsModule {
     return {
       readers: {
         calendar: reader,
-        deadlines: deps.deadlines,
+        // Bound to the requesting user: other users' rows (and null-owner rows) are invisible.
+        deadlines: {
+          findById: (id) => {
+            const d = deps.deadlines.findById(id);
+            return d && d.userId === userId ? d : null;
+          },
+        },
         notifications: {
           isSuppressed: (uid, eventType, now) =>
             evaluateNotificationSuppression(deps.preferenceRepo, uid, eventType, now, (m, meta) => deps.logger.warn(m, meta)),
-          findById: (id) => deps.notificationRepo.findById(id),
+          findById: (id) => {
+            const n = deps.notificationRepo.findById(id);
+            return n && n.userId === userId ? n : null;
+          },
         },
         identity: { googleEmail: deps.oauthTokenRepo?.get("google", userId)?.providerEmail ?? null },
         links: { inboundItem: (id) => `${deps.publicUrl}/items/${id}` },
@@ -117,6 +126,22 @@ export function createActionsModule(deps: ActionsWiringDeps): ActionsModule {
   return { orchestrator, registry, instanceRepo, configRepo, legacyRepo, capabilitiesFor };
 }
 
+const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** Spec §7.4: sweep and expire for one user. Never throws, so recovery cannot fail a cycle. */
+export async function runActionRecovery(actions: ActionsModule, userId: string, logger: Logger): Promise<void> {
+  try {
+    await actions.orchestrator.sweep(userId);
+  } catch (error) {
+    logger.warn("Action sweep failed", { userId, error: errorMessage(error) });
+  }
+  try {
+    await actions.orchestrator.expireStale(userId);
+  } catch (error) {
+    logger.warn("Action expiry failed", { userId, error: errorMessage(error) });
+  }
+}
+
 /** Spec §8.4, §8.6, §7.4: drift check, one-time legacy import, then recovery for every user. */
 export async function runActionStartupTasks(
   container: { db: Database.Database; actions: ActionsModule; userRepo: { list(): Array<{ id: string }> } | null },
@@ -125,14 +150,17 @@ export async function runActionStartupTasks(
   const repaired = runActionDriftCheck(container.db, logger);
   if (repaired > 0) logger.warn("Repaired action projections at startup", { repaired });
   const userIds = container.userRepo?.list().map((u) => u.id) ?? [];
-  await importLegacyProposals({
-    legacyRepo: container.actions.legacyRepo,
-    requestAction: container.actions.orchestrator.requestAction,
-    userIds,
-    logger,
-  });
+  try {
+    await importLegacyProposals({
+      legacyRepo: container.actions.legacyRepo,
+      requestAction: container.actions.orchestrator.requestAction,
+      userIds,
+      logger,
+    });
+  } catch (error) {
+    logger.warn("Legacy proposal import failed", { error: errorMessage(error) });
+  }
   for (const userId of userIds) {
-    await container.actions.orchestrator.sweep(userId);
-    await container.actions.orchestrator.expireStale(userId);
+    await runActionRecovery(container.actions, userId, logger);
   }
 }
