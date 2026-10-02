@@ -18,15 +18,45 @@ export interface ActionDefinitionsRouteDeps {
 export function createActionDefinitionsRouter(deps: ActionDefinitionsRouteDeps): Router {
   const router = Router();
 
-  const toView = (userId: string, def: AnyActionDefinition): ActionDefinitionView => {
-    const stored = deps.configRepo.get("personal", userId, def.type);
-    const clamp = clampPolicy({
+  const clampStored = (def: AnyActionDefinition, storedJson: string | null) =>
+    clampPolicy({
       floor: def.floor,
       defaults: def.defaults,
-      storedJson: stored?.configJson ?? null,
+      storedJson,
       declaredMetrics: Object.keys(def.thresholdMetrics),
       executorAvailable: def.execute !== null,
     });
+
+  /**
+   * The base a PUT merges its fields into: the stored row minus anything the read-time clamp would
+   * override, or nothing if the row is rejected outright. A stale value the user did not send must
+   * never block a valid save (spec 6.2: the owner can always save a valid value).
+   */
+  const mergeBase = (def: AnyActionDefinition, storedJson: string | null): Record<string, unknown> => {
+    if (storedJson === null) return {};
+    const clamp = clampStored(def, storedJson);
+    if (clamp.rejected) return {};
+    const base = JSON.parse(storedJson) as Record<string, unknown>;
+    for (const path of clamp.clamped) {
+      const approval = base.approval as { thresholds?: Record<string, unknown> } | undefined;
+      if (path === "approval.mode") delete base.approval;
+      else if (path.startsWith("approval.thresholds.")) delete approval?.thresholds?.[path.slice("approval.thresholds.".length)];
+      else delete base[path];
+    }
+    return base;
+  };
+
+  const toView = (userId: string, def: AnyActionDefinition): ActionDefinitionView => {
+    const stored = deps.configRepo.get("personal", userId, def.type);
+    const clamp = clampStored(def, stored?.configJson ?? null);
+    if (clamp.clamped.length > 0 || clamp.rejected) {
+      deps.logger.warn("Stored action config clamped on read", {
+        userId,
+        actionType: def.type,
+        clamped: clamp.clamped,
+        rejected: clamp.rejected,
+      });
+    }
     const last = deps.configRepo.history("personal", userId, def.type, 1)[0];
     const labels = Object.fromEntries(Object.entries(def.thresholdMetrics).map(([k, m]) => [k, m.label]));
     return {
@@ -74,14 +104,7 @@ export function createActionDefinitionsRouter(deps: ActionDefinitionsRouteDeps):
     }
 
     try {
-      let existing: Record<string, unknown> = {};
-      try {
-        const stored = deps.configRepo.get("personal", userId, def.type);
-        if (stored) existing = JSON.parse(stored.configJson) as Record<string, unknown>;
-      } catch {
-        existing = {};
-      }
-      const next: Record<string, unknown> = { ...existing };
+      const next = mergeBase(def, deps.configRepo.get("personal", userId, def.type)?.configJson ?? null);
       if (body.data.enabled !== undefined) next.enabled = body.data.enabled;
       if (body.data.approvalMode !== undefined) {
         next.approval =

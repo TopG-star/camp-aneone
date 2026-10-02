@@ -1,5 +1,5 @@
 import { Router, type Response } from "express";
-import { ActionViewQuerySchema, LEGACY_BANNER, STATUS_GROUPS } from "@oneon/contracts";
+import { ActionViewQuerySchema, LEGACY_BANNER, OffsetPaginationQuerySchema, STATUS_GROUPS } from "@oneon/contracts";
 import {
   personalActor,
   type ActionConfigRepository,
@@ -16,6 +16,9 @@ import {
   type RequestOutcome,
 } from "@oneon/application";
 import { toActionView } from "./action-views.js";
+
+const LEGACY_MAX_LIMIT = 100;
+const MAX_REASON_LENGTH = 1000;
 
 export interface ActionsRouteDeps {
   orchestrator: ActionOrchestrator;
@@ -67,7 +70,14 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
     const { limit, offset, status, group } = parsed.data;
     const statuses = status ? [status] : group ? [...STATUS_GROUPS[group]] : undefined;
     try {
-      const actions = deps.instanceRepo.list(userId, { statuses, limit, offset }).map((i) => view(userId, i));
+      const actions = deps.instanceRepo
+        .list(userId, { statuses, limit, offset })
+        .filter((i) => {
+          if (deps.registry.has(i.actionType)) return true;
+          deps.logger.warn("Skipping action with unregistered type", { actionId: i.id, actionType: i.actionType });
+          return false;
+        })
+        .map((i) => view(userId, i));
       const total = deps.instanceRepo.count(userId, { statuses });
       res.json({ actions, pagination: { limit, offset, total, hasMore: offset + limit < total } });
     } catch (error) {
@@ -76,9 +86,14 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
   });
 
   router.get("/legacy", (req, res) => {
+    const parsed = OffsetPaginationQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid query parameters", details: parsed.error.format() });
+      return;
+    }
     const userId = req.userId!;
-    const limit = Math.min(Number(req.query.limit ?? 25) || 25, 100);
-    const offset = Math.max(Number(req.query.offset ?? 0) || 0, 0);
+    const limit = Math.min(parsed.data.limit, LEGACY_MAX_LIMIT);
+    const offset = parsed.data.offset;
     try {
       const rows = deps.legacyRepo.listForUser(userId, { limit, offset });
       const total = deps.legacyRepo.countForUser(userId);
@@ -137,6 +152,10 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
   for (const op of Object.keys(run) as Op[]) {
     router.post(`/:id/${op}`, async (req, res) => {
       const userId = req.userId!;
+      if (op === "reject" && typeof req.body?.reason === "string" && req.body.reason.length > MAX_REASON_LENGTH) {
+        res.status(422).json({ error: `Reason must be ${MAX_REASON_LENGTH} characters or fewer.` });
+        return;
+      }
       try {
         // Execution never depends on this request's connection (spec §10.2).
         const instance = await run[op](userId, req.params.id, req.body ?? {});

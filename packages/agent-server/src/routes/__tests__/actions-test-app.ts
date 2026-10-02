@@ -7,6 +7,7 @@ import {
   type CalendarEvent,
   type Deadline,
   type Logger,
+  type LegacyActionRepository,
 } from "@oneon/domain";
 import { createActionDefinitions, createActionOrchestrator, createActionRegistry, type ActionOrchestrator } from "@oneon/application";
 import {
@@ -21,6 +22,11 @@ import { createActionDefinitionsRouter } from "../action-definitions.route.js";
 
 export const logger: Logger = { info() {}, warn() {}, error() {}, debug() {} };
 
+export interface WarnEntry {
+  message: string;
+  context?: Record<string, unknown>;
+}
+
 export interface ActionsTestApp {
   app: express.Express;
   db: Database.Database;
@@ -29,9 +35,18 @@ export interface ActionsTestApp {
   configRepo: ActionConfigRepository;
   events: Map<string, CalendarEvent>;
   deadlines: Map<string, Deadline>;
+  warnings: WarnEntry[];
+  legacyRepo: LegacyActionRepository;
 }
 
 export function buildActionsTestApp(options: { createDelayMs?: number } = {}): ActionsTestApp {
+  const warnings: WarnEntry[] = [];
+  const testLogger: Logger = {
+    ...logger,
+    warn: (message, context) => {
+      warnings.push({ message, context });
+    },
+  };
   const db: Database.Database = createDatabase(":memory:");
   runMigrations(db);
   db.prepare("INSERT INTO users (id, email) VALUES ('user-A','a@test.com'), ('user-B','b@test.com')").run();
@@ -95,8 +110,8 @@ export function buildActionsTestApp(options: { createDelayMs?: number } = {}): A
     req.userId = (req.headers["x-test-user"] as string) ?? "user-A";
     next();
   });
-  app.use("/api/actions", createActionsRouter({ orchestrator, registry, instanceRepo, configRepo, legacyRepo, logger }));
-  app.use("/api/action-definitions", createActionDefinitionsRouter({ registry, configRepo, logger }));
+  app.use("/api/actions", createActionsRouter({ orchestrator, registry, instanceRepo, configRepo, legacyRepo, logger: testLogger }));
+  app.use("/api/action-definitions", createActionDefinitionsRouter({ registry, configRepo, logger: testLogger }));
 
-  return { app, db, orchestrator, instanceRepo, configRepo, events, deadlines };
+  return { app, db, orchestrator, instanceRepo, configRepo, events, deadlines, warnings, legacyRepo };
 }
