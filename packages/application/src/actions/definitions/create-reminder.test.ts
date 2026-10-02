@@ -84,6 +84,9 @@ describe("create_reminder resolve, execute, verify, undo", () => {
     expect(v.checks.find((c) => c.id === v.effectCheckId)!.passed).toBe(true);
     // I2: the verification read supplies the undo data the unknown outcome could not.
     expect(v.undoData).toEqual({ eventId: "req1", versionAfter: '"v1"' });
+    // ...but only while every field Oneon wrote still matches.
+    cal.editElsewhere("req1", { description: "edited" });
+    expect((await def.postconditions!({ input, resolved: r.resolved, result: null, executorRequestId: "req1", readers })).undoData).toBeNull();
     void writers;
   });
 

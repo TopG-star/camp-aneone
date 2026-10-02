@@ -16,6 +16,7 @@ describe("describeActionError", () => {
     [{ code: "changed_since_approval", stage: "recheck" }, "update_calendar_event", "What this action would do changed after it was approved, so Oneon didn't run it. Try again to review the new version."],
     [{ code: "timeout", stage: "execution" }, "create_calendar_event", "Google didn't confirm the change in time. Oneon is checking whether it went through."],
     [{ code: "effect_absent", stage: "verification" }, "create_calendar_event", "Oneon checked and the change isn't there, so nothing was changed."],
+    [{ code: "effect_absent_after_success", stage: "verification" }, "update_calendar_event", "Google accepted the change, but it no longer matches what Oneon wrote. Someone may have edited or deleted it since."],
   ])("maps %o to plain text", (error, type, text) => {
     expect(describeActionError({ ...error, message: "raw" } as never, type)).toBe(text);
   });

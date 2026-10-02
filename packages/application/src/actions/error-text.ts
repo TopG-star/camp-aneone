@@ -35,6 +35,8 @@ const TEXT: Record<string, string> = {
   unexpected_error: "Something went wrong while sending the change. Oneon is checking whether it went through.",
   // Verification
   effect_absent: "Oneon checked and the change isn't there, so nothing was changed.",
+  effect_absent_after_success:
+    "Google accepted the change, but it no longer matches what Oneon wrote. Someone may have edited or deleted it since.",
   checks_failed: "The change was made, but some details don't match what was asked. See Checks.",
   no_verification: "Oneon can't check whether this action worked.",
 };

@@ -84,6 +84,24 @@ describe("undo data after an unknown outcome (I2)", () => {
     expect(cal.events.get("ev1")!.title).toBe("Focus");
   });
 
+  it("does not derive undo data when a field the checks don't cover was edited before verification", async () => {
+    const { cal, h } = calendarHarness((w) => ({
+      ...w,
+      create: async (e, o) => {
+        await w.create(e, o);
+        cal.editElsewhere(o.eventId, { description: "My notes" });
+        throw unknown();
+      },
+    }));
+    const instance = await chat(h, "create_calendar_event", {
+      title: "Call with Ama",
+      start: "2026-10-07T10:00:00+00:00",
+      end: "2026-10-07T10:30:00+00:00",
+    });
+    expect(instance.status).toBe("completed");
+    expect(instance.undo).toBeNull();
+  });
+
   it("does not derive undo data when the event no longer looks as Oneon wrote it", async () => {
     const { cal, h } = calendarHarness((w) => ({
       ...w,

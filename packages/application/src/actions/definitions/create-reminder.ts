@@ -122,8 +122,12 @@ export const createReminderDefinition: ActionDefinition<CreateReminderInput, Cre
       { id: "all_day_on_due_date", passed: !!event && event.allDay && event.start === resolved.event.start, expected: resolved.event.start, actual: event?.start ?? null },
       { id: "title_matches", passed: event?.title === resolved.event.title, expected: resolved.event.title, actual: event?.title ?? null },
     ];
-    // Only when the event is exactly as Oneon wrote it is its current version ours to undo.
-    const ours = !!event?.etag && checks.every((c) => c.passed);
+    // Only when every field Oneon wrote still matches is the current version ours to undo.
+    const ours =
+      !!event?.etag &&
+      checks.every((c) => c.passed) &&
+      (event.description ?? null) === (resolved.event.description ?? null) &&
+      (event.location ?? null) === (resolved.event.location ?? null);
     return { effectCheckId: "event_exists", checks, undoData: ours ? { eventId, versionAfter: event!.etag! } : null };
   },
 

@@ -229,6 +229,6 @@ describe("advance: a timed-out write may still land (C1)", () => {
     const instance = await created(
       harness([probeDefinition({ postconditions: async () => ({ effectCheckId: "effect", checks: [{ id: "effect", passed: false }] }) })]),
     );
-    expect(instance).toMatchObject({ status: "failed", error: { code: "effect_absent" } });
+    expect(instance).toMatchObject({ status: "failed", error: { code: "effect_absent_after_success", stage: "verification" } });
   });
 });

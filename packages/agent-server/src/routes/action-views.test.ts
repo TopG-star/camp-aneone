@@ -46,12 +46,18 @@ describe("toActionView undo text (I3)", () => {
     expect(view({ status: "completed", undo: UNDO_DATA })).toMatchObject({ allowedOperations: ["undo"], undo: { text: "Can be undone" } });
   });
 
-  it.each<LifecycleStatus>(["rejected", "rolled_back", "rollback_failed", "failed", "cancelled", "expired", "awaiting_approval"])(
+  it.each<LifecycleStatus>(["rejected", "rolled_back", "rollback_failed", "failed", "cancelled", "expired"])(
     "shows no undo claim on a %s card",
     (status) => {
       expect(view({ status, undo: UNDO_DATA }).undo.text).toBeNull();
     },
   );
+
+  it("tells the approver whether it can be undone before it runs (§13.1)", () => {
+    expect(view({ status: "awaiting_approval" }).undo.text).toBe("Can be undone");
+    expect(view({ actionType: "update_calendar_event", status: "awaiting_approval" }).undo.text).toBe("Can be undone if nobody has changed it since");
+    expect(view({ actionType: "notify", status: "awaiting_approval" }).undo.text).toBe("This action cannot be automatically reversed.");
+  });
 
   it("is honest when an action completed without undo data", () => {
     expect(view({ status: "completed", undo: null })).toMatchObject({

@@ -33,7 +33,9 @@ function undoText(
   operations: readonly string[],
 ): string | null {
   const settled = instance.status === "completed" || instance.status === "partially_completed";
-  if (def.rollbackClass === "irreversible") return settled || NOT_YET_RUN.has(instance.status) ? UNDO_TEXT.irreversible : null;
+  // Before it runs, the approver is told whether it can be undone (spec §13.1).
+  if (NOT_YET_RUN.has(instance.status)) return UNDO_TEXT[def.rollbackClass];
+  if (def.rollbackClass === "irreversible") return settled ? UNDO_TEXT.irreversible : null;
   if (operations.includes("undo")) return UNDO_TEXT[def.rollbackClass];
   if (settled && (!def.undo || !instance.undo)) {
     const calendar = def.effects.writes.some((w) => w.startsWith("Google Calendar"));

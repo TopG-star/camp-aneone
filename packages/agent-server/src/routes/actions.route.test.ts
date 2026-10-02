@@ -30,8 +30,7 @@ describe("GET /api/actions", () => {
       origin: { kind: "rule", label: "Inbox rule · deadline reminder" },
       description: 'Add an all-day reminder "Due: Submit Q4" on 7 Oct 2026 to your calendar.',
       allowedOperations: ["approve", "reject", "cancel"],
-      // I3: nothing has run yet, so no undo claim is made.
-      undo: { rollbackClass: "reversible", text: null },
+      undo: { rollbackClass: "reversible", text: "Can be undone" },
     });
     expect(res.body.actions[0].decision.reasons[0].text).toBe("Create reminder is set to always ask before running.");
     expect(res.body.actions[0].timeline.map((e: { toStatus: string }) => e.toStatus)).toEqual(["proposed", "validating", "awaiting_approval"]);

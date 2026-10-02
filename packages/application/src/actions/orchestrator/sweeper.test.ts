@@ -5,6 +5,18 @@ import { harness, probeDefinition, request } from "../__tests__/orchestrator-har
 const MIN = 60_000;
 
 describe("sweep", () => {
+  it("re-verifies a stuck verifying action every cycle, even right after a verification attempt (§10.5)", async () => {
+    const h = harness([probeDefinition({ postconditions: async () => { throw new Error("Google down"); } })]);
+    const o = await h.orchestrator.requestAction(request());
+    if (o.kind === "refused") throw new Error();
+    expect(o.instance.status).toBe("verifying");
+    h.advanceClock(2 * MIN);
+    // A verification attempt just ran (it records the "last checked" time in the heartbeat column).
+    h.repo.recordHeartbeat(o.instance.id, new Date(Date.parse(o.instance.updatedAt) + 2 * MIN).toISOString());
+    expect(await h.orchestrator.sweep("u1")).toEqual({ recovered: 1 });
+  });
+
+
   it("leaves fresh in-progress actions alone and honours each definition's threshold", async () => {
     const h = harness([probeDefinition({ recoveryThresholdMs: 10 * MIN, preconditions: async () => { throw new Error("down"); } })]);
     const o = await h.orchestrator.requestAction(request());

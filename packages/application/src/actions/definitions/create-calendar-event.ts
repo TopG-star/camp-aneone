@@ -117,8 +117,12 @@ export const createCalendarEventDefinition: ActionDefinition<CreateCalendarEvent
       field("end"),
       field("attendees"),
     ];
-    // Only when the event is exactly as Oneon wrote it is its current version ours to undo.
-    const ours = !!event?.etag && checks.every((c) => c.passed);
+    // Only when every field Oneon wrote still matches is the current version ours to undo.
+    const ours =
+      !!event?.etag &&
+      checks.every((c) => c.passed) &&
+      sameField("description", event.description, resolved.event.description) &&
+      sameField("location", event.location, resolved.event.location);
     return {
       effectCheckId: "event_exists",
       checks,

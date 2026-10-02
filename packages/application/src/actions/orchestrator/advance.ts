@@ -282,8 +282,13 @@ async function verify(
         return instance;
       }
     }
+    // The executor reported success (only then is a result recorded): Google applied the change, so
+    // "nothing was changed" would be untrue; the effect has since gone or been altered.
+    const succeeded = instance.result !== null;
     return move(deps, instance, "failed", SYSTEM, data, {
-      error: { code: "effect_absent", message: "The change was not found after execution.", stage: "verification" },
+      error: succeeded
+        ? { code: "effect_absent_after_success", message: "Google accepted the change, but it was not found as written on verification.", stage: "verification" }
+        : { code: "effect_absent", message: "The change was not found after execution.", stage: "verification" },
     });
   }
   // After an unknown outcome the executor recorded no undo data; take it from the verification read.

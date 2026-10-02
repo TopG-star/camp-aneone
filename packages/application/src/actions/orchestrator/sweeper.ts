@@ -41,7 +41,10 @@ export function createSweeper(
     for (const instance of deps.repo.list(ownerId, { statuses: IN_PROGRESS_STATUSES, limit: 500 })) {
       if (!deps.registry.has(instance.actionType)) continue;
       const def = deps.registry.get(instance.actionType);
-      const lastActivity = Math.max(Date.parse(instance.updatedAt), instance.lastHeartbeatAt ? Date.parse(instance.lastHeartbeatAt) : 0);
+      // Verification attempts write the heartbeat (the card's "last checked" time); measuring a
+      // verifying action from it would skip cycles, so it is re-verified every cycle (spec §10.5).
+      const heartbeat = instance.lastHeartbeatAt ? Date.parse(instance.lastHeartbeatAt) : 0;
+      const lastActivity = instance.status === "verifying" ? Date.parse(instance.updatedAt) : Math.max(Date.parse(instance.updatedAt), heartbeat);
       if (now - lastActivity < def.recoveryThresholdMs) continue;
       try {
         await recover(instance, def, now);
