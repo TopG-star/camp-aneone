@@ -52,15 +52,22 @@ export async function importLegacyProposals(deps: {
         skipped++;
         continue;
       }
-      const outcome = await deps.requestAction({
-        type: row.actionType,
-        input,
-        actor: personalActor(userId),
-        initiator: rule.initiator,
-        keyContext: { source: "rule", resourceId: row.resourceId },
-        evidence: [{ kind: "legacy_action", source: "action_log_legacy", asOf: row.createdAt, data: { legacyId: row.id, createdAt: row.createdAt, payload } }],
-        resourceRef: row.actionType === "create_reminder" ? `deadline:${row.resourceId}` : `inbound_item:${row.resourceId}`,
-      });
+      let outcome: RequestOutcome;
+      try {
+        outcome = await deps.requestAction({
+          type: row.actionType,
+          input,
+          actor: personalActor(userId),
+          initiator: rule.initiator,
+          keyContext: { source: "rule", resourceId: row.resourceId },
+          evidence: [{ kind: "legacy_action", source: "action_log_legacy", asOf: row.createdAt, data: { legacyId: row.id, createdAt: row.createdAt, payload } }],
+          resourceRef: row.actionType === "create_reminder" ? `deadline:${row.resourceId}` : `inbound_item:${row.resourceId}`,
+        });
+      } catch (error) {
+        deps.logger.warn("Legacy proposal import threw", { legacyId: row.id, error: error instanceof Error ? error.message : String(error) });
+        skipped++;
+        continue;
+      }
       if (outcome.kind === "refused") {
         deps.logger.warn("Legacy proposal not imported", { legacyId: row.id, reason: outcome.reason, issues: outcome.issues });
         skipped++;

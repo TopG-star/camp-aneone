@@ -35,6 +35,11 @@ describe("deriveInboxActionRequests", () => {
     expect(reqs[0]).toMatchObject({ type: "create_reminder", input: { deadlineId: "d1", inboundItemId: "i1" }, resourceRef: "deadline:d1" });
   });
 
+  it("requests a reminder at exactly confidence 0.7", () => {
+    const reqs = deriveInboxActionRequests({ classification: cls(), item, deadlines: [dl({ confidence: 0.7 })], now: NOW });
+    expect(types(reqs)).toEqual(["create_reminder"]);
+  });
+
   it("keeps the Gmail proposals", () => {
     expect(types(deriveInboxActionRequests({ classification: cls({ category: "spam" }), item, deadlines: [], now: NOW }))).toEqual(["archive"]);
     expect(types(deriveInboxActionRequests({ classification: cls({ category: "newsletter", priority: 4 }), item, deadlines: [], now: NOW }))).toEqual(["label"]);

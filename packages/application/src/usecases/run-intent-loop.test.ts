@@ -502,6 +502,45 @@ describe("runIntentLoop", () => {
     );
   });
 
+  it("overwrites AI-supplied userId/turnId/turnExcerpt with the server values", async () => {
+    const extractor = createMockExtractor([
+      [{ tool: "list_deadlines", parameters: { userId: "evil", turnId: "evil", turnExcerpt: "evil", from: "x" } }],
+      [{ tool: "none", parameters: {} }],
+    ]);
+    const registry = createMockToolRegistry({
+      list_deadlines: makeToolResult("list_deadlines", "ok"),
+    });
+
+    await runIntentLoop(
+      { intentExtractor: extractor, toolRegistry: registry, logger },
+      defaultInput({ userId: "user-123", turnId: "t1" }),
+    );
+
+    expect(registry.execute).toHaveBeenCalledWith("list_deadlines", {
+      from: "x",
+      userId: "user-123",
+      turnId: "t1",
+      turnExcerpt: "What are my deadlines?",
+    });
+  });
+
+  it("drops AI-supplied identity keys when the server supplies none", async () => {
+    const extractor = createMockExtractor([
+      [{ tool: "list_deadlines", parameters: { userId: "evil", turnId: "evil", turnExcerpt: "evil", from: "x" } }],
+      [{ tool: "none", parameters: {} }],
+    ]);
+    const registry = createMockToolRegistry({
+      list_deadlines: makeToolResult("list_deadlines", "ok"),
+    });
+
+    await runIntentLoop(
+      { intentExtractor: extractor, toolRegistry: registry, logger },
+      defaultInput(),
+    );
+
+    expect(registry.execute).toHaveBeenCalledWith("list_deadlines", { from: "x" });
+  });
+
   // ── Context Assembly ─────────────────────────────────────
 
   it("passes growing executedActions to extractor each round", async () => {

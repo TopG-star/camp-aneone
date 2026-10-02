@@ -44,12 +44,30 @@ describe("importLegacyProposals", () => {
       row({ id: "n1", actionType: "notify" }),
       row({ id: "c1", actionType: "classify" }),
       row({ id: "x1", userId: null }),
+      row({ id: "o1", userId: "u2" }),
       row({ id: "bad", payloadJson: "not json" }),
     ]);
     const requestAction = vi.fn(async () => ({ kind: "created" as const, instance: { id: "new" } as never }));
     const result = await importLegacyProposals({ legacyRepo: repo, requestAction, userIds: ["u1"], logger: silentLogger });
     expect(result).toEqual({ imported: 1, skipped: 2 });
     expect(imported).toEqual([["bad", "new"]]);
+    expect(requestAction).toHaveBeenCalledTimes(1);
+    expect(requestAction).toHaveBeenCalledWith(expect.objectContaining({ actor: expect.objectContaining({ userId: "u1" }) }));
+  });
+
+  it("a request that throws skips only that row", async () => {
+    const { repo, imported } = legacyRepo([row({ id: "a" }), row({ id: "boom" }), row({ id: "c" })]);
+    let calls = 0;
+    const requestAction = vi.fn(async () => {
+      calls++;
+      if (calls === 2) throw new Error("db locked");
+      return { kind: "created" as const, instance: { id: `new-${calls}` } as never };
+    });
+    const warn = vi.fn();
+    const result = await importLegacyProposals({ legacyRepo: repo, requestAction, userIds: ["u1"], logger: { ...silentLogger, warn } });
+    expect(result).toEqual({ imported: 2, skipped: 1 });
+    expect(imported).toEqual([["a", "new-1"], ["c", "new-3"]]);
+    expect(warn).toHaveBeenCalledWith("Legacy proposal import threw", { legacyId: "boom", error: "db locked" });
   });
 
   it("skips a refused request without recording it", async () => {

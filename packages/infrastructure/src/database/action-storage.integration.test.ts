@@ -193,4 +193,16 @@ describe("SqliteLegacyActionRepository", () => {
     expect(legacy.countForUser("user-A")).toBe(1);
     expect(legacy.listUnimportedProposed("user-A")).toEqual([]);
   });
+
+  it("never returns a NULL user_id row", () => {
+    db.prepare(
+      `INSERT INTO action_log_legacy (id, resource_id, action_type, risk_level, status, user_id, created_at)
+       VALUES ('n1','item-1','archive','approval_required','proposed',NULL,'2026-09-01T00:00:00Z'),
+              ('u1','item-2','archive','approval_required','proposed','user-A','2026-09-01T00:00:00Z')`,
+    ).run();
+    const legacy = new SqliteLegacyActionRepository(db);
+    expect(legacy.listUnimportedProposed("user-A").map((r) => r.id)).toEqual(["u1"]);
+    expect(legacy.listUnimportedProposed("").map((r) => r.id)).toEqual([]);
+    expect(legacy.listForUser("user-A", { limit: 10, offset: 0 }).map((r) => r.id)).toEqual(["u1"]);
+  });
 });

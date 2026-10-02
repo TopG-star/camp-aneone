@@ -155,8 +155,10 @@ export async function runIntentLoop(
       anyToolExecuted = true;
       const startTime = performance.now();
       try {
+        // Identity comes from the server only: drop any AI-supplied reserved keys first.
+        const { userId: _u, turnId: _t, turnExcerpt: _e, ...aiParams } = intent.parameters;
         const executionParameters = {
-          ...intent.parameters,
+          ...aiParams,
           ...(userId ? { userId } : {}),
           ...(turnId ? { turnId, turnExcerpt: userMessage.slice(0, 280) } : {}),
         };

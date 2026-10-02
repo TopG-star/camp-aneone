@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import type { ActionInstance } from "@oneon/domain";
+import { personalActor, type ActionInstance } from "@oneon/domain";
 import { createChatActionTools } from "./chat-action-tools.js";
 import { createActionRegistry } from "./registry.js";
 import { createActionDefinitions } from "./definitions/index.js";
@@ -33,11 +33,23 @@ describe("chat action tools", () => {
     });
   });
 
-  it("never lets the AI pick the user", async () => {
+  it("acts as the server-supplied user and leaves tenant keys in the input for the strict schema to refuse", async () => {
     const { create, requestAction } = tools({ kind: "created", instance: instance({}) });
-    // run-intent-loop spreads server fields last, so an AI-supplied userId is overwritten before this point
-    await create.execute(create.inputSchema.parse({ ...args, userId: "u1" }));
-    expect(requestAction.mock.calls[0][0].actor.userId).toBe("u1");
+    await create.execute(create.inputSchema.parse({ ...args, ownerId: "someone-else" }));
+    const req = requestAction.mock.calls[0][0];
+    expect(req.actor).toEqual(personalActor("u1"));
+    // The tool never strips or honours ownerId; the action's strict input schema rejects it.
+    expect(req.input).toMatchObject({ ownerId: "someone-else" });
+    expect(registry.get("create_calendar_event").inputSchema.safeParse(req.input).success).toBe(false);
+  });
+
+  it("exposes update_calendar_event and requests that type", async () => {
+    const { update, requestAction } = tools({ kind: "created", instance: instance({ actionType: "update_calendar_event" }) });
+    expect(update.name).toBe("update_calendar_event");
+    await update.execute(update.inputSchema.parse({ eventId: "ev1", title: "New", userId: "u1", turnId: "msg-1" }));
+    expect(requestAction).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "update_calendar_event", input: { eventId: "ev1", title: "New" }, keyContext: { source: "chat", turnId: "msg-1" } }),
+    );
   });
 
   it.each([
