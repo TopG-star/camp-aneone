@@ -472,7 +472,6 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       actionLogRepo: container.actionLogRepo,
       inboundItemRepo: container.inboundItemRepo,
       logger: actionsLogger,
-      manualExecuteRequired: env.FEATURE_MANUAL_EXECUTE_REQUIRED,
     }),
   );
   actionsLogger.info("Actions routes registered at /api/actions");

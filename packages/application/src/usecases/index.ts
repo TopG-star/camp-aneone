@@ -19,26 +19,6 @@ export {
 } from "./process-unclassified-items.js";
 
 export {
-  proposeActions,
-  deriveActions,
-  ACTION_RISK_LEVELS,
-  type ProposeActionsDeps,
-  type ProposeActionsResult,
-  type ProposedAction,
-} from "./propose-actions.js";
-
-export {
-  executeAction,
-  type ExecuteActionDeps,
-  type ExecuteActionResult,
-} from "./execute-action.js";
-
-export {
-  assertValidTransition,
-  InvalidTransitionError,
-} from "./transition-action-status.js";
-
-export {
   sendChatMessage,
   type SendChatMessageDeps,
   type SendChatMessageInput,

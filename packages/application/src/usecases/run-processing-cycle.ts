@@ -2,18 +2,17 @@ import type {
   InboundItemRepository,
   ClassificationRepository,
   DeadlineRepository,
-  ActionLogRepository,
   TransactionRunner,
   LLMPort,
   Logger,
   NotificationPort,
   NotificationRepository,
 } from "@oneon/domain";
+import { personalActor } from "@oneon/domain";
 import { type SkipRule } from "./process-unclassified-items.js";
-import { proposeActions } from "./propose-actions.js";
-import { executeAction } from "./execute-action.js";
 import { checkApproachingDeadlines } from "./check-approaching-deadlines.js";
-import { evaluateReminderPriorityPolicy } from "./reminder-priority-policy.js";
+import { deriveInboxActionRequests } from "../actions/inbox-rules.js";
+import type { ActionRequest, RequestOutcome } from "../actions/orchestrator/types.js";
 
 // ── Daily Call Limiter ───────────────────────────────────────
 
@@ -29,7 +28,6 @@ export interface RunProcessingCycleDeps {
   inboundItemRepo: InboundItemRepository;
   classificationRepo: ClassificationRepository;
   deadlineRepo: DeadlineRepository;
-  actionLogRepo: ActionLogRepository;
   transactionRunner: TransactionRunner;
   llmPort: LLMPort;
   logger: Logger;
@@ -37,7 +35,6 @@ export interface RunProcessingCycleDeps {
   promptVersion: string;
   maxAttempts: number;
   skipRules: SkipRule[];
-  featureAutoExecute: boolean;
   notificationPort?: NotificationPort | null;
   notificationRepo?: NotificationRepository | null;
   deadlineLeadDays?: number;
@@ -45,6 +42,9 @@ export interface RunProcessingCycleDeps {
   dailyCallCounter?: DailyCallCounter;
   /** Max LLM classify calls per day. 0 = unlimited. */
   dailyCallLimit?: number;
+  /** Every action goes through the registry and policy (spec §9.9). */
+  requestAction(req: ActionRequest): Promise<RequestOutcome>;
+  clock?: () => Date;
 }
 
 export interface RunProcessingCycleOptions {
@@ -75,8 +75,8 @@ export interface CycleSummary {
  * Runs a single processing cycle:
  *
  * 1. Classify unclassified items (delegates to processUnclassifiedItems)
- * 2. For each *newly classified* item, propose actions (via proposeActions)
- * 3. Optionally auto-execute "auto" risk-level actions (via executeAction)
+ * 2. For each newly classified item, request actions from the inbox rules; the
+ *    orchestrator validates, authorizes and executes them.
  *
  * Respects a maxDurationMs cap: if the cycle exceeds the budget,
  * it stops processing further items (abortedEarly = true).
@@ -248,96 +248,27 @@ export async function runProcessingCycle(
 
       summary.classification.classified++;
 
-      // ── Notification: urgent item ──
-      if (deps.notificationPort) {
-        const policyDecision = evaluateReminderPriorityPolicy({
-          userId: deps.userId,
-          eventType: "urgent_item",
-          priority: classification.priority,
-        });
-
-        if (policyDecision.shouldNotify) {
-          try {
-            await deps.notificationPort.send({
-              eventType: "urgent_item",
-              title: `Urgent: ${item.subject}`,
-              body: classification.summary,
-              deepLink: `/items/${item.id}`,
-              userId: deps.userId,
-            });
-            summary.notificationsSent++;
-          } catch (notifError) {
-            logger.error("Failed to send urgent_item notification", {
-              itemId: item.id,
-              error: notifError instanceof Error ? notifError.message : String(notifError),
-            });
-          }
-        }
-      }
-
-      // ── Step 2: Propose actions for this newly classified item ──
+      // ── Step 2: Request actions; notify is the only urgent-notification path ──
       try {
         const deadlines = deps.deadlineRepo.findByInboundItemId(item.id);
-
-        const proposeResult = proposeActions(
-          { actionLogRepo: deps.actionLogRepo, logger, userId: deps.userId },
-          classification,
-          item,
-          deadlines
-        );
-
-        summary.actionsProposed += proposeResult.created.length;
-
-        // ── Step 3: Auto-execute if enabled ──
-        if (deps.featureAutoExecute) {
-          for (const action of proposeResult.created) {
-            const execResult = executeAction(
-              {
-                actionLogRepo: deps.actionLogRepo,
-                logger,
-                featureAutoExecute: true,
-              },
-              action
-            );
-            if (execResult.outcome === "executed") {
-              summary.actionsAutoExecuted++;
-            }
+        const now = (deps.clock ?? (() => new Date()))();
+        for (const request of deriveInboxActionRequests({ classification, item, deadlines, now })) {
+          const outcome = await deps.requestAction({ ...request, actor: personalActor(deps.userId) });
+          if (outcome.kind === "refused") {
+            summary.actionErrors++;
+            logger.warn("Action request refused", { itemId: item.id, type: request.type, reason: outcome.reason, issues: outcome.issues });
+            continue;
           }
-        }
-
-        // ── Notification: approval-required actions ──
-        if (deps.notificationPort) {
-          for (const action of proposeResult.created) {
-            const policyDecision = evaluateReminderPriorityPolicy({
-              userId: deps.userId,
-              eventType: "action_proposed",
-              riskLevel: action.riskLevel,
-            });
-
-            if (!policyDecision.shouldNotify) {
-              continue;
-            }
-
-            try {
-              await deps.notificationPort.send({
-                eventType: "action_proposed",
-                title: `Action requires approval: ${action.actionType}`,
-                body: `A "${action.actionType}" action on item ${action.resourceId} needs your approval.`,
-                deepLink: `/actions/${action.id}`,
-                userId: deps.userId,
-              });
-              summary.notificationsSent++;
-            } catch (notifError) {
-              logger.error("Failed to send action_proposed notification", {
-                actionId: action.id,
-                error: notifError instanceof Error ? notifError.message : String(notifError),
-              });
-            }
+          if (outcome.kind !== "created") continue;
+          summary.actionsProposed++;
+          if (outcome.instance.status === "completed") {
+            summary.actionsAutoExecuted++;
+            if (request.type === "notify") summary.notificationsSent++;
           }
         }
       } catch (error) {
         summary.actionErrors++;
-        logger.error("Action proposal/execution failed", {
+        logger.error("Action request failed", {
           itemId: item.id,
           error: error instanceof Error ? error.message : String(error),
         });

@@ -45,9 +45,10 @@ no separate feature-flag service or database table.
 
    | Variable                    | Default | Purpose                              |
    |-----------------------------|---------|--------------------------------------|
-   | `FEATURE_AUTO_EXECUTE`      | `false` | Allow auto-execution of low-risk actions |
    | `FEATURE_PUSH_NOTIFICATIONS`| `false` | Enable web push via VAPID            |
    | `FEATURE_CHAT`              | `true`  | Enable chat interface                |
+
+   Per-action approval settings live in Settings → Actions.
 
 3. **Startup health report:** On boot, the composition root logs which adapters are active
    and which are disabled, producing a clear summary:

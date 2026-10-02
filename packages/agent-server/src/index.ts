@@ -9,7 +9,7 @@ import rateLimit from "express-rate-limit";
 // Load .env from monorepo root
 config({ path: resolve(import.meta.dirname!, "../../..", ".env") });
 
-import { loadEnv } from "./config/env.js";
+import { loadEnv, retiredEnvWarnings } from "./config/env.js";
 import { createContainer } from "./container.js";
 import { registerRoutes } from "./routes/index.js";
 import { BackgroundLoop } from "./background-loop.js";
@@ -49,6 +49,7 @@ function emptyCycleSummary(): CycleSummary {
 const env = loadEnv();
 const container = createContainer(env);
 const { logger } = container;
+for (const message of retiredEnvWarnings(process.env)) logger.warn(message);
 
 // ── Express App ──────────────────────────────────────────────
 const app = express();
@@ -123,7 +124,6 @@ logger.info("Camp-Aneone (Oneon) agent-server starting", {
   nodeEnv: env.NODE_ENV,
   port: env.PORT,
   features: {
-    autoExecute: env.FEATURE_AUTO_EXECUTE,
     pushNotifications: env.FEATURE_PUSH_NOTIFICATIONS,
     chat: env.FEATURE_CHAT,
     backgroundLoop: env.FEATURE_BACKGROUND_LOOP,
@@ -248,7 +248,6 @@ if (env.FEATURE_BACKGROUND_LOOP) {
         inboundItemRepo: container.inboundItemRepo,
         classificationRepo: container.classificationRepo,
         deadlineRepo: container.deadlineRepo,
-        actionLogRepo: container.actionLogRepo,
         transactionRunner: container.transactionRunner,
         llmPort: container.llmPort!,
         logger,
@@ -263,7 +262,7 @@ if (env.FEATURE_BACKGROUND_LOOP) {
             priority: 5 as const,
           },
         ],
-        featureAutoExecute: env.FEATURE_AUTO_EXECUTE,
+        requestAction: container.actions.orchestrator.requestAction,
         notificationPort: container.notificationPort,
         notificationRepo: container.notificationRepo,
         dailyCallCounter,

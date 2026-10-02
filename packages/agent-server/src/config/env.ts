@@ -95,14 +95,6 @@ const envSchema = z.object({
   VAPID_SUBJECT: z.string().optional(),
 
   // ── Feature Flags ─────────────────────────────────────────
-  FEATURE_AUTO_EXECUTE: z
-    .string()
-    .transform((v) => v === "true")
-    .default("false"),
-  FEATURE_MANUAL_EXECUTE_REQUIRED: z
-    .string()
-    .transform((v) => v === "true")
-    .default("false"),
   FEATURE_PUSH_NOTIFICATIONS: z
     .string()
     .transform((v) => v === "true")
@@ -231,6 +223,15 @@ const envSchema = z.object({
 });
 
 export type Env = z.infer<typeof envSchema>;
+
+export const RETIRED_ENV_VARS = ["FEATURE_AUTO_EXECUTE", "FEATURE_MANUAL_EXECUTE_REQUIRED"] as const;
+
+/** Spec §15.1: retired flags are ignored; say so instead of silently dropping them. */
+export function retiredEnvWarnings(source: Record<string, string | undefined>): string[] {
+  return RETIRED_ENV_VARS.filter((name) => source[name] !== undefined).map(
+    (name) => `${name} is retired; per-action settings now live in Settings → Actions.`,
+  );
+}
 
 export function loadEnv(): Env {
   const result = envSchema.safeParse(process.env);

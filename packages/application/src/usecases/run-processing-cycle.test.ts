@@ -8,18 +8,17 @@ import type {
   InboundItem,
   Classification,
   Deadline,
-  ActionLogEntry,
   InboundItemRepository,
   ClassificationRepository,
   DeadlineRepository,
-  ActionLogRepository,
   TransactionRunner,
   LLMPort,
   Logger,
   NotificationPort,
   NotificationRepository,
 } from "@oneon/domain";
-import type { Category, Priority } from "@oneon/domain";
+import type { ActionInstance, Category, Priority } from "@oneon/domain";
+import type { ActionRequest, RequestOutcome } from "../actions/orchestrator/types.js";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -86,24 +85,6 @@ function makeDeadline(
   };
 }
 
-function makeActionEntry(overrides: Partial<ActionLogEntry> = {}): ActionLogEntry {
-  return {
-    id: "action-1",
-    userId: null,
-    resourceId: "item-1",
-    actionType: "notify",
-    riskLevel: "auto",
-    status: "proposed",
-    payloadJson: "{}",
-    resultJson: null,
-    errorJson: null,
-    rollbackJson: null,
-    createdAt: "2026-04-17T08:00:00Z",
-    updatedAt: "2026-04-17T08:00:00Z",
-    ...overrides,
-  };
-}
-
 function createDeps(
   overrides: Partial<RunProcessingCycleDeps> = {}
 ): RunProcessingCycleDeps {
@@ -135,20 +116,6 @@ function createDeps(
     count: vi.fn(() => 0),
   };
 
-  const actionLogRepo: ActionLogRepository = {
-    create: vi.fn((input) => ({
-      id: `action-${Math.random().toString(36).slice(2, 6)}`,
-      ...input,
-      createdAt: "2026-04-17T08:00:00Z",
-      updatedAt: "2026-04-17T08:00:00Z",
-    })) as ActionLogRepository["create"],
-    findByResourceAndType: vi.fn(() => null),
-    findByStatus: vi.fn(() => []),
-    updateStatus: vi.fn(),
-    findAll: vi.fn(() => []),
-    count: vi.fn(() => 0),
-  };
-
   const transactionRunner: TransactionRunner = {
     run: vi.fn((fn: () => unknown) => fn()) as TransactionRunner["run"],
   };
@@ -171,7 +138,6 @@ function createDeps(
     inboundItemRepo,
     classificationRepo,
     deadlineRepo,
-    actionLogRepo,
     transactionRunner,
     llmPort,
     logger: createMockLogger(),
@@ -179,7 +145,10 @@ function createDeps(
     promptVersion: "v1",
     maxAttempts: 3,
     skipRules: [],
-    featureAutoExecute: false,
+    requestAction: vi.fn(async (req: ActionRequest): Promise<RequestOutcome> => ({
+      kind: "created",
+      instance: { id: `a-${req.type}`, status: req.type === "notify" ? "completed" : "awaiting_approval" } as ActionInstance,
+    })),
     ...overrides,
   };
 }
@@ -239,6 +208,9 @@ describe("runProcessingCycle", () => {
     expect(result.classification.total).toBe(1);
     expect(result.classification.classified).toBe(1);
     expect(result.actionsProposed).toBeGreaterThan(0);
+    expect(deps.requestAction).toHaveBeenCalled();
+    const types = vi.mocked(deps.requestAction).mock.calls.map(([req]) => req.type);
+    expect(types).toContain("notify");
   });
 
   it("does NOT propose actions for items that failed classification", async () => {
@@ -254,71 +226,7 @@ describe("runProcessingCycle", () => {
 
     expect(result.classification.failed).toBe(1);
     expect(result.actionsProposed).toBe(0);
-    expect(deps.actionLogRepo.create).not.toHaveBeenCalled();
-  });
-
-  it("auto-executes actions when featureAutoExecute is true", async () => {
-    const item1 = makeItem("item-1");
-    const cls1 = makeClassification("item-1", { category: "urgent" as Category, priority: 1 as Priority });
-
-    const deps = createDeps({ featureAutoExecute: true });
-    vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
-    vi.mocked(deps.inboundItemRepo.findById).mockReturnValue(item1);
-    vi.mocked(deps.llmPort.classify).mockResolvedValue({
-      category: "urgent" as Category,
-      priority: 1 as Priority,
-      summary: "Urgent",
-      actionItems: [],
-      followUpNeeded: false,
-      deadlines: [],
-    });
-    vi.mocked(deps.classificationRepo.create).mockReturnValue(cls1);
-    vi.mocked(deps.inboundItemRepo.markClassified).mockReturnValue(undefined);
-    vi.mocked(deps.deadlineRepo.findByInboundItemId).mockReturnValue([]);
-
-    const notifyAction = makeActionEntry({
-      id: "act-1",
-      resourceId: item1.id,
-      actionType: "notify",
-      riskLevel: "auto",
-      status: "proposed",
-    });
-    vi.mocked(deps.actionLogRepo.create).mockReturnValue(notifyAction);
-    vi.mocked(deps.actionLogRepo.findByResourceAndType).mockReturnValue(null);
-
-    const result = await runProcessingCycle(deps, defaultOptions());
-
-    expect(result.actionsAutoExecuted).toBeGreaterThanOrEqual(1);
-    expect(deps.actionLogRepo.updateStatus).toHaveBeenCalled();
-  });
-
-  it("does NOT auto-execute when featureAutoExecute is false", async () => {
-    const item1 = makeItem("item-1");
-    const cls1 = makeClassification("item-1", { category: "urgent" as Category, priority: 1 as Priority });
-
-    const deps = createDeps({ featureAutoExecute: false });
-    vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
-    vi.mocked(deps.inboundItemRepo.findById).mockReturnValue(item1);
-    vi.mocked(deps.llmPort.classify).mockResolvedValue({
-      category: "urgent" as Category,
-      priority: 1 as Priority,
-      summary: "Urgent",
-      actionItems: [],
-      followUpNeeded: false,
-      deadlines: [],
-    });
-    vi.mocked(deps.classificationRepo.create).mockReturnValue(cls1);
-    vi.mocked(deps.inboundItemRepo.markClassified).mockReturnValue(undefined);
-    vi.mocked(deps.deadlineRepo.findByInboundItemId).mockReturnValue([]);
-
-    const notifyAction = makeActionEntry({ riskLevel: "auto", status: "proposed" });
-    vi.mocked(deps.actionLogRepo.create).mockReturnValue(notifyAction);
-    vi.mocked(deps.actionLogRepo.findByResourceAndType).mockReturnValue(null);
-
-    const result = await runProcessingCycle(deps, defaultOptions());
-
-    expect(result.actionsAutoExecuted).toBe(0);
-    expect(deps.actionLogRepo.updateStatus).not.toHaveBeenCalled();
+    expect(deps.requestAction).not.toHaveBeenCalled();
   });
 
   it("aborts early when maxDurationMs is exceeded", async () => {
@@ -380,16 +288,14 @@ describe("runProcessingCycle", () => {
     vi.mocked(deps.classificationRepo.create).mockReturnValue(cls2);
     vi.mocked(deps.inboundItemRepo.markClassified).mockReturnValue(undefined);
     vi.mocked(deps.deadlineRepo.findByInboundItemId).mockReturnValue([]);
-    vi.mocked(deps.actionLogRepo.findByResourceAndType).mockReturnValue(null);
-    vi.mocked(deps.actionLogRepo.create).mockReturnValue(
-      makeActionEntry({ resourceId: "item-2" })
-    );
 
     const result = await runProcessingCycle(deps, defaultOptions());
 
     expect(result.classification.skippedMaxAttempts).toBe(1);
     expect(result.classification.classified).toBe(1);
     expect(result.actionsProposed).toBeGreaterThan(0);
+    const requested = vi.mocked(deps.requestAction).mock.calls.map(([req]) => req.resourceRef);
+    expect(requested.every((ref) => ref === "inbound_item:item-2")).toBe(true);
   });
 
   it("includes durationMs in summary", async () => {
@@ -400,7 +306,7 @@ describe("runProcessingCycle", () => {
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
   });
 
-  it("survives proposeActions errors and continues", async () => {
+  it("survives a failing action request and continues", async () => {
     const item1 = makeItem("item-1");
     const cls1 = makeClassification("item-1", { category: "urgent" as Category, priority: 1 as Priority });
 
@@ -419,9 +325,7 @@ describe("runProcessingCycle", () => {
     vi.mocked(deps.inboundItemRepo.markClassified).mockReturnValue(undefined);
     vi.mocked(deps.deadlineRepo.findByInboundItemId).mockReturnValue([]);
 
-    vi.mocked(deps.actionLogRepo.findByResourceAndType).mockImplementation(() => {
-      throw new Error("DB write failed");
-    });
+    vi.mocked(deps.requestAction).mockRejectedValueOnce(new Error("DB write failed"));
 
     const result = await runProcessingCycle(deps, defaultOptions());
 
@@ -430,18 +334,9 @@ describe("runProcessingCycle", () => {
     expect(deps.logger.error).toHaveBeenCalled();
   });
 
-  // ── Notification integration ──────────────────────────────
-
-  it("sends urgent_item notification when classification priority <= 2", async () => {
+  function arrangePriority1Item(deps: RunProcessingCycleDeps) {
     const item1 = makeItem("item-1");
-    const cls1 = makeClassification("item-1", {
-      category: "urgent" as Category,
-      priority: 1 as Priority,
-    });
-
-    const notificationPort: NotificationPort = { send: vi.fn().mockResolvedValue(undefined) };
-
-    const deps = createDeps({ notificationPort });
+    const cls1 = makeClassification("item-1", { category: "urgent" as Category, priority: 1 as Priority });
     vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
     vi.mocked(deps.llmPort.classify).mockResolvedValue({
       category: "urgent" as Category,
@@ -454,103 +349,39 @@ describe("runProcessingCycle", () => {
     vi.mocked(deps.classificationRepo.create).mockReturnValue(cls1);
     vi.mocked(deps.inboundItemRepo.markClassified).mockReturnValue(undefined);
     vi.mocked(deps.deadlineRepo.findByInboundItemId).mockReturnValue([]);
-    vi.mocked(deps.actionLogRepo.findByResourceAndType).mockReturnValue(null);
-    vi.mocked(deps.actionLogRepo.create).mockReturnValue(
-      makeActionEntry({ resourceId: "item-1", actionType: "notify", riskLevel: "auto" }),
-    );
+  }
 
-    const result = await runProcessingCycle(deps, defaultOptions());
-
-    expect(notificationPort.send).toHaveBeenCalledWith(
-      expect.objectContaining({
-        eventType: "urgent_item",
-        title: "Urgent: Subject item-1",
-        deepLink: "/items/item-1",
-        userId: "test-user",
-      }),
-    );
-    expect(result.notificationsSent).toBeGreaterThanOrEqual(1);
+  it("requests notify for priority ≤ 2 and sends no direct urgent notification", async () => {
+    const notificationPort: NotificationPort = { send: vi.fn().mockResolvedValue(undefined) };
+    const deps = createDeps({ notificationPort });
+    arrangePriority1Item(deps);
+    const summary = await runProcessingCycle(deps, defaultOptions());
+    const types = vi.mocked(deps.requestAction).mock.calls.map(([req]) => req.type);
+    expect(types).toContain("notify");
+    const directUrgent = vi.mocked(notificationPort.send).mock.calls.filter(([n]) => n.eventType === "urgent_item");
+    expect(directUrgent).toHaveLength(0);
+    expect(summary.notificationsSent).toBe(1);
+    expect(summary.actionsAutoExecuted).toBe(1);
   });
 
-  it("does NOT send urgent_item notification for low-priority items", async () => {
-    const item1 = makeItem("item-1");
-    const cls1 = makeClassification("item-1", {
-      category: "newsletter" as Category,
-      priority: 5 as Priority,
-    });
-
-    const notificationPort: NotificationPort = { send: vi.fn().mockResolvedValue(undefined) };
-
-    const deps = createDeps({ notificationPort });
-    vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
-    vi.mocked(deps.llmPort.classify).mockResolvedValue({
-      category: "newsletter" as Category,
-      priority: 5 as Priority,
-      summary: "Newsletter",
-      actionItems: [],
-      followUpNeeded: false,
-      deadlines: [],
-    });
-    vi.mocked(deps.classificationRepo.create).mockReturnValue(cls1);
-    vi.mocked(deps.inboundItemRepo.markClassified).mockReturnValue(undefined);
-    vi.mocked(deps.deadlineRepo.findByInboundItemId).mockReturnValue([]);
-    vi.mocked(deps.actionLogRepo.findByResourceAndType).mockReturnValue(null);
-    vi.mocked(deps.actionLogRepo.create).mockReturnValue(
-      makeActionEntry({ resourceId: "item-1", actionType: "label", riskLevel: "auto" }),
-    );
-
+  it("passes the user as a personal actor", async () => {
+    const deps = createDeps();
+    arrangePriority1Item(deps);
     await runProcessingCycle(deps, defaultOptions());
-
-    expect(notificationPort.send).not.toHaveBeenCalledWith(
-      expect.objectContaining({ eventType: "urgent_item" }),
-    );
+    const [req] = vi.mocked(deps.requestAction).mock.calls[0];
+    expect(req.actor).toEqual({ userId: deps.userId, scope: "personal", tenantId: null, roles: ["owner"], permissions: [], locationIds: [] });
   });
 
-  it("sends action_proposed notification for approval_required actions", async () => {
-    const item1 = makeItem("item-1");
-    const cls1 = makeClassification("item-1", {
-      category: "spam" as Category,
-      priority: 5 as Priority,
-    });
-
-    const notificationPort: NotificationPort = { send: vi.fn().mockResolvedValue(undefined) };
-
-    const deps = createDeps({ notificationPort });
-    vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
-    vi.mocked(deps.llmPort.classify).mockResolvedValue({
-      category: "spam" as Category,
-      priority: 5 as Priority,
-      summary: "Spam",
-      actionItems: [],
-      followUpNeeded: false,
-      deadlines: [],
-    });
-    vi.mocked(deps.classificationRepo.create).mockReturnValue(cls1);
-    vi.mocked(deps.inboundItemRepo.markClassified).mockReturnValue(undefined);
-    vi.mocked(deps.deadlineRepo.findByInboundItemId).mockReturnValue([]);
-    vi.mocked(deps.actionLogRepo.findByResourceAndType).mockReturnValue(null);
-
-    const archiveAction = makeActionEntry({
-      id: "act-archive",
-      resourceId: "item-1",
-      actionType: "archive",
-      riskLevel: "approval_required",
-      status: "proposed",
-    });
-    vi.mocked(deps.actionLogRepo.create).mockReturnValue(archiveAction);
-
-    const result = await runProcessingCycle(deps, defaultOptions());
-
-    expect(notificationPort.send).toHaveBeenCalledWith(
-      expect.objectContaining({
-        eventType: "action_proposed",
-        title: "Action requires approval: archive",
-        deepLink: "/actions/act-archive",
-        userId: "test-user",
-      }),
-    );
-    expect(result.notificationsSent).toBeGreaterThanOrEqual(1);
+  it("counts refused requests as action errors", async () => {
+    const deps = createDeps();
+    arrangePriority1Item(deps);
+    vi.mocked(deps.requestAction).mockResolvedValue({ kind: "refused", reason: "invalid_input", issues: ["x"] });
+    const summary = await runProcessingCycle(deps, defaultOptions());
+    expect(summary.actionErrors).toBeGreaterThan(0);
+    expect(summary.actionsProposed).toBe(0);
   });
+
+  // ── Notification integration ──────────────────────────────
 
   it("calls checkApproachingDeadlines when notificationPort and notificationRepo are provided", async () => {
     const notificationPort: NotificationPort = { send: vi.fn().mockResolvedValue(undefined) };
@@ -590,45 +421,6 @@ describe("runProcessingCycle", () => {
 
     expect(deps.deadlineRepo.findByDateRange).not.toHaveBeenCalled();
     expect(result.notificationsSent).toBe(0);
-  });
-
-  it("survives notification send failures gracefully", async () => {
-    const item1 = makeItem("item-1");
-    const cls1 = makeClassification("item-1", {
-      category: "urgent" as Category,
-      priority: 1 as Priority,
-    });
-
-    const notificationPort: NotificationPort = {
-      send: vi.fn().mockRejectedValue(new Error("notification failure")),
-    };
-
-    const deps = createDeps({ notificationPort });
-    vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
-    vi.mocked(deps.llmPort.classify).mockResolvedValue({
-      category: "urgent" as Category,
-      priority: 1 as Priority,
-      summary: "Critical",
-      actionItems: [],
-      followUpNeeded: false,
-      deadlines: [],
-    });
-    vi.mocked(deps.classificationRepo.create).mockReturnValue(cls1);
-    vi.mocked(deps.inboundItemRepo.markClassified).mockReturnValue(undefined);
-    vi.mocked(deps.deadlineRepo.findByInboundItemId).mockReturnValue([]);
-    vi.mocked(deps.actionLogRepo.findByResourceAndType).mockReturnValue(null);
-    vi.mocked(deps.actionLogRepo.create).mockReturnValue(
-      makeActionEntry({ resourceId: "item-1" }),
-    );
-
-    const result = await runProcessingCycle(deps, defaultOptions());
-
-    // Should NOT crash — classification should still succeed
-    expect(result.classification.classified).toBe(1);
-    expect(deps.logger.error).toHaveBeenCalledWith(
-      "Failed to send urgent_item notification",
-      expect.objectContaining({ itemId: "item-1" }),
-    );
   });
 
   it("includes notificationsSent in summary even when zero", async () => {
