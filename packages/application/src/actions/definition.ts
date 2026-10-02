@@ -43,6 +43,8 @@ export interface ExecuteContext<I, R> {
   actor: ActorContext;
   executorRequestId: string;
   writers: ActionWriters;
+  /** Aborted when the definition's timeout passes (spec §10.4); pass it to every writer call. */
+  signal: AbortSignal;
   heartbeat: () => void;
   now: Date;
 }
@@ -64,6 +66,11 @@ export interface Verification {
   checks: CheckResult[];
   /** The check that decides whether the effect exists at all. */
   effectCheckId: string;
+  /**
+   * Undo data derived from the verification read, used only when the executor's outcome was
+   * unknown and so recorded none. Omit it when the read cannot show the effect is exactly Oneon's.
+   */
+  undoData?: JsonObject | null;
 }
 
 export interface UndoContext<I, R> {

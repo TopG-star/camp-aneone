@@ -88,14 +88,14 @@ export class GCalHttpClient {
   async insertEvent(
     calendarId: string,
     body: GCalEventWriteBody,
-    options: { sendUpdates: SendUpdates } = { sendUpdates: "none" },
+    options: { sendUpdates: SendUpdates; signal?: AbortSignal } = { sendUpdates: "none" },
   ): Promise<GCalEventResource> {
     const url = new URL(`${BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events`);
     url.searchParams.set("sendUpdates", options.sendUpdates);
     const response = await this.request(
       url,
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
-      { retry: false },
+      { retry: false, signal: options.signal },
     );
     return (await response.json()) as GCalEventResource;
   }
@@ -104,7 +104,7 @@ export class GCalHttpClient {
     calendarId: string,
     eventId: string,
     body: Partial<GCalEventWriteBody>,
-    options?: { ifMatch?: string; sendUpdates?: SendUpdates },
+    options?: { ifMatch?: string; sendUpdates?: SendUpdates; signal?: AbortSignal },
   ): Promise<GCalEventResource> {
     const url = this.eventUrl(calendarId, eventId);
     if (options?.sendUpdates) url.searchParams.set("sendUpdates", options.sendUpdates);
@@ -113,7 +113,7 @@ export class GCalHttpClient {
     const response = await this.request(
       url,
       { method: "PATCH", headers, body: JSON.stringify(body) },
-      { retry: !options?.ifMatch },
+      { retry: !options?.ifMatch, signal: options?.signal },
     );
     return (await response.json()) as GCalEventResource;
   }
@@ -121,20 +121,32 @@ export class GCalHttpClient {
   async deleteEvent(
     calendarId: string,
     eventId: string,
-    options: { ifMatch: string; sendUpdates: SendUpdates },
+    options: { ifMatch: string; sendUpdates: SendUpdates; signal?: AbortSignal },
   ): Promise<void> {
     const url = this.eventUrl(calendarId, eventId);
     url.searchParams.set("sendUpdates", options.sendUpdates);
-    await this.request(url, { method: "DELETE", headers: { "If-Match": options.ifMatch } }, { retry: false });
+    await this.request(url, { method: "DELETE", headers: { "If-Match": options.ifMatch } }, { retry: false, signal: options.signal });
   }
 
   private eventUrl(calendarId: string, eventId: string): URL {
     return new URL(`${BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`);
   }
 
-  private async request(url: URL, init?: RequestInit, options: { retry: boolean } = { retry: true }): Promise<Response> {
+  /**
+   * `options.signal` is the caller's abort signal (an action executor's timeout, spec §10.4). The
+   * request aborts on whichever comes first, so the client's own timeout never outlives the caller's.
+   */
+  private async request(
+    url: URL,
+    init?: RequestInit,
+    options: { retry: boolean; signal?: AbortSignal } = { retry: true },
+  ): Promise<Response> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const external = options.signal;
+    const abortFromCaller = () => controller.abort();
+    if (external?.aborted) controller.abort();
+    else external?.addEventListener("abort", abortFromCaller, { once: true });
 
     const attempt = async (): Promise<Response> => {
       let token: string;
@@ -162,6 +174,7 @@ export class GCalHttpClient {
       return response;
     } finally {
       clearTimeout(timeout);
+      external?.removeEventListener("abort", abortFromCaller);
     }
   }
 }

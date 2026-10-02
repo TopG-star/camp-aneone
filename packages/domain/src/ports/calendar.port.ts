@@ -37,16 +37,17 @@ export interface CalendarReader {
 /**
  * Only action executors receive a CalendarWriter (spec §5, enforced in Task 16).
  * Errors are ExternalCallError with a definite or unknown outcome.
+ * `signal` (spec §10.4) aborts the in-flight request; an aborted write is an unknown outcome.
  */
 export interface CalendarWriter {
   create(
     event: CalendarEventDraft,
-    options: { eventId: string; sendUpdates: CalendarSendUpdates },
+    options: { eventId: string; sendUpdates: CalendarSendUpdates; signal?: AbortSignal },
   ): Promise<CalendarEvent>;
   update(
     id: string,
     changes: Partial<CalendarEventDraft>,
-    options: { ifMatch: string; sendUpdates: CalendarSendUpdates },
+    options: { ifMatch: string; sendUpdates: CalendarSendUpdates; signal?: AbortSignal },
   ): Promise<CalendarEvent>;
-  remove(id: string, options: { ifMatch: string; sendUpdates: CalendarSendUpdates }): Promise<void>;
+  remove(id: string, options: { ifMatch: string; sendUpdates: CalendarSendUpdates; signal?: AbortSignal }): Promise<void>;
 }

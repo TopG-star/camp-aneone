@@ -99,10 +99,10 @@ export const createReminderDefinition: ActionDefinition<CreateReminderInput, Cre
   riskFor: (_resolved, floorRisk) => floorRisk,
   describe: (resolved) => `Add an all-day reminder "${resolved.event.title}" on ${formatDay(resolved.event.start)} to your calendar.`,
 
-  async execute({ resolved, writers, executorRequestId }) {
+  async execute({ resolved, writers, executorRequestId, signal }) {
     if (!writers.calendar) return { kind: "definite_failure", code: "calendar_not_connected", message: "Google Calendar is not connected." };
     try {
-      const event = await writers.calendar.create(resolved.event, { eventId: executorRequestId, sendUpdates: "none" });
+      const event = await writers.calendar.create(resolved.event, { eventId: executorRequestId, sendUpdates: "none", signal });
       return {
         kind: "succeeded",
         result: { eventId: event.id, etag: event.etag ?? null },
@@ -117,14 +117,14 @@ export const createReminderDefinition: ActionDefinition<CreateReminderInput, Cre
     if (!readers.calendar) throw new Error("Google Calendar is not connected");
     const eventId = typeof result?.eventId === "string" ? result.eventId : executorRequestId;
     const event = await readers.calendar.getEvent(eventId);
-    return {
-      effectCheckId: "event_exists",
-      checks: [
-        { id: "event_exists", passed: event !== null, expected: eventId, actual: event?.id ?? null },
-        { id: "all_day_on_due_date", passed: !!event && event.allDay && event.start === resolved.event.start, expected: resolved.event.start, actual: event?.start ?? null },
-        { id: "title_matches", passed: event?.title === resolved.event.title, expected: resolved.event.title, actual: event?.title ?? null },
-      ],
-    };
+    const checks = [
+      { id: "event_exists", passed: event !== null, expected: eventId, actual: event?.id ?? null },
+      { id: "all_day_on_due_date", passed: !!event && event.allDay && event.start === resolved.event.start, expected: resolved.event.start, actual: event?.start ?? null },
+      { id: "title_matches", passed: event?.title === resolved.event.title, expected: resolved.event.title, actual: event?.title ?? null },
+    ];
+    // Only when the event is exactly as Oneon wrote it is its current version ours to undo.
+    const ours = !!event?.etag && checks.every((c) => c.passed);
+    return { effectCheckId: "event_exists", checks, undoData: ours ? { eventId, versionAfter: event!.etag! } : null };
   },
 
   undo: {

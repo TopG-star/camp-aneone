@@ -52,7 +52,7 @@ describe("update_calendar_event", () => {
     const input = def.inputSchema.parse({ eventId: "ev1", title: "Deep work" });
     const r = await def.resolve({ input, actor, readers, now: NOW });
     if (!r.ok) throw new Error();
-    const outcome = await def.execute!({ instanceId: "a1", input, resolved: r.resolved, actor, executorRequestId: "req1", writers, heartbeat: () => {}, now: NOW });
+    const outcome = await def.execute!({ instanceId: "a1", input, resolved: r.resolved, actor, executorRequestId: "req1", writers, signal: new AbortController().signal, heartbeat: () => {}, now: NOW });
     if (outcome.kind !== "succeeded") throw new Error(outcome.kind);
     expect((await def.postconditions!({ input, resolved: r.resolved, result: outcome.result, executorRequestId: "req1", readers })).checks.every((c) => c.passed)).toBe(true);
     const ctx = { input, resolved: r.resolved, result: outcome.result, undo: outcome.undoData!, readers, writers };
@@ -68,7 +68,7 @@ describe("update_calendar_event", () => {
     const r = await def.resolve({ input, actor, readers, now: NOW });
     if (!r.ok) throw new Error();
     cal.editElsewhere("ev1", { location: "Room 2" });
-    const outcome = await def.execute!({ instanceId: "a1", input, resolved: r.resolved, actor, executorRequestId: "req1", writers, heartbeat: () => {}, now: NOW });
+    const outcome = await def.execute!({ instanceId: "a1", input, resolved: r.resolved, actor, executorRequestId: "req1", writers, signal: new AbortController().signal, heartbeat: () => {}, now: NOW });
     expect(outcome).toMatchObject({ kind: "definite_failure", code: "changed_since" });
   });
 
@@ -77,7 +77,7 @@ describe("update_calendar_event", () => {
     const input = def.inputSchema.parse({ eventId: "ev1", title: "Deep work" });
     const r = await def.resolve({ input, actor, readers, now: NOW });
     if (!r.ok) throw new Error();
-    const outcome = await def.execute!({ instanceId: "a1", input, resolved: r.resolved, actor, executorRequestId: "req1", writers, heartbeat: () => {}, now: NOW });
+    const outcome = await def.execute!({ instanceId: "a1", input, resolved: r.resolved, actor, executorRequestId: "req1", writers, signal: new AbortController().signal, heartbeat: () => {}, now: NOW });
     if (outcome.kind !== "succeeded") throw new Error();
     cal.editElsewhere("ev1", { title: "Edited by me" });
     const checks = await def.undo!.preconditions({ input, resolved: r.resolved, result: outcome.result, undo: outcome.undoData!, readers, writers });

@@ -200,6 +200,9 @@ async function executeApproved(
     executorRequestId,
   });
 
+  // The definition's timeout is the only deadline for the write (spec §10.2, §10.4): it aborts the
+  // in-flight request. An aborted request may still have been applied, so the outcome is unknown.
+  const abort = new AbortController();
   let outcome: ExecutionOutcome;
   try {
     outcome = await withTimeout(
@@ -210,11 +213,15 @@ async function executeApproved(
         actor,
         executorRequestId,
         writers: caps.writers,
+        signal: abort.signal,
         heartbeat: () => deps.repo.recordHeartbeat(executing.id, deps.clock().toISOString()),
         now,
       }),
       def.executionTimeoutMs,
-      () => ({ kind: "unknown", code: "timeout", message: `No response within ${def.executionTimeoutMs} ms` }),
+      () => {
+        abort.abort();
+        return { kind: "unknown", code: "timeout", message: `No response within ${def.executionTimeoutMs} ms` };
+      },
     );
   } catch (error) {
     outcome = fromExternalError(error);
@@ -255,17 +262,30 @@ async function verify(
     deps.logger.warn("Verification could not read the outcome; the sweeper will retry", { actionId: instance.id, error: String(error) });
     return instance;
   }
-  const { checks, effectCheckId } = verification;
+  const { checks, effectCheckId, undoData } = verification;
   const effect = checks.find((c) => c.id === effectCheckId);
   const data = { checks } as unknown as JsonObject;
   if (!effect?.passed) {
+    // After an unknown outcome the write may still land (a request Google accepted just as it was
+    // aborted). "failed" means no effect, so wait until the recovery threshold has passed; the
+    // sweeper re-verifies stuck `verifying` actions (spec §7.2, §7.4).
+    if (instance.error?.stage === "execution") {
+      const startedAt = Date.parse(instance.executionStartedAt ?? instance.updatedAt);
+      if (deps.clock().getTime() < startedAt + def.recoveryThresholdMs) {
+        deps.logger.info("Effect not visible yet after an unknown outcome; will check again", { actionId: instance.id });
+        return instance;
+      }
+    }
     return move(deps, instance, "failed", SYSTEM, data, {
       error: { code: "effect_absent", message: "The change was not found after execution.", stage: "verification" },
     });
   }
-  if (checks.every((c) => c.passed)) return move(deps, instance, "completed", SYSTEM, data, { error: null });
+  // After an unknown outcome the executor recorded no undo data; take it from the verification read.
+  const undo = instance.undo === null && undoData ? { undo: undoData } : {};
+  if (checks.every((c) => c.passed)) return move(deps, instance, "completed", SYSTEM, data, { error: null, ...undo });
   const failedIds = checks.filter((c) => !c.passed).map((c) => c.id).join(", ");
   return move(deps, instance, "partially_completed", SYSTEM, data, {
     error: { code: "checks_failed", message: `Some checks failed: ${failedIds}`, stage: "verification" },
+    ...undo,
   });
 }

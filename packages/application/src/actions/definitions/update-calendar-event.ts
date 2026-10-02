@@ -117,13 +117,14 @@ export const updateCalendarEventDefinition: ActionDefinition<UpdateCalendarEvent
       : base;
   },
 
-  async execute({ input, resolved, writers }) {
+  async execute({ input, resolved, writers, signal }) {
     if (!writers.calendar) return { kind: "definite_failure", code: "calendar_not_connected", message: "Google Calendar is not connected." };
     if (!resolved.versionBefore) return { kind: "definite_failure", code: "missing_version", message: "Google did not report the event's version." };
     try {
       const event = await writers.calendar.update(input.eventId, resolved.changes, {
         ifMatch: resolved.versionBefore,
         sendUpdates: resolved.sendUpdates,
+        signal,
       });
       return {
         kind: "succeeded",
@@ -144,17 +145,32 @@ export const updateCalendarEventDefinition: ActionDefinition<UpdateCalendarEvent
   async postconditions({ input, resolved, readers }) {
     if (!readers.calendar) throw new Error("Google Calendar is not connected");
     const event = await readers.calendar.getEvent(input.eventId);
+    const fieldChecks = Object.entries(resolved.changes).map(([k, v]) => ({
+      id: `${k}_match`,
+      passed: !!event && sameField(k, event[k as Field], v),
+      expected: v,
+      actual: event ? event[k as Field] : null,
+    }));
+    // Spec §9.7: the effect is "changed fields match". The event existed before, so its
+    // existence says nothing about whether the change landed.
+    const applied = event !== null && fieldChecks.every((c) => c.passed);
     return {
-      effectCheckId: "event_exists",
+      effectCheckId: "changes_applied",
       checks: [
         { id: "event_exists", passed: event !== null, expected: input.eventId, actual: event?.id ?? null },
-        ...Object.entries(resolved.changes).map(([k, v]) => ({
-          id: `${k}_match`,
-          passed: !!event && sameField(k, event[k as Field], v),
-          expected: v,
-          actual: event ? event[k as Field] : null,
-        })),
+        ...fieldChecks,
+        { id: "changes_applied", passed: applied },
       ],
+      undoData:
+        applied && event!.etag
+          ? {
+              eventId: input.eventId,
+              previous: resolved.previous,
+              versionBefore: resolved.versionBefore,
+              versionAfter: event!.etag,
+              sendUpdates: resolved.sendUpdates,
+            }
+          : null,
     };
   },
 

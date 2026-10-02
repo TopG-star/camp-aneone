@@ -86,10 +86,10 @@ export const createCalendarEventDefinition: ActionDefinition<CreateCalendarEvent
       : `${base}.`;
   },
 
-  async execute({ resolved, writers, executorRequestId }) {
+  async execute({ resolved, writers, executorRequestId, signal }) {
     if (!writers.calendar) return { kind: "definite_failure", code: "calendar_not_connected", message: "Google Calendar is not connected." };
     try {
-      const event = await writers.calendar.create(resolved.event, { eventId: executorRequestId, sendUpdates: resolved.sendUpdates });
+      const event = await writers.calendar.create(resolved.event, { eventId: executorRequestId, sendUpdates: resolved.sendUpdates, signal });
       return {
         kind: "succeeded",
         result: { eventId: event.id, etag: event.etag ?? null },
@@ -110,15 +110,19 @@ export const createCalendarEventDefinition: ActionDefinition<CreateCalendarEvent
       expected: resolved.event[key],
       actual: event?.[key] ?? null,
     });
+    const checks = [
+      { id: "event_exists", passed: event !== null, expected: eventId, actual: event?.id ?? null },
+      field("title"),
+      field("start"),
+      field("end"),
+      field("attendees"),
+    ];
+    // Only when the event is exactly as Oneon wrote it is its current version ours to undo.
+    const ours = !!event?.etag && checks.every((c) => c.passed);
     return {
       effectCheckId: "event_exists",
-      checks: [
-        { id: "event_exists", passed: event !== null, expected: eventId, actual: event?.id ?? null },
-        field("title"),
-        field("start"),
-        field("end"),
-        field("attendees"),
-      ],
+      checks,
+      undoData: ours ? { eventId, versionAfter: event!.etag!, sendUpdates: resolved.sendUpdates } : null,
     };
   },
 

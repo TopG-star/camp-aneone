@@ -99,6 +99,32 @@ describe("GoogleCalendarAdapter writer", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["create", "update", "remove"] as const)("aborts an in-flight %s when the caller's signal aborts, reporting unknown", async (op) => {
+    let seen: AbortSignal | undefined;
+    fetchMock.mockImplementation((_url: string, init: RequestInit) => {
+      seen = init.signal ?? undefined;
+      return new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new DOMException("This operation was aborted", "AbortError")));
+      });
+    });
+    const controller = new AbortController();
+    const a = adapter();
+    const pending =
+      op === "create"
+        ? a.create(
+            { title: "t", start: "2026-10-07T10:00:00Z", end: "2026-10-07T11:00:00Z", allDay: false, description: null, attendees: [], location: null },
+            { eventId: "abc123", sendUpdates: "none", signal: controller.signal },
+          )
+        : op === "update"
+          ? a.update("abc123", { title: "New" }, { ifMatch: '"v1"', sendUpdates: "none", signal: controller.signal })
+          : a.remove("abc123", { ifMatch: '"v1"', sendUpdates: "none", signal: controller.signal });
+    const error = pending.catch((e: unknown) => e);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    controller.abort();
+    expect(await error).toMatchObject({ outcome: "unknown", code: "google_unreachable" });
+    expect(seen?.aborted).toBe(true);
+  });
+
   it("maps a network failure to unknown", async () => {
     fetchMock.mockRejectedValue(new TypeError("fetch failed"));
     const error = await adapter().remove("abc123", { ifMatch: '"v1"', sendUpdates: "none" }).catch((e: unknown) => e);

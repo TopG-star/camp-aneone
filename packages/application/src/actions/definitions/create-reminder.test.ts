@@ -62,7 +62,7 @@ describe("create_reminder resolve, execute, verify, undo", () => {
     const { cal, readers, writers } = setup();
     const r = await def.resolve({ input, actor, readers, now: NOW });
     if (!r.ok) throw new Error("resolve failed");
-    const outcome = await def.execute!({ instanceId: "a1", input, resolved: r.resolved, actor, executorRequestId: "req1", writers, heartbeat: () => {}, now: NOW });
+    const outcome = await def.execute!({ instanceId: "a1", input, resolved: r.resolved, actor, executorRequestId: "req1", writers, signal: new AbortController().signal, heartbeat: () => {}, now: NOW });
     expect(outcome).toEqual({ kind: "succeeded", result: { eventId: "req1", etag: '"v1"' }, undoData: { eventId: "req1", versionAfter: '"v1"' } });
 
     const v = await def.postconditions!({ input, resolved: r.resolved, result: { eventId: "req1" }, executorRequestId: "req1", readers });
@@ -82,6 +82,8 @@ describe("create_reminder resolve, execute, verify, undo", () => {
     await cal.writer.create(r.resolved.event, { eventId: "req1", sendUpdates: "none" });
     const v = await def.postconditions!({ input, resolved: r.resolved, result: null, executorRequestId: "req1", readers });
     expect(v.checks.find((c) => c.id === v.effectCheckId)!.passed).toBe(true);
+    // I2: the verification read supplies the undo data the unknown outcome could not.
+    expect(v.undoData).toEqual({ eventId: "req1", versionAfter: '"v1"' });
     void writers;
   });
 
@@ -89,7 +91,7 @@ describe("create_reminder resolve, execute, verify, undo", () => {
     const { cal, readers, writers } = setup();
     const r = await def.resolve({ input, actor, readers, now: NOW });
     if (!r.ok) throw new Error();
-    await def.execute!({ instanceId: "a1", input, resolved: r.resolved, actor, executorRequestId: "req1", writers, heartbeat: () => {}, now: NOW });
+    await def.execute!({ instanceId: "a1", input, resolved: r.resolved, actor, executorRequestId: "req1", writers, signal: new AbortController().signal, heartbeat: () => {}, now: NOW });
     cal.editElsewhere("req1", { description: "my notes" });
     const checks = await def.undo!.preconditions({ input, resolved: r.resolved, result: { eventId: "req1" }, undo: { eventId: "req1", versionAfter: '"v1"' }, readers, writers });
     expect(checks.find((c) => !c.passed)).toMatchObject({ id: "unchanged_since", failureCode: "changed_since" });

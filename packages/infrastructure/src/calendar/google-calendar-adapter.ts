@@ -68,11 +68,11 @@ export class GoogleCalendarAdapter implements CalendarPort, CalendarReader, Cale
 
   async create(
     event: CalendarEventDraft,
-    options: { eventId: string; sendUpdates: CalendarSendUpdates },
+    options: { eventId: string; sendUpdates: CalendarSendUpdates; signal?: AbortSignal },
   ): Promise<CalendarEvent> {
     const body = { ...mapToWriteBody(event), id: options.eventId };
     const created = await this.client
-      .insertEvent(this.calendarId, body, { sendUpdates: options.sendUpdates })
+      .insertEvent(this.calendarId, body, { sendUpdates: options.sendUpdates, signal: options.signal })
       .catch((error: unknown) => mapWriteError(error, "create"));
     this.cache.invalidateByPrefix(this.cachePrefix);
     return mapToDomain(created);
@@ -81,7 +81,7 @@ export class GoogleCalendarAdapter implements CalendarPort, CalendarReader, Cale
   async update(
     id: string,
     changes: Partial<CalendarEventDraft>,
-    options: { ifMatch: string; sendUpdates: CalendarSendUpdates },
+    options: { ifMatch: string; sendUpdates: CalendarSendUpdates; signal?: AbortSignal },
   ): Promise<CalendarEvent> {
     const updated = await this.client
       .patchEvent(this.calendarId, id, mapToPartialWriteBody(changes), options)
@@ -90,7 +90,7 @@ export class GoogleCalendarAdapter implements CalendarPort, CalendarReader, Cale
     return mapToDomain(updated);
   }
 
-  async remove(id: string, options: { ifMatch: string; sendUpdates: CalendarSendUpdates }): Promise<void> {
+  async remove(id: string, options: { ifMatch: string; sendUpdates: CalendarSendUpdates; signal?: AbortSignal }): Promise<void> {
     await this.client.deleteEvent(this.calendarId, id, options).catch((error: unknown) => mapWriteError(error, "remove"));
     this.cache.invalidateByPrefix(this.cachePrefix);
   }

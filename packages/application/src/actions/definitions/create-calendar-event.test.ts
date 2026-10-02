@@ -68,7 +68,7 @@ describe("create_calendar_event execute, verify, undo", () => {
     const parsed = def.inputSchema.parse({ ...base, attendees: ["ama@example.com"] });
     const r = await def.resolve({ input: parsed, actor, readers, now: NOW });
     if (!r.ok) throw new Error();
-    const outcome = await def.execute!({ instanceId: "a1", input: parsed, resolved: r.resolved, actor, executorRequestId: "req1", writers, heartbeat: () => {}, now: NOW });
+    const outcome = await def.execute!({ instanceId: "a1", input: parsed, resolved: r.resolved, actor, executorRequestId: "req1", writers, signal: new AbortController().signal, heartbeat: () => {}, now: NOW });
     expect(outcome.kind).toBe("succeeded");
     const v = await def.postconditions!({ input: parsed, resolved: r.resolved, result: { eventId: "req1" }, executorRequestId: "req1", readers });
     expect(v.checks.every((c) => c.passed)).toBe(true);
@@ -84,7 +84,7 @@ describe("create_calendar_event execute, verify, undo", () => {
     const parsed = def.inputSchema.parse({ ...base, attendees: ["ama@example.com"] });
     const r = await def.resolve({ input: parsed, actor, readers, now: NOW });
     if (!r.ok) throw new Error();
-    await def.execute!({ instanceId: "a1", input: parsed, resolved: r.resolved, actor, executorRequestId: "req1", writers, heartbeat: () => {}, now: NOW });
+    await def.execute!({ instanceId: "a1", input: parsed, resolved: r.resolved, actor, executorRequestId: "req1", writers, signal: new AbortController().signal, heartbeat: () => {}, now: NOW });
     cal.editElsewhere("req1", { attendees: [] });
     const v = await def.postconditions!({ input: parsed, resolved: r.resolved, result: { eventId: "req1" }, executorRequestId: "req1", readers });
     expect(v.checks.find((c) => c.id === v.effectCheckId)!.passed).toBe(true);

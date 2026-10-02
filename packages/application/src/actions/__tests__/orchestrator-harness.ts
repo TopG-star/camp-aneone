@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 import { z } from "zod";
-import { personalActor, type Logger } from "@oneon/domain";
+import { personalActor, type ActionCapabilities, type Logger } from "@oneon/domain";
 import { createActionRegistry } from "../registry.js";
 import { createActionOrchestrator } from "../orchestrator/index.js";
 import type { ActionDefinition, AnyActionDefinition } from "../definition.js";
@@ -55,7 +55,10 @@ export function probeDefinition(overrides: Partial<ActionDefinition<any, any>> =
   };
 }
 
-export function harness(definitions: AnyActionDefinition[] = [probeDefinition()]) {
+export function harness(
+  definitions: AnyActionDefinition[] = [probeDefinition()],
+  options: { capabilities?: () => ActionCapabilities } = {},
+) {
   let now = new Date("2026-10-01T12:00:00.000Z");
   const clock = () => now;
   const repo = new InMemoryActionRepo(clock);
@@ -69,7 +72,7 @@ export function harness(definitions: AnyActionDefinition[] = [probeDefinition()]
     registry: createActionRegistry(definitions),
     repo,
     configRepo,
-    capabilities: () => ({ readers: fakeReaders(), writers: fakeWriters() }),
+    capabilities: options.capabilities ?? (() => ({ readers: fakeReaders(), writers: fakeWriters() })),
     notifier,
     logger: silentLogger,
     clock,

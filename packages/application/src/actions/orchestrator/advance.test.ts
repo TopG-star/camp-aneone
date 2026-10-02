@@ -93,16 +93,18 @@ describe("advance: execution and verification", () => {
     expect(instance.error).toBeNull();
   });
 
-  it("treats a thrown error as unknown, then fails if the effect is absent", async () => {
-    const instance = await created(
-      harness([
-        probeDefinition({
-          execute: async () => { throw new TypeError("socket hang up"); },
-          postconditions: async () => ({ effectCheckId: "effect", checks: [{ id: "effect", passed: false }] }),
-        }),
-      ]),
-    );
-    expect(instance).toMatchObject({ status: "failed", error: { code: "effect_absent", stage: "verification" } });
+  it("treats a thrown error as unknown, then fails if the effect is still absent after the recovery threshold", async () => {
+    const h = harness([
+      probeDefinition({
+        execute: async () => { throw new TypeError("socket hang up"); },
+        postconditions: async () => ({ effectCheckId: "effect", checks: [{ id: "effect", passed: false }] }),
+      }),
+    ]);
+    const instance = await created(h);
+    expect(instance).toMatchObject({ status: "verifying", error: { code: "unexpected_error", stage: "execution" } });
+    h.advanceClock(2 * 60_000);
+    await h.orchestrator.sweep("u1");
+    expect(h.repo.findById("u1", instance.id)).toMatchObject({ status: "failed", error: { code: "effect_absent", stage: "verification" } });
   });
 
   it("maps ExternalCallError outcomes", async () => {
@@ -157,5 +159,67 @@ describe("advance: re-check before execution", () => {
     const outcome = await h.orchestrator.requestAction(request());
     if (outcome.kind === "refused") throw new Error();
     expect(outcome.instance).toMatchObject({ status: "failed", error: { code: "approval_required_now", stage: "recheck" } });
+  });
+});
+
+describe("advance: a timed-out write may still land (C1)", () => {
+  const MIN = 60_000;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it("aborts the executor's signal when the definition's timeout passes", async () => {
+    let signal: AbortSignal | undefined;
+    const instance = await created(
+      harness([probeDefinition({ executionTimeoutMs: 10, execute: (ctx) => { signal = ctx.signal; return new Promise(() => {}); } })]),
+    );
+    expect(instance.status).toBe("completed");
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("stays in verifying instead of failing, then completes once the late effect is visible", async () => {
+    // Reviewer's scenario: the executor resolves after the timeout and the effect lands afterwards.
+    let landed = false;
+    const h = harness([
+      probeDefinition({
+        executionTimeoutMs: 20,
+        recoveryThresholdMs: 5 * MIN,
+        execute: () => new Promise((resolve) => setTimeout(() => { landed = true; resolve({ kind: "succeeded", result: {}, undoData: null }); }, 80)),
+        postconditions: async () => ({ effectCheckId: "effect", checks: [{ id: "effect", passed: landed }] }),
+      }),
+    ]);
+    const instance = await created(h);
+    expect(instance).toMatchObject({ status: "verifying", error: { code: "timeout", stage: "execution" } });
+
+    // Re-verifying before the recovery threshold still must not conclude "no effect".
+    h.advanceClock(1 * MIN);
+    expect((await h.orchestrator.advance("u1", instance.id)).status).toBe("verifying");
+
+    await sleep(100);
+    expect(landed).toBe(true);
+    h.advanceClock(5 * MIN);
+    await h.orchestrator.sweep("u1");
+    expect(h.repo.findById("u1", instance.id)!.status).toBe("completed");
+    expect(h.repo.trail(instance.id)).not.toContain("failed");
+  });
+
+  it("records failed / effect_absent only once the recovery threshold has passed", async () => {
+    const h = harness([
+      probeDefinition({
+        recoveryThresholdMs: 5 * MIN,
+        execute: async () => ({ kind: "unknown", code: "google_unavailable", message: "503" }),
+        postconditions: async () => ({ effectCheckId: "effect", checks: [{ id: "effect", passed: false }] }),
+      }),
+    ]);
+    const instance = await created(h);
+    expect(instance.status).toBe("verifying");
+    h.advanceClock(6 * MIN);
+    await h.orchestrator.sweep("u1");
+    expect(h.repo.findById("u1", instance.id)).toMatchObject({ status: "failed", error: { code: "effect_absent", stage: "verification" } });
+  });
+
+  it("still fails at once when the executor succeeded but the effect is absent", async () => {
+    const instance = await created(
+      harness([probeDefinition({ postconditions: async () => ({ effectCheckId: "effect", checks: [{ id: "effect", passed: false }] }) })]),
+    );
+    expect(instance).toMatchObject({ status: "failed", error: { code: "effect_absent" } });
   });
 });

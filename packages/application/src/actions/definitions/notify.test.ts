@@ -19,7 +19,7 @@ describe("notify", () => {
     const deliver = vi.fn().mockResolvedValue({ status: "delivered", notificationId: "n-1" });
     const outcome = await def.execute!({
       instanceId: "a1", input, resolved: { metrics: {}, eventType: "urgent_item" }, actor,
-      executorRequestId: "a1", writers: fakeWriters({ notifications: { deliver } }), heartbeat: () => {}, now: NOW,
+      executorRequestId: "a1", writers: fakeWriters({ notifications: { deliver } }), signal: new AbortController().signal, heartbeat: () => {}, now: NOW,
     });
     expect(outcome).toEqual({ kind: "succeeded", result: { notificationId: "n-1" }, undoData: null });
     expect(deliver).toHaveBeenCalledWith({ eventType: "urgent_item", title: input.title, body: input.body, deepLink: "/items/i1", userId: "u1" });
@@ -29,7 +29,7 @@ describe("notify", () => {
     const deliver = vi.fn().mockResolvedValue({ status: "suppressed", reason: "quiet_hours" });
     const outcome = await def.execute!({
       instanceId: "a1", input, resolved: { metrics: {}, eventType: "urgent_item" }, actor,
-      executorRequestId: "a1", writers: fakeWriters({ notifications: { deliver } }), heartbeat: () => {}, now: NOW,
+      executorRequestId: "a1", writers: fakeWriters({ notifications: { deliver } }), signal: new AbortController().signal, heartbeat: () => {}, now: NOW,
     });
     expect(outcome).toEqual({ kind: "definite_failure", code: "suppressed_quiet_hours", message: "Not sent: quiet hours began" });
   });
