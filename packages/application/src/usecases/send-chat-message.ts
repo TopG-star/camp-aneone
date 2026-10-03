@@ -1,27 +1,25 @@
 import type {
   ConversationMessage,
   ConversationRepository,
-  IntentExtractionPort,
-  SynthesisPort,
   Logger,
 } from "@oneon/domain";
 import type { ToolRegistry } from "../tools/tool-registry.js";
 import type { ChatActionRef } from "../actions/chat-action-tools.js";
 import { truncateHistory } from "./truncate-history.js";
 import { runIntentLoop } from "./run-intent-loop.js";
-import { synthesizeResponse } from "./synthesize-response.js";
+import { synthesizeResponse, DATA_WITHHELD_NOTE } from "./synthesize-response.js";
+import type { ModelGateway } from "../ai-boundary/gateway.js";
 import type {
   ChatContextStats,
   ChatPersonaProfile,
-} from "./build-chat-context.js";
+} from "../ai-boundary/requests/chat.js";
 
 // ── Types ────────────────────────────────────────────────────
 
 export interface SendChatMessageDeps {
   conversationRepo: ConversationRepository;
   logger: Logger;
-  intentExtractor?: IntentExtractionPort | null;
-  synthesizer?: SynthesisPort | null;
+  modelGateway?: ModelGateway | null;
   toolRegistry?: ToolRegistry | null;
   stats?: ChatContextStats | null;
 }
@@ -87,13 +85,15 @@ export async function sendChatMessage(
   let actions: ChatActionRef[] = [];
 
   const canRunLoop =
-    deps.intentExtractor != null &&
+    deps.modelGateway != null &&
     deps.toolRegistry != null;
 
   if (canRunLoop) {
+    // One turn per message: placeholders stay the same across the intent rounds and the reply.
+    const turn = deps.modelGateway!.beginTurn({ kind: "personal", identityId: userId }, { channel: "web" });
     const loopResult = await runIntentLoop(
       {
-        intentExtractor: deps.intentExtractor!,
+        modelTurn: turn,
         toolRegistry: deps.toolRegistry!,
         logger,
       },
@@ -119,34 +119,33 @@ export async function sendChatMessage(
       toolCallsJson = JSON.stringify(loopResult.toolCalls);
     }
 
-    // Synthesize final response
-    if (deps.synthesizer != null && loopResult.toolCalls.length > 0) {
+    // Tool summaries are the fallback whenever the model reply is not available.
+    const summaryFallback = (): string => {
+      const summaries = loopResult.toolCalls
+        .filter((tc) => tc.result !== null)
+        .map((tc) => tc.result!.summary);
+      return summaries.length > 0 ? summaries.join("\n") : FALLBACK_RESPONSE;
+    };
+
+    if (loopResult.toolCalls.length > 0) {
       try {
-        const synthesisResult = await synthesizeResponse(
-          { synthesizer: deps.synthesizer, logger },
+        const synthesis = await synthesizeResponse(
+          { modelTurn: turn, logger },
           {
             userMessage: input.message,
             toolCalls: loopResult.toolCalls,
             history: truncateHistory(history, TRUNCATE_OPTIONS),
             persona: input.persona ?? null,
-          }
+            registry: deps.toolRegistry!,
+          },
         );
-        response = synthesisResult.response.answer;
-        logger.debug("Synthesis completed", synthesisResult.meta);
-      } catch (error) {
-        logger.error("Synthesis failed, using tool summaries as fallback", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        const summaries = loopResult.toolCalls
-          .filter((tc) => tc.result !== null)
-          .map((tc) => tc.result!.summary);
-        response = summaries.length > 0 ? summaries.join("\n") : FALLBACK_RESPONSE;
+        const note = synthesis.dataWithheld ? `\n\n${DATA_WITHHELD_NOTE}` : "";
+        response = (synthesis.kind === "answered" ? synthesis.response.answer : summaryFallback()) + note;
+      } catch {
+        // Never log the error text: it may carry prompt or tool data.
+        logger.error("Chat reply failed unexpectedly, using tool summaries as fallback");
+        response = summaryFallback();
       }
-    } else if (loopResult.toolCalls.length > 0) {
-      const summaries = loopResult.toolCalls
-        .filter((tc) => tc.result !== null)
-        .map((tc) => tc.result!.summary);
-      response = summaries.length > 0 ? summaries.join("\n") : FALLBACK_RESPONSE;
     } else {
       response = FALLBACK_RESPONSE;
     }

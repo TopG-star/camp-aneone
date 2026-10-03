@@ -30,13 +30,11 @@ export {
   type TruncateHistoryOptions,
 } from "./truncate-history.js";
 
-export {
-  buildChatContext,
-  type BuildChatContextInput,
-  type ChatContextStats,
-  type ChatPersonaProfile,
-  type ToolCallRecord,
-} from "./build-chat-context.js";
+export type {
+  ChatContextStats,
+  ChatPersonaProfile,
+  ToolCallRecord,
+} from "../ai-boundary/requests/chat.js";
 
 export {
   runIntentLoop,
@@ -49,12 +47,10 @@ export {
 
 export {
   synthesizeResponse,
-  buildSynthesisPrompt,
-  extractJsonFromText,
   synthesisResponseSchema,
-  SYNTHESIS_PROMPT_VERSION,
+  DATA_WITHHELD_NOTE,
   type SynthesisResponse,
-  type BuildSynthesisPromptInput,
+  type SynthesizeResponseInput,
   type SynthesizeResponseDeps,
   type SynthesizeResponseResult,
 } from "./synthesize-response.js";

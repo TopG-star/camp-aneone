@@ -1,13 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { z } from "zod";
 import type {
   ConversationMessage,
   ConversationRepository,
-  IntentExtractionPort,
-  SynthesisPort,
   Logger,
 } from "@oneon/domain";
 import { sendChatMessage, type SendChatMessageDeps } from "./send-chat-message.js";
-import type { ToolRegistry, ToolExecutionResult } from "../tools/tool-registry.js";
+import { createToolRegistry, type ToolRegistry, type ToolExecutionResult } from "../tools/tool-registry.js";
+import { createModelGateway, type GatewayResult } from "../ai-boundary/gateway.js";
+import { Fingerprinter } from "../ai-boundary/fingerprints.js";
+import { InMemoryChoices, InMemoryModelAudit } from "../ai-boundary/__tests__/in-memory-audit.js";
+import { FakeProvider } from "../ai-boundary/__tests__/fake-provider.js";
+import { answered, denied, stubGateway } from "../ai-boundary/__tests__/stub-gateway.js";
+import { DATA_WITHHELD_NOTE } from "./synthesize-response.js";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -46,23 +51,32 @@ function createMockLogger(): Logger {
   };
 }
 
+/**
+ * A stub gateway: intent rounds answer from the script, and the chat reply is
+ * denied unless a reply is given (the tool summaries then become the response).
+ */
 function createMockExtractor(
-  intents: Array<Array<{ tool: string; parameters: Record<string, unknown> }>>
-): IntentExtractionPort {
+  intents: Array<Array<{ tool: string; parameters: Record<string, unknown> }>>,
+  reply: GatewayResult = denied("required_part_withheld"),
+) {
   let callIndex = 0;
-  return {
-    extractIntents: vi.fn(async () => {
-      const response = intents[callIndex] ?? [];
-      callIndex++;
-      return response;
-    }),
-  };
+  return stubGateway({
+    respond: (req) => (req.purpose === "chat_reply" ? reply : answered(intents[callIndex++] ?? [])),
+  });
 }
 
-function createMockSynthesizer(response: string): SynthesisPort {
-  return {
-    synthesize: vi.fn(async () => response),
-  };
+/** A real registry with one tool that returns `result`, declaring only the action as model-visible. */
+function registryWithTool(name: string, result: { data: unknown; summary: string }) {
+  const registry = createToolRegistry();
+  registry.register({
+    name,
+    version: "1",
+    description: name,
+    inputSchema: z.object({}).passthrough(),
+    output: { fields: { action: { class: "D1" } }, summaryClass: "D2" },
+    execute: () => result,
+  });
+  return registry;
 }
 
 function createMockToolRegistry(
@@ -117,7 +131,7 @@ describe("sendChatMessage", () => {
     deps = { conversationRepo, logger };
   });
 
-  // ── Placeholder path (no intentExtractor) ──────────────────
+  // ── Placeholder path (no modelGateway) ──────────────────
 
   it("persists the user message via conversationRepo.append", async () => {
     await sendChatMessage(deps, { message: "Hello Oneon", userId: "user-A" });
@@ -131,7 +145,7 @@ describe("sendChatMessage", () => {
     );
   });
 
-  it("persists the assistant placeholder response when no extractor", async () => {
+  it("persists the assistant placeholder response when no gateway", async () => {
     await sendChatMessage(deps, { message: "Hello", userId: "user-A" });
 
     const calls = (conversationRepo.append as ReturnType<typeof vi.fn>).mock.calls;
@@ -256,12 +270,14 @@ describe("sendChatMessage", () => {
 
   // ── Intent Loop Path ──────────────────────────────────────
 
-  it("runs intent loop when intentExtractor and toolRegistry provided", async () => {
-    const extractor = createMockExtractor([
-      [{ tool: "list_deadlines", parameters: {} }],
-      [{ tool: "none", parameters: {} }],
-    ]);
-    const synthesizer = createMockSynthesizer("You have 2 deadlines this week.");
+  it("runs intent loop when modelGateway and toolRegistry provided", async () => {
+    const extractor = createMockExtractor(
+      [
+        [{ tool: "list_deadlines", parameters: {} }],
+        [{ tool: "none", parameters: {} }],
+      ],
+      answered({ answer: "You have 2 deadlines this week.", usedTools: ["list_deadlines"] }),
+    );
     const registry = createMockToolRegistry({
       list_deadlines: makeToolResult("list_deadlines", "Found 2 deadlines"),
     });
@@ -270,16 +286,14 @@ describe("sendChatMessage", () => {
       {
         conversationRepo,
         logger,
-        intentExtractor: extractor,
-        synthesizer,
+        modelGateway: extractor,
         toolRegistry: registry,
       },
       { message: "What deadlines do I have?", now: NOW, timezone: "UTC", userId: "user-A" }
     );
 
     expect(result.response).toBe("You have 2 deadlines this week.");
-    expect(extractor.extractIntents).toHaveBeenCalled();
-    expect(synthesizer.synthesize).toHaveBeenCalled();
+    expect(extractor.requests.map((r) => r.purpose)).toEqual(["intent_extraction", "intent_extraction", "chat_reply"]);
   });
 
   it("passes the turn id to tools and returns the actions they requested", async () => {
@@ -293,7 +307,7 @@ describe("sendChatMessage", () => {
     });
 
     const result = await sendChatMessage(
-      { conversationRepo, logger, intentExtractor: extractor, toolRegistry: registry },
+      { conversationRepo, logger, modelGateway: extractor, toolRegistry: registry },
       { message: "Set up a call", now: NOW, userId: "user-A" }
     );
 
@@ -317,7 +331,7 @@ describe("sendChatMessage", () => {
       {
         conversationRepo,
         logger,
-        intentExtractor: extractor,
+        modelGateway: extractor,
         toolRegistry: registry,
       },
       { message: "test", now: NOW, userId: "user-A" }
@@ -332,16 +346,14 @@ describe("sendChatMessage", () => {
     expect(parsed[0].tool).toBe("list_deadlines");
   });
 
-  it("falls back to tool summaries when synthesizer fails", async () => {
-    const extractor = createMockExtractor([
-      [{ tool: "list_deadlines", parameters: {} }],
-      [{ tool: "none", parameters: {} }],
-    ]);
-    const failingSynthesizer: SynthesisPort = {
-      synthesize: vi.fn(async () => {
-        throw new Error("LLM down");
-      }),
-    };
+  it("falls back to tool summaries when the chat reply fails", async () => {
+    const extractor = createMockExtractor(
+      [
+        [{ tool: "list_deadlines", parameters: {} }],
+        [{ tool: "none", parameters: {} }],
+      ],
+      { kind: "failed", message: "Model call failed", withheld: [], decisionId: "d" },
+    );
     const registry = createMockToolRegistry({
       list_deadlines: makeToolResult("list_deadlines", "Found 2 deadlines"),
     });
@@ -350,21 +362,73 @@ describe("sendChatMessage", () => {
       {
         conversationRepo,
         logger,
-        intentExtractor: extractor,
-        synthesizer: failingSynthesizer,
+        modelGateway: extractor,
         toolRegistry: registry,
       },
       { message: "test", now: NOW, userId: "user-A" }
     );
 
     expect(result.response).toBe("Found 2 deadlines");
-    expect(logger.error).toHaveBeenCalledWith(
-      expect.stringContaining("Synthesis failed"),
-      expect.anything()
-    );
+    expect(logger.warn).toHaveBeenCalledWith("Chat reply unavailable", { kind: "failed" });
   });
 
-  it("returns concatenated summaries when no synthesizer provided", async () => {
+  it("adds the withheld note to the summaries when the chat reply is denied", async () => {
+    const extractor = createMockExtractor([
+      [{ tool: "list_deadlines", parameters: {} }],
+      [{ tool: "none", parameters: {} }],
+    ]);
+    const registry = createMockToolRegistry({
+      list_deadlines: makeToolResult("list_deadlines", "Found 2 deadlines"),
+    });
+
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: extractor, toolRegistry: registry },
+      { message: "test", now: NOW, userId: "user-A" }
+    );
+
+    expect(result.response).toBe(`Found 2 deadlines\n\n${DATA_WITHHELD_NOTE}`);
+  });
+
+  it("adds the withheld note to an answer when tool data was withheld", async () => {
+    const reply: GatewayResult = {
+      ...answered({ answer: "Two deadlines.", usedTools: [] }),
+      withheld: [{ part: "record:tool:list_deadlines", reason: "above_limit" }],
+    };
+    const extractor = createMockExtractor(
+      [
+        [{ tool: "list_deadlines", parameters: {} }],
+        [{ tool: "none", parameters: {} }],
+      ],
+      reply,
+    );
+    const registry = createMockToolRegistry({
+      list_deadlines: makeToolResult("list_deadlines", "Found 2 deadlines"),
+    });
+
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: extractor, toolRegistry: registry },
+      { message: "test", now: NOW, userId: "user-A" }
+    );
+
+    expect(result.response).toBe(`Two deadlines.\n\n${DATA_WITHHELD_NOTE}`);
+  });
+
+  it("uses one turn per message for the intent rounds and the reply", async () => {
+    const beginTurn = vi.fn();
+    const inner = createMockExtractor([[{ tool: "list_deadlines", parameters: {} }], [{ tool: "none", parameters: {} }]]);
+    beginTurn.mockImplementation((ctx, opts) => inner.beginTurn(ctx, opts));
+    const registry = createMockToolRegistry({ list_deadlines: makeToolResult("list_deadlines", "ok") });
+
+    await sendChatMessage(
+      { conversationRepo, logger, modelGateway: { beginTurn }, toolRegistry: registry },
+      { message: "test", now: NOW, userId: "user-A" }
+    );
+
+    expect(beginTurn).toHaveBeenCalledTimes(1);
+    expect(beginTurn).toHaveBeenCalledWith({ kind: "personal", identityId: "user-A" }, { channel: "web" });
+  });
+
+  it("returns concatenated summaries when the chat reply is denied", async () => {
     const extractor = createMockExtractor([
       [
         { tool: "list_deadlines", parameters: {} },
@@ -381,7 +445,7 @@ describe("sendChatMessage", () => {
       {
         conversationRepo,
         logger,
-        intentExtractor: extractor,
+        modelGateway: extractor,
         toolRegistry: registry,
       },
       { message: "test", now: NOW, userId: "user-A" }
@@ -407,7 +471,7 @@ describe("sendChatMessage", () => {
       {
         conversationRepo,
         logger,
-        intentExtractor: extractor,
+        modelGateway: extractor,
         toolRegistry: registry,
       },
       { message: "Show my uber transactions", now: NOW, userId: "user-A" }
@@ -444,7 +508,7 @@ describe("sendChatMessage", () => {
       {
         conversationRepo,
         logger,
-        intentExtractor: extractor,
+        modelGateway: extractor,
         toolRegistry: registry,
       },
       { message: "Find Teams updates about release", now: NOW, userId: "user-A" },
@@ -488,7 +552,7 @@ describe("sendChatMessage", () => {
       {
         conversationRepo,
         logger,
-        intentExtractor: extractor,
+        modelGateway: extractor,
         toolRegistry: registry,
       },
       { message: "Draft my plan in my usual style", now: NOW, userId: "user-A" },
@@ -515,12 +579,66 @@ describe("sendChatMessage", () => {
       {
         conversationRepo,
         logger,
-        intentExtractor: extractor,
+        modelGateway: extractor,
         toolRegistry: registry,
       },
       { message: "test", now: NOW, userId: "user-A" }
     );
 
     expect(result.response).toContain("trouble processing");
+  });
+
+  it("still answers at the D1 default, leaving earlier assistant replies out (Review Focus 1)", async () => {
+    const provider = new FakeProvider("deepseek", [JSON.stringify([{ tool: "none", parameters: {} }])]);
+    const gateway = createModelGateway({
+      providers: { deepseek: provider },
+      overrides: new Map(),
+      routing: { standard: "deepseek", reasoning: "deepseek" },
+      models: { deepseek: { standard: "s", reasoning: "r" } },
+      choices: new InMemoryChoices(),
+      audit: new InMemoryModelAudit(),
+      fingerprinter: new Fingerprinter("k".repeat(32), 1),
+      maxRetries: 0,
+      timeouts: { standard: 1000, reasoning: 1000 },
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    const seeded: ConversationMessage[] = [
+      { id: "h1", userId: "u1", conversationId: "user:u1", role: "user", content: "hi", toolCalls: null, createdAt: "2026-04-16T08:00:00Z" },
+      { id: "h2", userId: "u1", conversationId: "user:u1", role: "assistant", content: "Ama owes you GHS 400", toolCalls: null, createdAt: "2026-04-16T08:00:01Z" },
+    ];
+    conversationRepo = createMockConversationRepo({ findRecentByConversation: vi.fn().mockReturnValue(seeded) });
+
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: createMockToolRegistry({}) },
+      { message: "anything new?", now: NOW, userId: "u1" }
+    );
+
+    expect(result.response.length).toBeGreaterThan(0);
+    expect(provider.calls[0].user).not.toContain("Ama owes you");
+    expect(provider.calls[0].user).toContain("anything new?");
+  });
+
+  it("still lists the requested action when the chat reply is denied (Review Focus 7)", async () => {
+    const action = { id: "a1", actionType: "create_calendar_event", label: "Create calendar event", status: "awaiting_approval" };
+    let intentRounds = 0;
+    const gateway = stubGateway({
+      respond: (req) =>
+        req.purpose === "chat_reply"
+          ? denied("required_part_withheld")
+          : answered(intentRounds++ === 0 ? [{ tool: "create_calendar_event", parameters: { title: "Sync" } }] : [{ tool: "none", parameters: {} }]),
+    });
+
+    const result = await sendChatMessage(
+      {
+        conversationRepo,
+        logger,
+        modelGateway: gateway,
+        toolRegistry: registryWithTool("create_calendar_event", { data: { action }, summary: "Waiting for your approval in Action Center." }),
+      },
+      { message: "book a sync", now: NOW, userId: "u1" }
+    );
+
+    expect(result.actions).toEqual([action]);
+    expect(result.response).toContain("Waiting for your approval");
   });
 });

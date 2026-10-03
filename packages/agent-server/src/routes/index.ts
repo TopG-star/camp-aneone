@@ -345,8 +345,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
         deadlineRepo: container.deadlineRepo,
         instanceRepo: container.actions.instanceRepo,
         userProfileRepo: container.userProfileRepo,
-        intentExtractor: container.llmPort,
-        synthesizer: container.llmPort,
+        modelGateway: container.modelGateway,
         toolRegistry,
       })
     );

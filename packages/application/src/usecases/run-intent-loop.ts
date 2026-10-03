@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { IntentExtractionPort, Logger } from "@oneon/domain";
+import type { Logger } from "@oneon/domain";
 import type { ToolRegistry } from "../tools/tool-registry.js";
+import type { ModelTurn } from "../ai-boundary/gateway.js";
 import {
-  buildChatContext,
+  buildIntentRequest,
   type ChatPersonaProfile,
   type ChatContextStats,
   type ToolCallRecord,
-} from "./build-chat-context.js";
+} from "../ai-boundary/requests/chat.js";
 import type { ConversationMessage } from "@oneon/domain";
 
 // ── Constants ────────────────────────────────────────────────
@@ -26,7 +27,7 @@ export const intentOutputSchema = z.array(
 
 // ── Types ────────────────────────────────────────────────────
 
-export type { ToolCallRecord } from "./build-chat-context.js";
+export type { ToolCallRecord } from "../ai-boundary/requests/chat.js";
 
 export type StopReason =
   | "no_intents"
@@ -34,10 +35,11 @@ export type StopReason =
   | "max_rounds"
   | "all_tools_failed"
   | "invalid_intents"
-  | "extraction_error";
+  | "extraction_error"
+  | "policy_denied";
 
 export interface RunIntentLoopDeps {
-  intentExtractor: IntentExtractionPort;
+  modelTurn: ModelTurn;
   toolRegistry: ToolRegistry;
   logger: Logger;
 }
@@ -67,7 +69,7 @@ export async function runIntentLoop(
   deps: RunIntentLoopDeps,
   input: RunIntentLoopInput
 ): Promise<RunIntentLoopResult> {
-  const { intentExtractor, toolRegistry, logger } = deps;
+  const { modelTurn, toolRegistry, logger } = deps;
   const { userMessage, history, toolDefinitions, stats, now, timezone, persona, userId, turnId } = input;
 
   const allToolCalls: ToolCallRecord[] = [];
@@ -76,29 +78,31 @@ export async function runIntentLoop(
   let stopped: StopReason = "max_rounds";
 
   for (let round = 1; round <= MAX_ROUNDS; round++) {
-    // Build context with growing action history
-    const context = buildChatContext({
-      stats,
-      history,
-      toolDefinitions,
-      executedActions: allToolCalls,
-      now,
-      timezone,
-      persona,
-    });
-
-    // Extract intents from LLM
-    let rawIntents: Array<{ tool: string; parameters: Record<string, unknown> }>;
-    try {
-      rawIntents = await intentExtractor.extractIntents(userMessage, context);
-    } catch (error) {
-      logger.error("Intent extraction failed", {
-        round,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    // One request per round; the gateway decides what the model may see.
+    const result = await modelTurn.call(
+      buildIntentRequest({
+        userMessage,
+        history,
+        toolDefinitions,
+        stats,
+        now,
+        timezone,
+        persona: persona ?? null,
+        toolCalls: allToolCalls,
+        registry: toolRegistry,
+      }),
+    );
+    if (result.kind === "denied") {
+      logger.info("Intent extraction denied by AI data policy", { round, reason: result.reason });
+      stopped = "policy_denied";
+      return { toolCalls: allToolCalls, rounds: round, stopped };
+    }
+    if (result.kind !== "answered") {
+      logger.error("Intent extraction failed", { round, kind: result.kind });
       stopped = "extraction_error";
       return { toolCalls: allToolCalls, rounds: round, stopped };
     }
+    const rawIntents = result.json;
 
     // Refinement #2: Zod-validate intent output
     const parsed = intentOutputSchema.safeParse(rawIntents);
@@ -127,13 +131,20 @@ export async function runIntentLoop(
     // Execute each intent
     let anyToolExecuted = false;
 
-    for (const intent of intents) {
+    for (let intent of intents) {
+      // Placeholders the model used go back to real values before anything else sees the parameters.
+      const restored = modelTurn.restoreToolParams(intent.parameters);
+      if (!restored.ok) {
+        logger.warn("Model used an unknown placeholder", { tool: intent.tool, token: restored.token, round });
+        continue;
+      }
+      intent = { ...intent, parameters: restored.params };
+
       // Refinement #3: dedupe by tool + serialized parameters
       const dedupeKey = `${intent.tool}:${JSON.stringify(intent.parameters)}`;
       if (executedSet.has(dedupeKey)) {
         logger.warn("Duplicate tool call skipped", {
           tool: intent.tool,
-          parameters: intent.parameters,
           round,
         });
         continue;
