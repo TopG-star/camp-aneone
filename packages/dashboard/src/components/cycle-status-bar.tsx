@@ -1,8 +1,11 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
+import type { ActionView } from "@oneon/contracts";
 import { useCycleErrors, useCycleStatus } from "@/lib/hooks";
-import { apiFetch } from "@/lib/api";
+import { ApiError, apiFetch } from "@/lib/api";
+import { statusLabel as actionStatusLabel } from "@/lib/action-ui";
 import { cn } from "@/lib/utils";
 
 interface CycleStatus {
@@ -33,11 +36,6 @@ interface CycleErrorGroup {
   key: string;
   label: string;
   entries: CycleErrorItem[];
-}
-
-interface RetryExecutionResponse {
-  executionStatus: "succeeded" | "failed";
-  errorJson?: string | null;
 }
 
 interface RetryFeedback {
@@ -85,26 +83,13 @@ export function CycleStatusBar() {
     });
 
     try {
-      const result = await apiFetch<RetryExecutionResponse>(`/api/actions/${actionId}/retry-execution`, { method: "POST" });
+      // A failed action is tried again as a new, linked action (spec §11.2).
+      const retried = await apiFetch<ActionView>(`/api/actions/${actionId}/retry`, { method: "POST" }, { redirectOnAuth: false });
       await Promise.all([mutate(), mutateErrors()]);
-
-      if (result.executionStatus === "succeeded") {
-        setRetryFeedbackByActionId((current) => ({
-          ...current,
-          [actionId]: {
-            kind: "success",
-            message: "Retry succeeded. Action executed.",
-          },
-        }));
-      } else {
-        setRetryFeedbackByActionId((current) => ({
-          ...current,
-          [actionId]: {
-            kind: "error",
-            message: parseRetryErrorMessage(result.errorJson),
-          },
-        }));
-      }
+      setRetryFeedbackByActionId((current) => ({
+        ...current,
+        [actionId]: { kind: "success", message: `Tried again: ${actionStatusLabel(retried.status)}.` },
+      }));
     } catch (error) {
       setRetryFeedbackByActionId((current) => ({
         ...current,
@@ -119,6 +104,15 @@ export function CycleStatusBar() {
   };
 
   if (error) {
+    // A 401/403 means the session ended, not that the agent is down.
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+      return (
+        <Link href="/auth/signin" className="flex items-center gap-2 text-label-md text-amber-600 dark:text-amber-400">
+          <span className="h-2 w-2 rounded-full bg-amber-500" />
+          Signed out · Sign in
+        </Link>
+      );
+    }
     return (
       <div className="flex items-center gap-2 text-label-md text-red-500">
         <span className="h-2 w-2 rounded-full bg-red-500" />
@@ -282,7 +276,7 @@ export function CycleStatusBar() {
                               onClick={() => void handleRetryExecution(entry.actionId!)}
                               className="text-label-sm font-medium text-on-surface underline-offset-4 hover:underline disabled:cursor-not-allowed disabled:opacity-60 dark:text-dark-on-surface"
                             >
-                              {retryingActionId === entry.actionId ? "Retrying..." : "Retry execution"}
+                              {retryingActionId === entry.actionId ? "Trying again..." : "Try again"}
                             </button>
                           </div>
                           {retryFeedbackByActionId[entry.actionId] && (
@@ -338,21 +332,6 @@ function groupCycleErrors(errors: CycleErrorItem[]): CycleErrorGroup[] {
 
 function toLabel(value: string): string {
   return value.replace(/_/g, " ");
-}
-
-function parseRetryErrorMessage(errorJson?: string | null): string {
-  if (!errorJson) return "Retry failed. Check the action detail for context.";
-
-  try {
-    const parsed = JSON.parse(errorJson) as { message?: unknown };
-    if (typeof parsed.message === "string" && parsed.message.trim().length > 0) {
-      return `Retry failed: ${parsed.message}`;
-    }
-  } catch {
-    // ignore parse errors and fallback below
-  }
-
-  return `Retry failed: ${errorJson}`;
 }
 
 function formatRelative(iso: string): string {

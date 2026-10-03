@@ -46,14 +46,16 @@ function applyResolvedTheme(resolvedMode: ResolvedThemeMode): void {
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [mode, setMode] = useState<ThemeMode>(() => {
-    if (typeof window === "undefined") {
-      return "system";
-    }
+  // Start from the same values the server renders with, then read the browser's saved choice
+  // after hydration; reading it during render made the server and client HTML differ.
+  const [mode, setMode] = useState<ThemeMode>("system");
+  const [prefersDark, setPrefersDark] = useState<boolean>(true);
+  const [hydrated, setHydrated] = useState(false);
 
-    return readStoredThemeMode(window.localStorage);
-  });
-  const [prefersDark, setPrefersDark] = useState<boolean>(() => readSystemPrefersDark());
+  useEffect(() => {
+    setMode(readStoredThemeMode(window.localStorage));
+    setHydrated(true);
+  }, []);
 
   const resolvedMode = resolveThemeMode(mode, prefersDark);
 
@@ -83,11 +85,12 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    // Before hydration the layout's inline script has already applied the saved theme; don't
+    // overwrite it (or the saved choice) with the server's "system" default.
+    if (!hydrated) return;
     applyResolvedTheme(resolvedMode);
-    if (typeof window !== "undefined") {
-      persistThemeMode(window.localStorage, mode);
-    }
-  }, [mode, resolvedMode]);
+    persistThemeMode(window.localStorage, mode);
+  }, [hydrated, mode, resolvedMode]);
 
   const toggleMode = useCallback(() => {
     setMode((currentMode) => {

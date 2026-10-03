@@ -53,6 +53,10 @@ for (const message of retiredEnvWarnings(process.env)) logger.warn(message);
 
 // ── Express App ──────────────────────────────────────────────
 const app = express();
+// Requests normally arrive through the dashboard's /api proxy (and the tunnel in front of it),
+// which set X-Forwarded-For. Trust only proxies on loopback and private networks, so rate limits
+// key on the real client while a client connecting directly can't spoof its address.
+app.set("trust proxy", "loopback, linklocal, uniquelocal");
 
 // ── Security Middleware ──────────────────────────────────────
 app.use(helmet({

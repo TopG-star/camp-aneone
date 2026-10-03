@@ -10,7 +10,7 @@ import { getMotionDelayClass } from "@/lib/motion-utils";
 
 interface Notification {
   id: string;
-  type: string;
+  eventType: string;
   title: string;
   body: string;
   read: boolean;
@@ -133,8 +133,8 @@ export default function NotificationsPage() {
                           {n.title}
                         </p>
                         <div className="flex flex-wrap items-center gap-2">
-                          <Badge variant={typeVariant(n.type)}>
-                            {n.type.replace(/_/g, " ")}
+                          <Badge variant={typeVariant(n.eventType)}>
+                            {n.eventType.replace(/_/g, " ")}
                           </Badge>
                           <span className="text-label-sm meta-copy">
                             {new Date(n.createdAt).toLocaleString("en-US", {
