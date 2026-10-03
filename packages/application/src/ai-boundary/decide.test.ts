@@ -186,3 +186,52 @@ describe("decide — stage 3 (requirements) and part allowlist", () => {
     });
   });
 });
+
+describe("decide — fail closed on out-of-domain input and unscannable free text", () => {
+  const chatD1 = (parts: Parameters<typeof record>[1], extra: Parameters<typeof record>[1] = []) =>
+    decide(input({ context: tenant, choiceLimit: "D1", request: { purpose: "chat_reply", parts: [userMessage("who owes us?"), record("tool:receivables", [...parts, ...extra])] } }));
+  const bad = (v: unknown) => v as never;
+
+  it("withholds a field whose class is missing, with an alert", () => {
+    const d = chatD1([row([field("daysOverdue", "D1", 1), { name: "x", value: 1 } as never])]);
+    expect(d.withheld).toContainEqual({ part: "record:tool:receivables", row: 0, field: "x", reason: "unclassified" });
+    expect(d.alert).toBe(true);
+  });
+  it("withholds a field whose class is not a data class", () => {
+    const d = chatD1([row([field("daysOverdue", "D1", 1), field("x", bad("d3"), 1)])]);
+    expect(d.withheld).toContainEqual({ part: "record:tool:receivables", row: 0, field: "x", reason: "unclassified" });
+  });
+  it("treats an invalid rowClass as D3 and withholds the row", () => {
+    const d = chatD1([row([field("daysOverdue", "D1", 1)], bad("d3"))]);
+    expect(d.withheld).toContainEqual({ part: "record:tool:receivables", row: 0, reason: "row_d3" });
+  });
+  it("suppresses an aggregate whose count is NaN", () => {
+    const d = chatD1([row([field("total", "D2", 9, { aggregate: { count: NaN, classIfSafe: "D1" } })])]);
+    expect(d.withheld).toContainEqual({ part: "record:tool:receivables", row: 0, field: "total", reason: "group_too_small" });
+  });
+  it("withholds a history turn with an unknown role", () => {
+    const d = decide(
+      input({ choiceLimit: "D1", request: { purpose: "chat_reply", parts: [{ kind: "history", turns: [{ role: bad("system"), text: "hi" }] }, userMessage("ok")] } }),
+    );
+    expect(d.withheld).toContainEqual({ part: "history", turn: 0, reason: "above_limit" });
+  });
+  it("denies a D4 secret hidden in a non-string free-text field", () => {
+    const d = chatD1([row([field("daysOverdue", "D1", 1), field("notes", "D1", ["sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123"], { freeText: true })])]);
+    expect(d).toMatchObject({ kind: "deny", reason: "secret_present", scannerHits: { D4: 1 } });
+  });
+  it("withholds a non-string free-text field as above_limit", () => {
+    const d = chatD1([row([field("daysOverdue", "D1", 1), field("notes", "D1", ["call ABC"], { freeText: true })])]);
+    expect(d.withheld).toContainEqual({ part: "record:tool:receivables", row: 0, field: "notes", reason: "above_limit" });
+  });
+  it("R1 does not count an empty user message", () => {
+    for (const text of ["", "   "]) {
+      expect(decide(input({ request: { purpose: "chat_reply", parts: [userMessage(text)] } }))).toMatchObject({ kind: "deny", reason: "required_part_withheld" });
+    }
+  });
+  it("R1 does not count a user message that is fully removed as D3", () => {
+    expect(decide(input({ request: { purpose: "chat_reply", parts: [userMessage("diagnosed with HIV")] } }))).toMatchObject({
+      kind: "deny",
+      reason: "required_part_withheld",
+    });
+  });
+});

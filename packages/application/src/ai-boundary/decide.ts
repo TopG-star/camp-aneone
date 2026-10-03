@@ -1,7 +1,7 @@
 import { PURPOSES, allowedFieldsFor, type PurposeDefinition } from "./purposes/index.js";
 import { providerLimit, type ProviderEntry, type ProviderOverride } from "./providers.js";
-import { scanText } from "./scanner.js";
-import { classRank, higherClass, lowerClass, partKey, type ClassifiedField, type DataClass, type ModelContext, type ModelRequest } from "./types.js";
+import { REMOVED_MARKER, removeSpans, scanText } from "./scanner.js";
+import { classRank, higherClass, lowerClass, partKey, type ClassifiedField, isDataClass, type DataClass, type ModelContext, type ModelRequest } from "./types.js";
 
 export type DenyReason = "unknown_purpose" | "provider_unavailable" | "invalid_context" | "secret_present" | "required_part_withheld";
 export type WithheldReason =
@@ -59,7 +59,13 @@ export interface DecideInput {
   purposes?: Record<string, PurposeDefinition>;
 }
 
-const within = (c: DataClass, limit: DataClass) => classRank(c) <= classRank(limit);
+// Fails closed: a class outside the known set has rank -1 and is never within a limit.
+const within = (c: DataClass, limit: DataClass) => {
+  const r = classRank(c);
+  return r >= 0 && r <= classRank(limit);
+};
+// A present but invalid rowClass is treated as D3.
+const validRowClass = (c: DataClass | undefined): DataClass | undefined => (c === undefined ? undefined : isDataClass(c) ? c : "D3");
 
 function contextComplete(ctx: ModelContext): boolean {
   if (!ctx.identityId) return false;
@@ -100,10 +106,21 @@ export function decide(input: DecideInput): Decision {
     if (part.kind === "history") part.turns.forEach((t, i) => scanFree(`${p}:${i}`, t.text));
     if (part.kind === "record") {
       part.rows.forEach((r, ri) => {
-        if (r.rowClass === "D4") secret = true;
+        if (validRowClass(r.rowClass) === "D4") secret = true;
         r.fields.forEach((f, fi) => {
           if (f.class === "D4") secret = true;
           if (f.freeText && typeof f.value === "string") scanFree(`${p}:${ri}:${fi}`, f.value);
+          else if (f.freeText) {
+            // Non-string free text cannot take D3 spans (withheld in stage 2), but a D4 secret inside it still denies the call.
+            const serialised = JSON.stringify(f.value);
+            if (serialised !== undefined) {
+              const result = scanText(serialised);
+              if (result.d4.length > 0) {
+                secret = true;
+                common.scannerHits.D4 += result.d4.length;
+              }
+            }
+          }
         });
       });
     }
@@ -140,7 +157,7 @@ export function decide(input: DecideInput): Decision {
           index: p,
           key,
           turns: part.turns.map((t, i) =>
-            within(HISTORY_CLASS[t.role], limit) ? sentWith(`${p}:${i}`) : withhold({ part: key, turn: i, reason: "above_limit" }),
+            HISTORY_CLASS[t.role] !== undefined && within(HISTORY_CLASS[t.role], limit) ? sentWith(`${p}:${i}`) : withhold({ part: key, turn: i, reason: "above_limit" }),
           ),
         };
       case "record": {
@@ -151,11 +168,12 @@ export function decide(input: DecideInput): Decision {
           return { index: p, key, rows: part.rows.map(() => ({ withheld: "not_allowed_for_purpose" as const, fields: [] })) };
         }
         const rows = part.rows.map((r, ri) => {
-          if (r.rowClass === "D3") {
+          const rowClass = validRowClass(r.rowClass);
+          if (rowClass === "D3") {
             common.withheld.push({ part: key, row: ri, reason: "row_d3" });
             return { withheld: "row_d3" as const, fields: [] };
           }
-          const fields = r.fields.map((f, fi) => fieldDisposition(f, r.rowClass, allowed, limit, def.minGroupSize, `${p}:${ri}:${fi}`, (reason) =>
+          const fields = r.fields.map((f, fi) => fieldDisposition(f, rowClass, allowed, limit, def.minGroupSize, `${p}:${ri}:${fi}`, (reason) =>
             withhold({ part: key, row: ri, field: f.name, reason }),
           ));
           return { fields };
@@ -175,13 +193,17 @@ export function decide(input: DecideInput): Decision {
     hold: (reason: WithheldReason) => FieldDisposition,
   ): FieldDisposition {
     if (allowed !== "declared" && !allowed.includes(f.name)) return hold("not_allowed_for_purpose"); // F1
-    if (f.class === null) return hold("unclassified"); // F2
+    if (!isDataClass(f.class)) return hold("unclassified"); // F2
     const effective = rowClass ? higherClass(f.class, rowClass) : f.class;
     if (effective === "D3") return hold("d3_never_sent"); // F3
-    if (within(effective, lim)) return f.freeText ? sentWith(scanKey) : { kind: "sent" }; // F4
+    if (within(effective, lim)) {
+      // F4
+      if (f.freeText && typeof f.value !== "string") return hold("above_limit"); // D3 spans cannot be applied
+      return f.freeText ? sentWith(scanKey) : { kind: "sent" };
+    }
     if (f.aggregate) {
       // F5 (aggregate)
-      if (f.aggregate.count < minGroup) return hold("group_too_small");
+      if (!(f.aggregate.count >= minGroup)) return hold("group_too_small");
       return within(f.aggregate.classIfSafe, lim) ? { kind: "aggregate" } : hold("above_limit");
     }
     if (f.entity && !f.freeText && within("D1", lim)) return { kind: "placeholder" }; // F5 (placeholder)
@@ -191,6 +213,8 @@ export function decide(input: DecideInput): Decision {
   // ── Stage 3 ──
   // A required key is either a bare part key (met when the part released anything) or
   // "record:<source>#<field>" (met when a non-withheld row released that named field).
+  const isEmptyAfterRemoval = (text: string, spans: Spans | undefined) =>
+    removeSpans(text, spans ?? []).split(REMOVED_MARKER).join("").trim() === "";
   const sentKeys = new Set<string>();
   const sentFieldKeys = new Set<string>();
   for (const outcome of parts) {
@@ -199,7 +223,7 @@ export function decide(input: DecideInput): Decision {
       outcome.disposition?.kind === "sent" ||
       (outcome.turns ?? []).some((t) => t.kind === "sent") ||
       (outcome.rows ?? []).some((r) => r.fields.some((f) => f.kind !== "withheld"));
-    if (sent) sentKeys.add(outcome.key);
+    if (sent && !(part.kind === "user_message" && isEmptyAfterRemoval(part.text, scans.get(`${outcome.index}`)))) sentKeys.add(outcome.key);
     if (part.kind === "record") {
       (outcome.rows ?? []).forEach((r, ri) => {
         if (r.withheld) return;
