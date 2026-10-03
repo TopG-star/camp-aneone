@@ -311,14 +311,14 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       }));
     }
 
-    // Daily briefing (requires synthesizer)
-    if (container.llmPort) {
+    // Daily briefing (requires the model gateway)
+    if (container.modelGateway) {
       toolRegistry.register(createDailyBriefingTool({
         classificationRepo: container.classificationRepo,
         inboundItemRepo: container.inboundItemRepo,
         deadlineRepo: container.deadlineRepo,
         instanceRepo: container.actions.instanceRepo,
-        synthesizer: container.llmPort,
+        modelGateway: container.modelGateway,
         calendarPort: container.calendarPort ?? undefined,
         resolveCalendarPort,
         logger: chatLogger,

@@ -4,17 +4,16 @@ import type {
   DeadlineRepository,
   CalendarPort,
   CalendarEvent,
-  SynthesisPort,
   Logger,
   Deadline,
 } from "@oneon/domain";
+import type { ModelGateway } from "../ai-boundary/gateway.js";
+import { buildBriefingRequest } from "../ai-boundary/requests/briefing.js";
 
 // ── Constants ────────────────────────────────────────────────
 
 const MAX_URGENT_PRIORITY = 2;
 const MAX_URGENT_ITEMS = 20;
-
-export const BRIEFING_PROMPT_VERSION = "1.0";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -52,7 +51,7 @@ export interface GenerateDailyBriefingDeps {
   inboundItemRepo: InboundItemRepository;
   deadlineRepo: DeadlineRepository;
   listPendingActions(): PendingActionSummary[];
-  synthesizer: SynthesisPort;
+  modelGateway: ModelGateway | null;
   calendarPort?: CalendarPort;
   resolveCalendarPort?: (userId: string) => CalendarPort | null;
   logger: Logger;
@@ -68,6 +67,8 @@ export interface GenerateDailyBriefingInput {
 export interface GenerateDailyBriefingResult {
   data: BriefingData;
   summary: string;
+  /** True when the gateway denied the AI summary under the user's AI data settings. */
+  aiWithheld: boolean;
 }
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -167,89 +168,6 @@ function addDaysToDateString(dateStr: string, days: number): string {
   const d = String(date.getUTCDate()).padStart(2, "0");
 
   return `${y}-${m}-${d}`;
-}
-
-// ── buildBriefingPrompt ──────────────────────────────────────
-
-export function buildBriefingPrompt(data: BriefingData): string {
-  const blocks: string[] = [];
-
-  blocks.push(
-    [
-      `You are a personal assistant generating a morning briefing for ${data.date}.`,
-      `promptVersion=${BRIEFING_PROMPT_VERSION}`,
-      "",
-      "Generate a concise, actionable briefing. Lead with the most time-sensitive items.",
-      "Use short paragraphs or bullet points. Be direct.",
-    ].join("\n")
-  );
-
-  // ── Calendar ──
-  const calendarLines: string[] = [`## Calendar (${data.calendar.status})`];
-  if (data.calendar.status === "not_connected") {
-    calendarLines.push("Calendar integration not yet configured.");
-  } else if (data.calendar.status === "error") {
-    calendarLines.push("Calendar data temporarily unavailable due to an error.");
-  } else if (data.calendar.events.length === 0) {
-    calendarLines.push("No events scheduled today.");
-  } else {
-    for (const evt of data.calendar.events) {
-      const loc = evt.location ? ` — ${evt.location}` : "";
-      if (evt.allDay) {
-        calendarLines.push(`- All day: ${evt.title}${loc}`);
-      } else {
-        const startTime = evt.start.slice(11, 16);
-        const endTime = evt.end.slice(11, 16);
-        calendarLines.push(`- ${startTime}–${endTime}: ${evt.title}${loc}`);
-      }
-    }
-  }
-  blocks.push(calendarLines.join("\n"));
-
-  // ── Urgent Items ──
-  const urgentLines: string[] = [
-    `## Urgent Items (${data.urgentItems.length})`,
-  ];
-  if (data.urgentItems.length === 0) {
-    urgentLines.push("No urgent items.");
-  } else {
-    for (const item of data.urgentItems) {
-      urgentLines.push(
-        `- [P${item.priority}] ${item.subject} (from: ${item.from}) — ${item.summary}`
-      );
-    }
-  }
-  blocks.push(urgentLines.join("\n"));
-
-  // ── Deadlines ──
-  const deadlineLines: string[] = [
-    `## Upcoming Deadlines (${data.deadlines.length}, next 7 days)`,
-  ];
-  if (data.deadlines.length === 0) {
-    deadlineLines.push("No upcoming deadlines.");
-  } else {
-    for (const dl of data.deadlines) {
-      deadlineLines.push(`- ${dl.dueDate}: ${dl.description} (${dl.status})`);
-    }
-  }
-  blocks.push(deadlineLines.join("\n"));
-
-  // ── Pending Actions ──
-  const actionLines: string[] = [
-    `## Pending Actions (${data.pendingActions.length} awaiting approval)`,
-  ];
-  if (data.pendingActions.length === 0) {
-    actionLines.push("No pending actions.");
-  } else {
-    for (const action of data.pendingActions) {
-      actionLines.push(
-        `- ${action.actionType} on ${action.resourceId} [${action.riskLevel}]`
-      );
-    }
-  }
-  blocks.push(actionLines.join("\n"));
-
-  return blocks.join("\n\n");
 }
 
 // ── Structured Fallback ──────────────────────────────────────
@@ -371,16 +289,18 @@ export async function generateDailyBriefing(
   };
 
   // ── 5. Synthesize ──
-  let summary: string;
-  try {
-    const prompt = buildBriefingPrompt(data);
-    summary = await deps.synthesizer.synthesize(prompt);
-  } catch (error) {
-    logger.warn("Briefing synthesis failed, using fallback", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    summary = buildFallbackSummary(data);
+  let summary = buildFallbackSummary(data);
+  let aiWithheld = false;
+  if (deps.modelGateway && input.userId) {
+    const result = await deps.modelGateway
+      .beginTurn({ kind: "personal", identityId: input.userId }, { channel: "briefing" })
+      .call(buildBriefingRequest(data));
+    if (result.kind === "answered") summary = result.text;
+    else if (result.kind === "denied") {
+      aiWithheld = true;
+      logger.info("Briefing AI summary withheld by policy", { reason: result.reason });
+    } else logger.warn("Briefing synthesis failed, using fallback", { kind: result.kind });
   }
 
-  return { data, summary };
+  return { data, summary, aiWithheld };
 }

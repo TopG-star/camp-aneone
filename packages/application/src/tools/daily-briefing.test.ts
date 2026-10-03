@@ -2,15 +2,16 @@ import { describe, it, expect, vi } from "vitest";
 import {
   createDailyBriefingTool,
   dailyBriefingSchema,
+  BRIEFING_WITHHELD_NOTE,
   type DailyBriefingDeps,
 } from "./daily-briefing.js";
 import type {
   ClassificationRepository,
   InboundItemRepository,
   DeadlineRepository,
-  SynthesisPort,
   Logger,
 } from "@oneon/domain";
+import { stubGateway, answered, denied } from "../ai-boundary/__tests__/stub-gateway.js";
 import type { ToolResult } from "./tool-registry.js";
 import { InMemoryActionRepo } from "../actions/__tests__/in-memory-repos.js";
 import { expectMatchesOutputSchema } from "./__tests__/output-contract.js";
@@ -52,16 +53,12 @@ function createToolDeps(overrides: Partial<DailyBriefingDeps> = {}): DailyBriefi
 
   const instanceRepo = new InMemoryActionRepo(() => new Date("2026-10-01T12:00:00Z"));
 
-  const synthesizer: SynthesisPort = {
-    synthesize: vi.fn(async () => "Your morning briefing."),
-  };
-
   return {
     classificationRepo,
     inboundItemRepo,
     deadlineRepo,
     instanceRepo,
-    synthesizer,
+    modelGateway: stubGateway({ respond: () => answered(null, "Your morning briefing.") }),
     logger: createMockLogger(),
     ...overrides,
   };
@@ -128,13 +125,20 @@ describe("createDailyBriefingTool", () => {
   });
 
   it("summary is the synthesized text, not JSON", async () => {
-    const synthesizer: SynthesisPort = {
-      synthesize: vi.fn(async () => "Good morning! Here is your day."),
-    };
-    const tool = createDailyBriefingTool(createToolDeps({ synthesizer }));
-    const result = await tool.execute({ timezone: "UTC" }) as ToolResult;
+    const modelGateway = stubGateway({ respond: () => answered(null, "Good morning! Here is your day.") });
+    const tool = createDailyBriefingTool(createToolDeps({ modelGateway }));
+    const result = await tool.execute({ timezone: "UTC", userId: "u1" }) as ToolResult;
 
     expect(result.summary).toBe("Good morning! Here is your day.");
+  });
+
+  it("appends the withheld note to the structured summary when the gateway denies", async () => {
+    const modelGateway = stubGateway({ respond: () => denied("required_part_withheld") });
+    const tool = createDailyBriefingTool(createToolDeps({ modelGateway }));
+    const result = await tool.execute({ timezone: "UTC", userId: "u1" }) as ToolResult;
+
+    expect(result.summary).toContain("Briefing for");
+    expect(result.summary.endsWith(BRIEFING_WITHHELD_NOTE)).toBe(true);
   });
 
   it("passes timezone through to the use case", async () => {
@@ -169,8 +173,7 @@ describe("createDailyBriefingTool", () => {
       instanceRepo.appendTransition({ actionId: id, expectedStatus: "proposed", toStatus: "validating", actor: { kind: "system" } });
       instanceRepo.appendTransition({ actionId: id, expectedStatus: "validating", toStatus: "awaiting_approval", actor: { kind: "system" } });
     }
-    const synthesize = vi.fn(async () => "ok");
-    const tool = createDailyBriefingTool(createToolDeps({ instanceRepo, synthesizer: { synthesize } }));
+    const tool = createDailyBriefingTool(createToolDeps({ instanceRepo, modelGateway: null }));
 
     const result = await tool.execute(dailyBriefingSchema.parse({ userId: "u1" })) as ToolResult;
     expect((result.data as { pendingActions: unknown[] }).pendingActions).toEqual([

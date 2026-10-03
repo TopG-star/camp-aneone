@@ -65,8 +65,6 @@ export {
 
 export {
   generateDailyBriefing,
-  buildBriefingPrompt,
-  BRIEFING_PROMPT_VERSION,
   type GenerateDailyBriefingDeps,
   type GenerateDailyBriefingInput,
   type GenerateDailyBriefingResult,

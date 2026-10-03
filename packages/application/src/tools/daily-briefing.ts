@@ -5,14 +5,16 @@ import type {
   DeadlineRepository,
   ActionInstanceRepository,
   CalendarPort,
-  SynthesisPort,
   Logger,
 } from "@oneon/domain";
+import type { ModelGateway } from "../ai-boundary/gateway.js";
 import type { ToolDefinition, ToolResult } from "./tool-registry.js";
 import {
   generateDailyBriefing,
   type GenerateDailyBriefingDeps,
 } from "../usecases/generate-daily-briefing.js";
+
+export const BRIEFING_WITHHELD_NOTE = "The AI summary was withheld under your AI data settings.";
 
 // ── Input Schema ─────────────────────────────────────────────
 
@@ -30,7 +32,7 @@ export interface DailyBriefingDeps {
   inboundItemRepo: InboundItemRepository;
   deadlineRepo: DeadlineRepository;
   instanceRepo: ActionInstanceRepository;
-  synthesizer: SynthesisPort;
+  modelGateway: ModelGateway | null;
   calendarPort?: CalendarPort;
   resolveCalendarPort?: (userId: string) => CalendarPort | null;
   logger: Logger;
@@ -64,7 +66,7 @@ export function createDailyBriefingTool(deps: DailyBriefingDeps): ToolDefinition
                 riskLevel: String((i.decision as { risk?: string } | null)?.risk ?? "L1"),
               }))
             : [],
-        synthesizer: deps.synthesizer,
+        modelGateway: deps.modelGateway,
         calendarPort: deps.calendarPort,
         resolveCalendarPort: deps.resolveCalendarPort,
         logger: deps.logger,
@@ -78,7 +80,9 @@ export function createDailyBriefingTool(deps: DailyBriefingDeps): ToolDefinition
 
       return {
         data: result.data,
-        summary: result.summary,
+        summary: result.aiWithheld ? `${result.summary}
+
+${BRIEFING_WITHHELD_NOTE}` : result.summary,
       };
     },
   };
