@@ -69,7 +69,7 @@ import { dirname } from "node:path";
 import type { BackgroundLoop } from "./background-loop.js";
 import { createActionsModule, type ActionsModule } from "./actions-wiring.js";
 import { createModelWiring } from "./model-wiring.js";
-import type { AiDataChoiceRepository, ModelAuditRepository, ModelGateway, ModelRouting } from "@oneon/application";
+import type { AiDataChoiceRepository, ModelAuditRepository, ModelGateway, ModelRouting, ProviderId, ProviderOverride } from "@oneon/application";
 
 export interface AppContainer {
   // ── Config ────────────────────────────────────────────────
@@ -101,6 +101,8 @@ export interface AppContainer {
   modelRouting: ModelRouting | null;
   aiDataChoices: AiDataChoiceRepository;
   modelAudit: ModelAuditRepository;
+  modelOverrides: Map<ProviderId, ProviderOverride>;
+  modelProviders: ProviderId[];
   calendarPort: CalendarPort | null;
   githubPort: GitHubPort | null;
   teamsPort: TeamsPort | null;
@@ -437,6 +439,8 @@ export function createContainer(env: Env): AppContainer {
     modelRouting: modelWiring.routing,
     aiDataChoices: modelWiring.choices,
     modelAudit: modelWiring.audit,
+    modelOverrides: modelWiring.overrides,
+    modelProviders: modelWiring.configuredProviders,
     calendarPort,
     githubPort,
     teamsPort,

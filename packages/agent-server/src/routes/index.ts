@@ -14,6 +14,7 @@ import { createDevFinanceRouter } from "./dev-finance.route.js";
 import { createInboxRouter } from "./inbox.route.js";
 import { createActionsRouter } from "./actions.route.js";
 import { createActionDefinitionsRouter } from "./action-definitions.route.js";
+import { createAiDataRouter } from "./ai-data.route.js";
 import { createTodayRouter } from "./today.route.js";
 import { createCycleRouter } from "./cycle.route.js";
 import { createStatusRouter } from "./status.route.js";
@@ -474,6 +475,19 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     }),
   );
   actionsLogger.info("Actions routes registered at /api/actions and /api/action-definitions");
+  app.use(
+    "/api/ai-data",
+    ...userAuth,
+    createAiDataRouter({
+      gateway: container.modelGateway,
+      routing: container.modelRouting,
+      overrides: container.modelOverrides,
+      configuredProviders: container.modelProviders,
+      choices: container.aiDataChoices,
+      audit: container.modelAudit,
+      logger: new StructuredLogger("ai-data", env.LOG_LEVEL),
+    }),
+  );
 
   // ── Deadlines ─────────────────────────────────────────────
   const deadlinesLogger = new StructuredLogger("deadlines", env.LOG_LEVEL);

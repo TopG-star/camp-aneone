@@ -28,7 +28,7 @@ export function createModelWiring(env: Env, deps: { db: Database.Database; logge
   const standard = env.LLM_PROVIDER as ProviderId;
   if (!providers[standard]) {
     deps.logger.warn("Model gateway: disabled (no key for LLM_PROVIDER)", { provider: standard });
-    return { gateway: null as ModelGateway | null, routing: null as ModelRouting | null, choices, audit, configuredProviders };
+    return { gateway: null as ModelGateway | null, routing: null as ModelRouting | null, choices, audit, configuredProviders, overrides };
   }
   const routing: ModelRouting = {
     standard,
@@ -60,5 +60,5 @@ export function createModelWiring(env: Env, deps: { db: Database.Database; logge
     logger: deps.logger,
   });
   deps.logger.info(missing.length ? "Model gateway: active (degraded routing)" : "Model gateway: ✓ active", { routing, overrides: Object.fromEntries(overrides) });
-  return { gateway, routing, choices, audit, configuredProviders };
+  return { gateway, routing, choices, audit, configuredProviders, overrides };
 }

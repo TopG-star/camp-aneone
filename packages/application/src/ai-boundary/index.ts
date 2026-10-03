@@ -25,3 +25,4 @@ export * from "./audit.js";
 export * from "./fingerprints.js";
 export * from "./gateway.js";
 export * from "./requests/index.js";
+export * from "./recorded-decisions.js";
