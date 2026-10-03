@@ -7,6 +7,7 @@ import {
   type FollowUpEntry,
 } from "./list-follow-ups.js";
 import { createToolRegistry } from "./tool-registry.js";
+import { expectMatchesOutputSchema } from "./__tests__/output-contract.js";
 
 // ── Fixtures ─────────────────────────────────────────────────
 
@@ -181,6 +182,7 @@ describe("list_follow_ups tool", () => {
       summary: "Important task",
       receivedAt: "2026-04-17T07:00:00Z",
     });
+    expectMatchesOutputSchema(tool, result);
   });
 
   it("fetches enough classifications to fill limit after filtering", async () => {

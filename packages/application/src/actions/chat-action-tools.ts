@@ -59,6 +59,10 @@ function makeTool(deps: ChatActionToolDeps, type: string, description: string): 
     version: "2.0.0",
     description,
     inputSchema: serverFields,
+    output: {
+      fields: { action: { class: "D1" }, refused: { class: "D1" }, issues: { class: "D2", freeText: true } },
+      summaryClass: "D2",
+    },
     async execute(validatedInput: unknown): Promise<ToolResult> {
       const { userId, turnId, turnExcerpt, ...actionInput } = validatedInput as z.infer<typeof serverFields>;
       if (!userId || !turnId) return { data: null, summary: "This tool needs a signed-in chat session." };

@@ -40,6 +40,11 @@ export function createListNotificationsTool(
     description:
       "List notifications. By default returns only unread notifications. Set all=true to include read ones.",
     inputSchema: listNotificationsSchema,
+    output: {
+      rowsFrom: "notifications",
+      fields: { id: { class: "D1" }, userId: { class: "D1" }, eventType: { class: "D1" }, deepLink: { class: "D1" }, read: { class: "D1" }, createdAt: { class: "D1" }, title: { class: "D2", freeText: true }, body: { class: "D2", freeText: true }, unreadCount: { class: "D1" } },
+      summaryClass: "D1",
+    },
     execute(validatedInput: unknown): ToolResult {
       const input = validatedInput as ListNotificationsInput;
 

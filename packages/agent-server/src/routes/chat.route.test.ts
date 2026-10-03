@@ -158,6 +158,7 @@ describe("POST /api/chat", () => {
       version: "2.0.0",
       description: "stub",
       inputSchema: z.object({}).passthrough(),
+      output: { fields: {}, summaryClass: "D1" },
       execute: () => ({ data: { action }, summary: "Waiting for your approval." }),
     });
     const intentExtractor = {

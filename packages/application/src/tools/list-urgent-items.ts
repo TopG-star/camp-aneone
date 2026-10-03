@@ -5,6 +5,7 @@ import type {
   Source,
 } from "@oneon/domain";
 import type { ToolDefinition, ToolResult } from "./tool-registry.js";
+import { EMAIL_ENTRY_FIELDS } from "./output-schema.js";
 
 // ── Input Schema ─────────────────────────────────────────────
 
@@ -66,6 +67,10 @@ export function createListUrgentItemsTool(
     description:
       "List urgent and high-priority inbox items. Returns items with priority ≤ maxPriority (1 = most urgent, 5 = least).",
     inputSchema: listUrgentItemsSchema,
+    output: {
+      fields: EMAIL_ENTRY_FIELDS,
+      summaryClass: "D1",
+    },
     execute(validatedInput: unknown): ToolResult {
       const input = validatedInput as ListUrgentItemsInput;
 

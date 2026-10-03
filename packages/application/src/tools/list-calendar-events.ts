@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { CalendarPort } from "@oneon/domain";
 import type { ToolDefinition, ToolResult } from "./tool-registry.js";
+import { CALENDAR_EVENT_FIELDS } from "./output-schema.js";
 
 // ── Input Schema ─────────────────────────────────────────────
 
@@ -30,6 +31,10 @@ export function createListCalendarEventsTool(
     description:
       "List Google Calendar events within a time range. Returns event titles, times, attendees, and locations.",
     inputSchema: listCalendarEventsSchema,
+    output: {
+      fields: CALENDAR_EVENT_FIELDS,
+      summaryClass: "D1",
+    },
     async execute(validatedInput: unknown): Promise<ToolResult> {
       const input = validatedInput as ListCalendarEventsInput;
 

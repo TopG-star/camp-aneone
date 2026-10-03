@@ -88,6 +88,10 @@ export function createFinanceSpendInsightsTool(
     description:
       "Generate finance summaries and anomaly flags from parsed statement transactions.",
     inputSchema: financeSpendInsightsSchema,
+    output: {
+      fields: { userId: { class: "D1" }, period: { class: "D1" }, summary: { class: "D2" }, topCategories: { class: "D2" }, anomalies: { class: "D2" } },
+      summaryClass: "D2",
+    },
     execute(validatedInput: unknown): ToolResult {
       const input = validatedInput as FinanceSpendInsightsInput;
       const userId = resolveFinanceUserId(bankStatementRepo, input.userId);

@@ -6,6 +6,7 @@ import {
   type ListDeadlinesDeps,
 } from "./list-deadlines.js";
 import { createToolRegistry } from "./tool-registry.js";
+import { expectMatchesOutputSchema } from "./__tests__/output-contract.js";
 
 // ── Fixtures ─────────────────────────────────────────────────
 
@@ -181,6 +182,7 @@ describe("list_deadlines tool", () => {
     });
 
     expect(result.data).toEqual([dl1, dl2]);
+    expectMatchesOutputSchema(tool, result);
   });
 
   it("generates human-readable summary with count and date range", async () => {

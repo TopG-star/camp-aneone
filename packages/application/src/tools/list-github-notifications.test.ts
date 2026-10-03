@@ -6,6 +6,7 @@ import {
   type ListGitHubNotificationsDeps,
 } from "./list-github-notifications.js";
 import { createToolRegistry } from "./tool-registry.js";
+import { expectMatchesOutputSchema } from "./__tests__/output-contract.js";
 
 // ── Fixtures ─────────────────────────────────────────────────
 
@@ -97,6 +98,7 @@ describe("list_github_notifications tool", () => {
 
     expect(result.data).toHaveLength(2);
     expect(result.summary).toBe("Found 2 GitHub notifications.");
+    expectMatchesOutputSchema(tool, result);
   });
 
   it("returns zero-count summary when empty", async () => {

@@ -9,6 +9,7 @@ import { InMemoryActionRepo } from "../actions/__tests__/in-memory-repos.js";
 import { createActionRegistry } from "../actions/registry.js";
 import { createReminderDefinition } from "../actions/definitions/create-reminder.js";
 import type { ToolDefinition } from "./tool-registry.js";
+import { expectMatchesOutputSchema } from "./__tests__/output-contract.js";
 
 // ── Fixtures ─────────────────────────────────────────────────
 
@@ -79,6 +80,7 @@ describe("list_pending_actions tool", () => {
     const result = await tool.execute(tool.inputSchema.parse({ userId: "u1" }));
     expect(result.data).toEqual([expect.objectContaining({ id: "a-u1", label: "Create reminder", status: "awaiting_approval" })]);
     expect(result.summary).toBe("Found 1 action awaiting approval.");
+    expectMatchesOutputSchema(tool, result);
   });
 
   it("never returns another user's actions", async () => {

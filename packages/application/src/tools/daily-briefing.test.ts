@@ -13,6 +13,7 @@ import type {
 } from "@oneon/domain";
 import type { ToolResult } from "./tool-registry.js";
 import { InMemoryActionRepo } from "../actions/__tests__/in-memory-repos.js";
+import { expectMatchesOutputSchema } from "./__tests__/output-contract.js";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -178,6 +179,7 @@ describe("createDailyBriefingTool", () => {
 
     const anonymous = await tool.execute(dailyBriefingSchema.parse({})) as ToolResult;
     expect((anonymous.data as { pendingActions: unknown[] }).pendingActions).toEqual([]);
+    expectMatchesOutputSchema(tool, result);
   });
 
   it("passes the session user to resolveCalendarPort and ignores the global port", async () => {

@@ -45,6 +45,10 @@ export function createDailyBriefingTool(deps: DailyBriefingDeps): ToolDefinition
     description:
       "Generate today's morning briefing: calendar events, urgent items, upcoming deadlines, and pending actions awaiting approval.",
     inputSchema: dailyBriefingSchema,
+    output: {
+      fields: { date: { class: "D1" }, pendingActions: { class: "D1" }, urgentItems: { class: "D2" }, deadlines: { class: "D2" }, calendar: { class: "D2" } },
+      summaryClass: "D2",
+    },
     async execute(validatedInput: unknown): Promise<ToolResult> {
       const input = validatedInput as DailyBriefingInput;
 

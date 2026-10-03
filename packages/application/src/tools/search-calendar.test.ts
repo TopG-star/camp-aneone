@@ -6,6 +6,7 @@ import {
   type SearchCalendarDeps,
 } from "./search-calendar.js";
 import { createToolRegistry } from "./tool-registry.js";
+import { expectMatchesOutputSchema } from "./__tests__/output-contract.js";
 
 // ── Fixtures ─────────────────────────────────────────────────
 
@@ -127,6 +128,7 @@ describe("search_calendar tool", () => {
 
     expect(result.data).toHaveLength(2);
     expect(result.summary).toContain('2 calendar events matching "standup"');
+    expectMatchesOutputSchema(tool, result);
   });
 
   it("returns zero-count summary when no matches", async () => {

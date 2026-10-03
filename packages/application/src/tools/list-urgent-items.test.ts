@@ -9,6 +9,7 @@ import {
   type ListUrgentItemsDeps,
 } from "./list-urgent-items.js";
 import { createToolRegistry } from "./tool-registry.js";
+import { expectMatchesOutputSchema } from "./__tests__/output-contract.js";
 
 // ── Fixtures ─────────────────────────────────────────────────
 
@@ -211,6 +212,7 @@ describe("list_urgent_items tool", () => {
         receivedAt: "2026-04-17T07:55:00Z",
       })
     );
+    expectMatchesOutputSchema(tool, result);
   });
 
   it("skips classifications whose inbound item is not found", async () => {

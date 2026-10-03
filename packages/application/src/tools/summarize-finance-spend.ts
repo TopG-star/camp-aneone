@@ -49,6 +49,10 @@ export function createSummarizeFinanceSpendTool(
     description:
       "Summarize outgoing spend by inferred category based on transaction descriptions.",
     inputSchema: summarizeFinanceSpendSchema,
+    output: {
+      fields: { category: { class: "D1" }, transactionCount: { class: "D1" }, amountMinor: { class: "D2" } },
+      summaryClass: "D2",
+    },
     execute(validatedInput: unknown): ToolResult {
       const input = validatedInput as SummarizeFinanceSpendInput;
       const userId = resolveFinanceUserId(bankStatementRepo, input.userId);

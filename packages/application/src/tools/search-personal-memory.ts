@@ -55,6 +55,10 @@ export function createSearchPersonalMemoryTool(
     description:
       "Retrieve relevant personal notes, pinned outputs, and curated docs to ground responses.",
     inputSchema: searchPersonalMemorySchema,
+    output: {
+      fields: { id: { class: "D1" }, source: { class: "D1" }, score: { class: "D1" }, createdAt: { class: "D1" }, title: { class: "D2", freeText: true }, snippet: { class: "D2", freeText: true }, metadata: { class: "D2" } },
+      summaryClass: "D1",
+    },
     execute(validatedInput: unknown): ToolResult {
       const input = validatedInput as SearchPersonalMemoryInput;
       const hits = retrievePersonalMemory(deps, input);

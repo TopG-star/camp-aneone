@@ -40,6 +40,10 @@ export function createListGitHubNotificationsTool(
     description:
       "List GitHub notifications. By default returns unread notifications only. Set 'all' to true for all notifications.",
     inputSchema: listGitHubNotificationsSchema,
+    output: {
+      fields: { id: { class: "D1" }, reason: { class: "D1" }, repository: { class: "D1" }, updatedAt: { class: "D1" }, unread: { class: "D1" }, subject: { class: "D2" } },
+      summaryClass: "D1",
+    },
     async execute(validatedInput: unknown): Promise<ToolResult> {
       const input = validatedInput as ListGitHubNotificationsInput;
 

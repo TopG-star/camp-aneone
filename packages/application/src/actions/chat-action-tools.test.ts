@@ -4,6 +4,8 @@ import { createChatActionTools } from "./chat-action-tools.js";
 import { createActionRegistry } from "./registry.js";
 import { createActionDefinitions } from "./definitions/index.js";
 import type { RequestOutcome } from "./orchestrator/types.js";
+import { expectMatchesOutputSchema } from "../tools/__tests__/output-contract.js";
+import { toolResultToRecord } from "../tools/output-schema.js";
 
 const NOW = new Date("2026-10-01T12:00:00.000Z");
 const registry = createActionRegistry(createActionDefinitions());
@@ -63,6 +65,7 @@ describe("chat action tools", () => {
     const result = await create.execute(create.inputSchema.parse(args));
     expect(result.summary).toMatch(pattern);
     expect(result.data).toMatchObject({ action: { id: "a1", actionType: "create_calendar_event", label: "Create calendar event", status: inst.status } });
+    expectMatchesOutputSchema(create, result);
   });
 
   it("reports duplicates and refusals", async () => {
@@ -72,6 +75,13 @@ describe("chat action tools", () => {
     expect((await bad.create.execute(bad.create.inputSchema.parse(args))).summary).toBe(
       "Not created. Fix these inputs and try again: start: Use an ISO-8601 date-time with a UTC offset",
     );
+  });
+
+  it("declares every field of a refusal, though issues is a list and not a string", async () => {
+    const { create } = tools({ kind: "refused", reason: "invalid_input", issues: ["start: bad"] });
+    const result = await create.execute(create.inputSchema.parse(args));
+    const fields = toolResultToRecord(create.name, create.output, result).rows[0].fields;
+    expect(fields.map((f) => [f.name, f.class])).toEqual([["refused", "D1"], ["issues", "D2"]]);
   });
 
   it("refuses without a signed-in session", async () => {

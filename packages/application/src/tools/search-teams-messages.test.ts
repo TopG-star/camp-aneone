@@ -6,6 +6,7 @@ import {
   type SearchTeamsMessagesDeps,
 } from "./search-teams-messages.js";
 import { createToolRegistry } from "./tool-registry.js";
+import { expectMatchesOutputSchema } from "./__tests__/output-contract.js";
 
 function makeMessage(overrides: Partial<TeamsMessage> = {}): TeamsMessage {
   return {
@@ -111,6 +112,7 @@ describe("search_teams_messages tool", () => {
     );
 
     expect(result.summary).toBe('Found 2 Teams message(s) matching "release".');
+    expectMatchesOutputSchema(tool, result);
   });
 
   it("executes through ToolRegistry", async () => {

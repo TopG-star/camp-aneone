@@ -7,6 +7,7 @@ import {
   type SearchEmailEntry,
 } from "./search-emails.js";
 import { createToolRegistry } from "./tool-registry.js";
+import { expectMatchesOutputSchema } from "./__tests__/output-contract.js";
 
 // ── Fixtures ─────────────────────────────────────────────────
 
@@ -198,6 +199,7 @@ describe("search_emails tool", () => {
       priority: 2,
       summary: "Budget report",
     });
+    expectMatchesOutputSchema(tool, result);
   });
 
   it("returns null classification fields for unclassified items", async () => {

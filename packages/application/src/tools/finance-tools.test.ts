@@ -25,6 +25,7 @@ import {
   createFinanceSpendInsightsTool,
   financeSpendInsightsSchema,
 } from "./finance-spend-insights.js";
+import { expectMatchesOutputSchema } from "./__tests__/output-contract.js";
 
 function makeStatement(overrides: Partial<BankStatement> = {}): BankStatement {
   return {
@@ -167,6 +168,7 @@ describe("finance_statement_status tool", () => {
     expect((result.data as { recent: BankStatement[] }).recent).toHaveLength(2);
     expect((result.data as { recent: BankStatement[] }).recent[0].id).toBe("stmt-latest");
     expect(result.summary).toContain("6 total");
+    expectMatchesOutputSchema(tool, result);
   });
 });
 
@@ -227,6 +229,7 @@ describe("search_finance_transactions tool", () => {
       limit: 10,
     });
     expect(result.summary).toContain("Found 1 transaction");
+    expectMatchesOutputSchema(tool, result);
   });
 
   it("returns statement not found for invalid statementId", async () => {
@@ -285,6 +288,7 @@ describe("top_finance_transactions tool", () => {
     expect(data).toHaveLength(2);
     expect(data[0].id).toBe("tx-2");
     expect(data[1].id).toBe("tx-3");
+    expectMatchesOutputSchema(tool, result);
   });
 
   it("returns empty data when no user can be resolved", async () => {
@@ -336,6 +340,7 @@ describe("summarize_finance_spend tool", () => {
     expect(categories.some((item) => item.category === "groceries")).toBe(true);
     expect(categories.some((item) => item.category === "transport")).toBe(true);
     expect(result.summary).toContain("Top category");
+    expectMatchesOutputSchema(tool, result);
   });
 
   it("returns empty summary when there are no outgoing transactions", async () => {
@@ -405,6 +410,7 @@ describe("finance_spend_insights tool", () => {
     expect(data.summary.netMinor).toBe(58650);
     expect(data.anomalies.some((item) => item.kind === "large_outflow")).toBe(true);
     expect(result.summary).toContain("anomaly");
+    expectMatchesOutputSchema(tool, result);
   });
 
   it("returns empty data when no statement user can be resolved", async () => {

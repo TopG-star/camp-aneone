@@ -5,6 +5,7 @@ import type {
   Source,
 } from "@oneon/domain";
 import type { ToolDefinition, ToolResult } from "./tool-registry.js";
+import { EMAIL_ENTRY_FIELDS } from "./output-schema.js";
 
 // ── Input Schema ─────────────────────────────────────────────
 
@@ -60,6 +61,10 @@ export function createListFollowUpsTool(
     description:
       "List items that need follow-up. Optionally filter to overdue items only.",
     inputSchema: listFollowUpsSchema,
+    output: {
+      fields: EMAIL_ENTRY_FIELDS,
+      summaryClass: "D1",
+    },
     execute(validatedInput: unknown): ToolResult {
       const input = validatedInput as ListFollowUpsInput;
 

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { CalendarPort } from "@oneon/domain";
 import type { ToolDefinition, ToolResult } from "./tool-registry.js";
+import { CALENDAR_EVENT_FIELDS } from "./output-schema.js";
 
 // ── Input Schema ─────────────────────────────────────────────
 
@@ -39,6 +40,10 @@ export function createSearchCalendarTool(
     description:
       "Search Google Calendar events by keyword within an optional time range (defaults to ±30 days).",
     inputSchema: searchCalendarSchema,
+    output: {
+      fields: CALENDAR_EVENT_FIELDS,
+      summaryClass: "D1",
+    },
     async execute(validatedInput: unknown): Promise<ToolResult> {
       const input = validatedInput as SearchCalendarInput;
 

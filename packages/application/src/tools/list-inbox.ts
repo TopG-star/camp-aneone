@@ -5,6 +5,7 @@ import type {
   Source,
 } from "@oneon/domain";
 import type { ToolDefinition, ToolResult } from "./tool-registry.js";
+import { EMAIL_ENTRY_FIELDS } from "./output-schema.js";
 
 // ── Input Schema ─────────────────────────────────────────────
 
@@ -63,6 +64,10 @@ export function createListInboxTool(deps: ListInboxDeps): ToolDefinition {
     description:
       "List recent inbox items by source, priority threshold, or date. Returns items enriched with classification data when available.",
     inputSchema: listInboxSchema,
+    output: {
+      fields: EMAIL_ENTRY_FIELDS,
+      summaryClass: "D1",
+    },
     execute(validatedInput: unknown): ToolResult {
       const input = validatedInput as ListInboxInput;
 

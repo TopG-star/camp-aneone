@@ -15,6 +15,7 @@ function makeTool(overrides: Partial<ToolDefinition> = {}): ToolDefinition {
     version: "1.0.0",
     description: "A test tool",
     inputSchema: z.object({ query: z.string() }),
+    output: { fields: {}, summaryClass: "D1" },
     execute: () => ({ data: { items: [] }, summary: "No items found" }),
     ...overrides,
   };

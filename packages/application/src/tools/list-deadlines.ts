@@ -41,6 +41,10 @@ export function createListDeadlinesTool(
     description:
       "List deadlines within a date range. Defaults to the next 7 days. Optionally filter by status (open, done, dismissed).",
     inputSchema: listDeadlinesSchema,
+    output: {
+      fields: { id: { class: "D1" }, userId: { class: "D1" }, inboundItemId: { class: "D1" }, dueDate: { class: "D1" }, confidence: { class: "D1" }, status: { class: "D1" }, createdAt: { class: "D1" }, updatedAt: { class: "D1" }, description: { class: "D2", freeText: true } },
+      summaryClass: "D1",
+    },
     execute(validatedInput: unknown): ToolResult {
       const input = validatedInput as ListDeadlinesInput;
 
