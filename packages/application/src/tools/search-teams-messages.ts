@@ -41,7 +41,7 @@ export function createSearchTeamsMessagesTool(
       "Search Microsoft Teams messages by keyword, optionally filtered by channel name and date range.",
     inputSchema: searchTeamsMessagesSchema,
     output: {
-      fields: { id: { class: "D1" }, channelName: { class: "D1" }, createdAt: { class: "D1" }, from: { class: "D2", entity: "person" }, subject: { class: "D2", freeText: true }, bodyPreview: { class: "D2", freeText: true } },
+      fields: { id: { class: "D1" }, channelName: { class: "D2" }, createdAt: { class: "D1" }, from: { class: "D2", entity: "person" }, subject: { class: "D2", freeText: true }, bodyPreview: { class: "D2", freeText: true } },
       summaryClass: "D1",
     },
     async execute(validatedInput: unknown): Promise<ToolResult> {

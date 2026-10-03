@@ -25,7 +25,7 @@ export const CALENDAR_EVENT_FIELDS: Record<string, ToolFieldSpec> = {
   id: D1, start: D1, end: D1, allDay: D1, etag: D1, updated: D1, title: FREE, description: FREE, attendees: D2, location: D2,
 };
 export const TRANSACTION_FIELDS: Record<string, ToolFieldSpec> = {
-  id: D1, statementId: D1, userId: D1, postedAt: D1, dedupeKey: D1, createdAt: D1, description: FREE, amountMinor: D2, balanceMinor: D2,
+  id: D1, statementId: D1, userId: D1, postedAt: D1, dedupeKey: FREE, createdAt: D1, description: FREE, amountMinor: D2, balanceMinor: D2,
 };
 
 function toRow(item: unknown, schema: ToolOutputSchema): ClassifiedRow {

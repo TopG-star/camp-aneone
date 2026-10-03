@@ -43,7 +43,7 @@ export function createListGitHubPRsTool(
       "List GitHub pull requests. Supports filtering by state, author, and repository. When repo is specified, queries that repo directly; otherwise searches across all repos.",
     inputSchema: listGitHubPRsSchema,
     output: {
-      fields: { id: { class: "D1" }, number: { class: "D1" }, state: { class: "D1" }, repo: { class: "D1" }, url: { class: "D1" }, createdAt: { class: "D1" }, updatedAt: { class: "D1" }, title: { class: "D2", freeText: true }, author: { class: "D2", entity: "person" } },
+      fields: { id: { class: "D1" }, number: { class: "D1" }, state: { class: "D1" }, repo: { class: "D2" }, url: { class: "D2" }, createdAt: { class: "D1" }, updatedAt: { class: "D1" }, title: { class: "D2", freeText: true }, author: { class: "D2", entity: "person" } },
       summaryClass: "D1",
     },
     async execute(validatedInput: unknown): Promise<ToolResult> {

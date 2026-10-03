@@ -60,7 +60,7 @@ function makeTool(deps: ChatActionToolDeps, type: string, description: string): 
     description,
     inputSchema: serverFields,
     output: {
-      fields: { action: { class: "D1" }, refused: { class: "D1" }, issues: { class: "D2", freeText: true } },
+      fields: { action: { class: "D1" }, refused: { class: "D1" }, issues: { class: "D2" } },
       summaryClass: "D2",
     },
     async execute(validatedInput: unknown): Promise<ToolResult> {

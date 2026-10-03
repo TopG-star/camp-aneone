@@ -5,7 +5,6 @@ import { createActionRegistry } from "./registry.js";
 import { createActionDefinitions } from "./definitions/index.js";
 import type { RequestOutcome } from "./orchestrator/types.js";
 import { expectMatchesOutputSchema } from "../tools/__tests__/output-contract.js";
-import { toolResultToRecord } from "../tools/output-schema.js";
 
 const NOW = new Date("2026-10-01T12:00:00.000Z");
 const registry = createActionRegistry(createActionDefinitions());
@@ -77,11 +76,10 @@ describe("chat action tools", () => {
     );
   });
 
-  it("declares every field of a refusal, though issues is a list and not a string", async () => {
+  it("a real refusal matches the output schema", async () => {
     const { create } = tools({ kind: "refused", reason: "invalid_input", issues: ["start: bad"] });
     const result = await create.execute(create.inputSchema.parse(args));
-    const fields = toolResultToRecord(create.name, create.output, result).rows[0].fields;
-    expect(fields.map((f) => [f.name, f.class])).toEqual([["refused", "D1"], ["issues", "D2"]]);
+    expectMatchesOutputSchema(create, result);
   });
 
   it("refuses without a signed-in session", async () => {

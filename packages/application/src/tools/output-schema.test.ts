@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { EMAIL_ENTRY_FIELDS, toolResultToRecord, type ToolOutputSchema } from "./output-schema.js";
+import { EMAIL_ENTRY_FIELDS, TRANSACTION_FIELDS, toolResultToRecord, type ToolOutputSchema } from "./output-schema.js";
 import { decide } from "../ai-boundary/decide.js";
 import { PROVIDER_REGISTRY } from "../ai-boundary/providers.js";
 
@@ -53,5 +53,32 @@ describe("toolResultToRecord", () => {
 
   it("handles a null result as no rows besides the summary", () => {
     expect(toolResultToRecord("create_calendar_event", { fields: { action: { class: "D1" } }, summaryClass: "D2" }, { data: null, summary: "Not created" }).rows).toHaveLength(1);
+  });
+});
+
+describe("transaction dedupeKey", () => {
+  const tx = { id: "t1", statementId: "s1", userId: "u1", postedAt: "2026-04-03", description: "UBER TRIP HELP.UBER.COM", amountMinor: -1200, balanceMinor: 5000, dedupeKey: "2026-04-03|UBER TRIP HELP.UBER.COM|-1200", createdAt: "2026-04-04T00:00:00Z" };
+  const part = () => toolResultToRecord("search_finance_transactions", { fields: TRANSACTION_FIELDS, summaryClass: "D1" }, { data: [tx], summary: "Found 1 transaction." });
+  const run = (choiceLimit: "D1" | "D2") => decide({
+    context: { kind: "personal", identityId: "u1" },
+    provider: { entry: PROVIDER_REGISTRY.deepseek },
+    choiceLimit,
+    request: { purpose: "chat_reply", output: "json", parts: [{ kind: "user_message", text: "spend?" }, part()] },
+  });
+
+  it("is declared D2 free text, since it holds the description and amount", () => {
+    expect(part().rows[0].fields.find((f) => f.name === "dedupeKey")).toMatchObject({ class: "D2", freeText: true, value: tx.dedupeKey });
+  });
+
+  it("is withheld at a D1 limit", () => {
+    const d = run("D1");
+    expect(d.kind).toBe("allow");
+    expect(d.withheld).toContainEqual({ part: "record:tool:search_finance_transactions", row: 0, field: "dedupeKey", reason: "above_limit" });
+  });
+
+  it("is sent at D2, as a string that takes D3 span scanning", () => {
+    const d = run("D2");
+    expect(d.kind).toBe("allow");
+    expect(d.withheld.filter((w) => w.field === "dedupeKey")).toEqual([]);
   });
 });
