@@ -4,6 +4,8 @@ export * from "./approved-call.js";
 export * from "./providers.js";
 export * from "./purposes/index.js";
 export * from "./scanner.js";
+export * from "./placeholders.js";
+export * from "./assemble.js";
 // `decide` and `DecideInput` collide with the action-policy exports in src/index.ts, so the barrel exposes them under boundary-specific names.
 export {
   decide as decideModelCall,
