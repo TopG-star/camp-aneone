@@ -1,9 +1,9 @@
-import { z } from "zod";
 import type { SynthesisPort, ConversationMessage, Logger } from "@oneon/domain";
 import type {
   ChatPersonaProfile,
   ToolCallRecord,
 } from "./build-chat-context.js";
+import { synthesisResponseSchema, type SynthesisResponse } from "../ai-boundary/purposes/schemas.js";
 
 // ── Constants ────────────────────────────────────────────────
 
@@ -11,14 +11,7 @@ export const SYNTHESIS_PROMPT_VERSION = "1.0";
 
 // ── Schema ───────────────────────────────────────────────────
 
-export const synthesisResponseSchema = z.object({
-  answer: z.string().min(1),
-  followUps: z.array(z.string()).optional().default([]),
-  usedTools: z.array(z.string()),
-  warnings: z.array(z.string()).optional().default([]),
-});
-
-export type SynthesisResponse = z.infer<typeof synthesisResponseSchema>;
+export { synthesisResponseSchema, type SynthesisResponse };
 
 // ── Types ────────────────────────────────────────────────────
 
