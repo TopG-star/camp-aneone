@@ -5,3 +5,4 @@ export { DeepSeekClassifierAdapter, type DeepSeekClassifierConfig } from "./deep
 export { DeepSeekHttpClient, DeepSeekApiError, DeepSeekRateLimitError, DeepSeekEmptyResponseError } from "./deepseek-http-client.js";
 export { ShadowLlmAdapter, type ShadowLlmAdapterConfig } from "./shadow-llm.adapter.js";
 export { RoutingLlmAdapter, type RoutingLlmAdapterConfig } from "./routing-llm.adapter.js";
+export * from "./providers/index.js";
