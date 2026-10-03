@@ -1,4 +1,4 @@
-export { GCalHttpClient, type ListEventsOptions } from "./gcal-http-client.js";
+export { GCalHttpClient, GCalApiError, type ListEventsOptions } from "./gcal-http-client.js";
 export {
   GoogleCalendarAdapter,
   type GoogleCalendarAdapterConfig,

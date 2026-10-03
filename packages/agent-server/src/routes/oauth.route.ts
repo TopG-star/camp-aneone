@@ -7,6 +7,7 @@ import type {
   PreferenceRepository,
   Logger,
 } from "@oneon/domain";
+import { gmailLastRefreshFailureAtKey } from "../gmail-refresh-state.js";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -190,11 +191,12 @@ export function createOAuthRouter(deps: OAuthRouteDeps): Router {
         url: "https://openidconnect.googleapis.com/v1/userinfo",
       });
       const googleEmail = userInfoRes.data?.email;
+      const normalizedGoogleEmail = googleEmail?.trim().toLowerCase() ?? null;
 
       // Validate email against allowed list
-      if (!googleEmail || !allowedEmails.includes(googleEmail)) {
+      if (!normalizedGoogleEmail || !allowedEmails.includes(normalizedGoogleEmail)) {
         logger.warn("OAuth callback: email not in allowed list", {
-          googleEmail,
+          googleEmail: normalizedGoogleEmail,
           allowedEmails,
         });
         res.redirect(`${redirectTo}?error=email_not_allowed`);
@@ -227,14 +229,16 @@ export function createOAuthRouter(deps: OAuthRouteDeps): Router {
         tokenType: tokens.token_type ?? "bearer",
         scope: tokens.scope ?? GOOGLE_SCOPES.join(" "),
         expiresAt,
-        providerEmail: googleEmail,
+        providerEmail: normalizedGoogleEmail,
         createdAt: existingToken?.createdAt ?? new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
 
+      preferenceRepo.delete(gmailLastRefreshFailureAtKey(user.id));
+
       logger.info("Google OAuth connected", {
         userId: user.id,
-        googleEmail,
+        googleEmail: normalizedGoogleEmail,
       });
 
       res.redirect(`${redirectTo}?connected=google`);
@@ -272,6 +276,7 @@ export function createOAuthRouter(deps: OAuthRouteDeps): Router {
       }
 
       oauthTokenRepo.delete("google", userId);
+      preferenceRepo.delete(gmailLastRefreshFailureAtKey(userId));
 
       logger.info("Google OAuth disconnected", { userId });
       res.json({ disconnected: true });

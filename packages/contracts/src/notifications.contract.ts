@@ -12,15 +12,16 @@ export type NotificationsQuery = z.infer<typeof NotificationsQuerySchema>;
 
 // ── Notification Item ────────────────────────────────────────
 
+/** Matches what GET /api/notifications returns (the domain Notification entity). */
 export const NotificationItemSchema = z.object({
   id: z.string(),
-  userId: z.string(),
-  type: z.string(),
+  userId: z.string().nullable(),
+  eventType: z.string(),
   title: z.string(),
   body: z.string(),
+  deepLink: z.string().nullable(),
   read: z.boolean(),
   createdAt: z.string(),
-  metadata: z.string().nullable(),
 });
 
 export type NotificationItem = z.infer<typeof NotificationItemSchema>;

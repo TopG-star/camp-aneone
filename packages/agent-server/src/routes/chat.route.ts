@@ -1,10 +1,29 @@
 import { Router, type Request, type Response } from "express";
-import type { ConversationRepository, IntentExtractionPort, SynthesisPort, Logger } from "@oneon/domain";
-import { sendChatMessage, type ToolRegistry } from "@oneon/application";
+import type {
+  ConversationRepository,
+  IntentExtractionPort,
+  SynthesisPort,
+  UserProfileRepository,
+  InboundItemRepository,
+  ClassificationRepository,
+  DeadlineRepository,
+  ActionInstanceRepository,
+  Logger,
+} from "@oneon/domain";
+import {
+  sendChatMessage,
+  type ToolRegistry,
+  type ChatContextStats,
+} from "@oneon/application";
 
 export interface ChatRouteDeps {
   conversationRepo: ConversationRepository;
   logger: Logger;
+  inboundItemRepo?: Pick<InboundItemRepository, "count"> | null;
+  classificationRepo?: Pick<ClassificationRepository, "count" | "findAll"> | null;
+  deadlineRepo?: Pick<DeadlineRepository, "findByDateRange"> | null;
+  instanceRepo?: Pick<ActionInstanceRepository, "count"> | null;
+  userProfileRepo?: Pick<UserProfileRepository, "findByUserId"> | null;
   intentExtractor?: IntentExtractionPort | null;
   synthesizer?: SynthesisPort | null;
   toolRegistry?: ToolRegistry | null;
@@ -12,7 +31,18 @@ export interface ChatRouteDeps {
 
 export function createChatRouter(deps: ChatRouteDeps): Router {
   const router = Router();
-  const { conversationRepo, logger, intentExtractor, synthesizer, toolRegistry } = deps;
+  const {
+    conversationRepo,
+    logger,
+    userProfileRepo,
+    inboundItemRepo,
+    classificationRepo,
+    deadlineRepo,
+    instanceRepo,
+    intentExtractor,
+    synthesizer,
+    toolRegistry,
+  } = deps;
 
   router.post("/", (req: Request, res: Response) => {
     // ── 1. Validate input ─────────────────────────────────
@@ -28,13 +58,53 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
       return;
     }
 
-    // ── 2. Delegate to use case ───────────────────────────
+    // ── 2. Resolve user profile preferences ───────────────
+    const userId = req.userId!;
+    let profile = null;
+
+    try {
+      profile = userProfileRepo?.findByUserId(userId) ?? null;
+    } catch (error) {
+      logger.error("Chat route: failed to load user profile", {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      res.status(500).json({ error: "Internal server error" });
+      return;
+    }
+
+    // ── 3. Delegate to use case ───────────────────────────
+    const stats = buildChatStats({
+      inboundItemRepo,
+      classificationRepo,
+      deadlineRepo,
+      instanceRepo,
+      userId,
+      now: new Date(),
+    });
+
     sendChatMessage(
-      { conversationRepo, logger, intentExtractor, synthesizer, toolRegistry },
+      {
+        conversationRepo,
+        logger,
+        intentExtractor,
+        synthesizer,
+        toolRegistry,
+        stats,
+      },
       {
         message: message.trim(),
         conversationId: conversationId || undefined,
-        userId: req.userId!,
+        userId,
+        timezone: profile?.timezone ?? "UTC",
+        persona: profile
+          ? {
+              preferredName: profile.preferredName,
+              nickname: profile.nickname,
+              salutationMode: profile.salutationMode,
+              communicationStyle: profile.communicationStyle,
+            }
+          : null,
       }
     )
       .then((result) => {
@@ -44,6 +114,7 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
           assistantMessageId: result.assistantMessageId,
           conversationId: result.conversationId,
           history: result.history,
+          actions: result.actions,
         });
       })
       .catch((error) => {
@@ -55,4 +126,46 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
   });
 
   return router;
+}
+
+function buildChatStats(input: {
+  inboundItemRepo?: Pick<InboundItemRepository, "count"> | null;
+  classificationRepo?: Pick<ClassificationRepository, "count" | "findAll"> | null;
+  deadlineRepo?: Pick<DeadlineRepository, "findByDateRange"> | null;
+  instanceRepo?: Pick<ActionInstanceRepository, "count"> | null;
+  userId: string;
+  now: Date;
+}): ChatContextStats | null {
+  const {
+    inboundItemRepo,
+    classificationRepo,
+    deadlineRepo,
+    instanceRepo,
+    userId,
+    now,
+  } = input;
+
+  if (!inboundItemRepo || !classificationRepo || !deadlineRepo || !instanceRepo) {
+    return null;
+  }
+
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+  const upcomingDeadlinesCount = deadlineRepo.findByDateRange(
+    now.toISOString(),
+    new Date(now.getTime() + sevenDaysMs).toISOString(),
+    "open",
+    userId,
+  ).length;
+
+  const followUpCount = classificationRepo
+    .findAll({ limit: 500, userId })
+    .filter((classification) => classification.followUpNeeded).length;
+
+  return {
+    totalInboxItems: inboundItemRepo.count({ userId }),
+    unreadUrgentCount: classificationRepo.count({ category: "urgent", userId }),
+    pendingActionsCount: instanceRepo.count(userId, { statuses: ["awaiting_approval"] }),
+    upcomingDeadlinesCount,
+    followUpCount,
+  };
 }

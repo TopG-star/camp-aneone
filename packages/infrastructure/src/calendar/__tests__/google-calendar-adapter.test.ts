@@ -107,6 +107,8 @@ describe("GoogleCalendarAdapter", () => {
         description: "Daily sync",
         attendees: ["alice@test.com", "bob@test.com"],
         location: "Zoom",
+        etag: null,
+        updated: null,
       });
     });
 
@@ -195,153 +197,54 @@ describe("GoogleCalendarAdapter", () => {
     });
   });
 
-  // ── createEvent ────────────────────────────────────────
+  // ── writer methods: body mapping and cache invalidation ─
 
-  describe("createEvent", () => {
-    it("calls client.insertEvent with mapped body", async () => {
-      const { adapter, client } = createAdapter();
-      const created = timedEvent({ id: "new-evt" });
-      (client.insertEvent as ReturnType<typeof vi.fn>).mockResolvedValue(created);
+  describe("writer cache invalidation and body mapping", () => {
+    const draft = {
+      title: "X",
+      start: "2026-04-18T14:00:00Z",
+      end: "2026-04-18T15:00:00Z",
+      allDay: false,
+      description: null,
+      attendees: [],
+      location: null,
+    };
 
-      const input: Omit<CalendarEvent, "id"> = {
-        title: "New Meeting",
-        start: "2026-04-18T14:00:00Z",
-        end: "2026-04-18T15:00:00Z",
-        allDay: false,
-        description: "Discussion",
-        attendees: ["alice@test.com"],
-        location: "Room A",
-      };
-
-      await adapter.createEvent(input);
-
-      expect(client.insertEvent).toHaveBeenCalledWith("primary", {
-        summary: "New Meeting",
-        description: "Discussion",
-        location: "Room A",
-        start: { dateTime: "2026-04-18T14:00:00Z" },
-        end: { dateTime: "2026-04-18T15:00:00Z" },
-        attendees: [{ email: "alice@test.com" }],
-      });
-    });
-
-    it("returns mapped domain CalendarEvent", async () => {
-      const { adapter, client } = createAdapter();
-      const created = timedEvent({ id: "new-evt", summary: "Created" });
-      (client.insertEvent as ReturnType<typeof vi.fn>).mockResolvedValue(created);
-
-      const result = await adapter.createEvent({
-        title: "Created",
-        start: "2026-04-18T14:00:00Z",
-        end: "2026-04-18T15:00:00Z",
-        allDay: false,
-        description: null,
-        attendees: [],
-        location: null,
-      });
-
-      expect(result.id).toBe("new-evt");
-      expect(result.title).toBe("Created");
-    });
-
-    it("invalidates cache after create", async () => {
-      const { adapter, client } = createAdapter();
-      (client.listEvents as ReturnType<typeof vi.fn>).mockResolvedValue({
-        kind: "calendar#events",
-        items: [timedEvent()],
-      });
-      (client.insertEvent as ReturnType<typeof vi.fn>).mockResolvedValue(
-        timedEvent({ id: "new" }),
-      );
-
-      // Populate cache
-      await adapter.listEvents("2026-04-18T00:00:00Z", "2026-04-19T00:00:00Z");
-      expect(client.listEvents).toHaveBeenCalledTimes(1);
-
-      // Create invalidates
-      await adapter.createEvent({
-        title: "X",
-        start: "2026-04-18T14:00:00Z",
-        end: "2026-04-18T15:00:00Z",
-        allDay: false,
-        description: null,
-        attendees: [],
-        location: null,
-      });
-
-      // Next list should call API again
-      await adapter.listEvents("2026-04-18T00:00:00Z", "2026-04-19T00:00:00Z");
-      expect(client.listEvents).toHaveBeenCalledTimes(2);
-    });
-  });
-
-  // ── updateEvent ────────────────────────────────────────
-
-  describe("updateEvent", () => {
-    it("calls client.patchEvent with mapped partial body", async () => {
-      const { adapter, client } = createAdapter();
-      const updated = timedEvent({ summary: "Updated" });
-      (client.patchEvent as ReturnType<typeof vi.fn>).mockResolvedValue(updated);
-
-      await adapter.updateEvent("evt-1", { title: "Updated" });
-
-      expect(client.patchEvent).toHaveBeenCalledWith("primary", "evt-1", {
-        summary: "Updated",
-      });
-    });
-
-    it("maps attendees update correctly", async () => {
-      const { adapter, client } = createAdapter();
-      const updated = timedEvent();
-      (client.patchEvent as ReturnType<typeof vi.fn>).mockResolvedValue(updated);
-
-      await adapter.updateEvent("evt-1", {
-        attendees: ["new@test.com"],
-      });
-
-      expect(client.patchEvent).toHaveBeenCalledWith("primary", "evt-1", {
-        attendees: [{ email: "new@test.com" }],
-      });
-    });
-
-    it("maps start/end updates to dateTime", async () => {
+    it("maps partial update fields into the patch body", async () => {
       const { adapter, client } = createAdapter();
       (client.patchEvent as ReturnType<typeof vi.fn>).mockResolvedValue(timedEvent());
 
-      await adapter.updateEvent("evt-1", {
-        start: "2026-04-18T16:00:00Z",
-        end: "2026-04-18T17:00:00Z",
-      });
-
-      expect(client.patchEvent).toHaveBeenCalledWith("primary", "evt-1", {
-        start: { dateTime: "2026-04-18T16:00:00Z" },
-        end: { dateTime: "2026-04-18T17:00:00Z" },
-      });
-    });
-
-    it("returns mapped domain CalendarEvent", async () => {
-      const { adapter, client } = createAdapter();
-      (client.patchEvent as ReturnType<typeof vi.fn>).mockResolvedValue(
-        timedEvent({ summary: "Patched" }),
+      await adapter.update(
+        "evt-1",
+        { attendees: ["new@test.com"], start: "2026-04-18T16:00:00Z", end: "2026-04-18T17:00:00Z" },
+        { ifMatch: '"v1"', sendUpdates: "none" },
       );
 
-      const result = await adapter.updateEvent("evt-1", { title: "Patched" });
-      expect(result.title).toBe("Patched");
+      expect((client.patchEvent as ReturnType<typeof vi.fn>).mock.calls[0].slice(0, 3)).toEqual([
+        "primary",
+        "evt-1",
+        {
+          attendees: [{ email: "new@test.com" }],
+          start: { dateTime: "2026-04-18T16:00:00Z" },
+          end: { dateTime: "2026-04-18T17:00:00Z" },
+        },
+      ]);
     });
 
-    it("invalidates cache after update", async () => {
+    it("invalidates cache after create and update", async () => {
       const { adapter, client } = createAdapter();
-      (client.listEvents as ReturnType<typeof vi.fn>).mockResolvedValue({
-        kind: "calendar#events",
-        items: [timedEvent()],
-      });
+      (client.listEvents as ReturnType<typeof vi.fn>).mockResolvedValue({ kind: "calendar#events", items: [timedEvent()] });
+      (client.insertEvent as ReturnType<typeof vi.fn>).mockResolvedValue(timedEvent({ id: "new" }));
       (client.patchEvent as ReturnType<typeof vi.fn>).mockResolvedValue(timedEvent());
+      const list = () => adapter.listEvents("2026-04-18T00:00:00Z", "2026-04-19T00:00:00Z");
 
-      await adapter.listEvents("2026-04-18T00:00:00Z", "2026-04-19T00:00:00Z");
-      await adapter.updateEvent("evt-1", { title: "Y" });
-      await adapter.listEvents("2026-04-18T00:00:00Z", "2026-04-19T00:00:00Z");
+      await list();
+      await adapter.create(draft, { eventId: "new", sendUpdates: "none" });
+      await list();
+      await adapter.update("evt-1", { title: "Y" }, { ifMatch: '"v1"', sendUpdates: "none" });
+      await list();
 
-      expect(client.listEvents).toHaveBeenCalledTimes(2);
+      expect(client.listEvents).toHaveBeenCalledTimes(3);
     });
   });
 

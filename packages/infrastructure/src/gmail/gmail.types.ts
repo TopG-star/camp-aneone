@@ -14,15 +14,48 @@ export interface GmailListResponse {
 
 // ── messages.get (format=metadata) ─────────────────────────
 
+export interface GmailMessageHeader {
+  name: string;
+  value: string;
+}
+
+export interface GmailMessagePartBody {
+  size?: number;
+  data?: string;
+  attachmentId?: string;
+}
+
+export interface GmailMessagePart {
+  partId?: string;
+  mimeType?: string;
+  filename?: string;
+  headers?: GmailMessageHeader[];
+  body?: GmailMessagePartBody;
+  parts?: GmailMessagePart[];
+}
+
 export interface GmailMessageResource {
   id: string;
   threadId: string;
   labelIds: string[];
   snippet: string;
   internalDate: string; // epoch ms as string
-  payload: {
-    headers: Array<{ name: string; value: string }>;
-  };
+  payload: GmailMessagePart & { headers: GmailMessageHeader[] };
+}
+
+// ── messages.get (format=full) ──────────────────────────────
+
+export interface GmailMessageFullResource {
+  id: string;
+  threadId: string;
+  payload: GmailMessagePart;
+}
+
+// ── messages.attachments.get ────────────────────────────────
+
+export interface GmailMessageAttachmentResource {
+  size: number;
+  data?: string;
 }
 
 // ── Well-known Gmail category labels ───────────────────────

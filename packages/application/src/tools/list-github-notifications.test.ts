@@ -64,15 +64,30 @@ describe("list_github_notifications tool", () => {
 
     await tool.execute({ all: true, participating: false });
 
-    expect(deps.githubPort.listNotifications).toHaveBeenCalledWith({
+    expect(deps.githubPort!.listNotifications).toHaveBeenCalledWith({
       all: true,
       participating: false,
     });
   });
 
+  it("uses resolveGitHubPort when userId is provided", async () => {
+    const resolvedPort = {
+      listNotifications: vi.fn().mockResolvedValue([makeNotification()]),
+      listPullRequests: vi.fn().mockResolvedValue([]),
+    };
+
+    const tool = createListGitHubNotificationsTool({
+      resolveGitHubPort: vi.fn().mockReturnValue(resolvedPort),
+    });
+
+    await tool.execute({ all: false, participating: false, userId: "user-A" });
+
+    expect(resolvedPort.listNotifications).toHaveBeenCalledOnce();
+  });
+
   it("returns notifications in data field", async () => {
     const deps = makeDeps();
-    (deps.githubPort.listNotifications as ReturnType<typeof vi.fn>).mockResolvedValue([
+    (deps.githubPort!.listNotifications as ReturnType<typeof vi.fn>).mockResolvedValue([
       makeNotification(),
       makeNotification({ id: "notif-2", reason: "review_requested" }),
     ]);
@@ -96,7 +111,7 @@ describe("list_github_notifications tool", () => {
 
   it("uses singular form for exactly 1 notification", async () => {
     const deps = makeDeps();
-    (deps.githubPort.listNotifications as ReturnType<typeof vi.fn>).mockResolvedValue([
+    (deps.githubPort!.listNotifications as ReturnType<typeof vi.fn>).mockResolvedValue([
       makeNotification(),
     ]);
     const tool = createListGitHubNotificationsTool(deps);
@@ -108,7 +123,7 @@ describe("list_github_notifications tool", () => {
 
   it("integrates with tool registry", async () => {
     const deps = makeDeps();
-    (deps.githubPort.listNotifications as ReturnType<typeof vi.fn>).mockResolvedValue([
+    (deps.githubPort!.listNotifications as ReturnType<typeof vi.fn>).mockResolvedValue([
       makeNotification(),
     ]);
 

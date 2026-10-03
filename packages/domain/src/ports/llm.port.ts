@@ -39,5 +39,7 @@ export interface LLMPort extends IntentExtractionPort, SynthesisPort {
     subject: string;
     bodyPreview: string;
     source: string;
+    /** When the email arrived (ISO 8601); relative dates in it are resolved against this. */
+    receivedAt: string;
   }): Promise<ClassificationResult>;
 }

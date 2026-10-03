@@ -127,7 +127,23 @@ describe("ingestOutlookWebhook", () => {
 
     expect(repo.findBySourceAndExternalId).toHaveBeenCalledWith(
       "outlook",
-      "AAMkAGI123"
+      "AAMkAGI123",
+      null
+    );
+  });
+
+  it("uses resolveUserId in both existence lookup and upsert", () => {
+    deps.resolveUserId = () => "user-123";
+
+    ingestOutlookWebhook(deps, VALID_PAYLOAD);
+
+    expect(repo.findBySourceAndExternalId).toHaveBeenCalledWith(
+      "outlook",
+      "AAMkAGI123",
+      "user-123"
+    );
+    expect(repo.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "user-123" })
     );
   });
 

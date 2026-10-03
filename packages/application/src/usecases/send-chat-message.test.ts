@@ -282,6 +282,28 @@ describe("sendChatMessage", () => {
     expect(synthesizer.synthesize).toHaveBeenCalled();
   });
 
+  it("passes the turn id to tools and returns the actions they requested", async () => {
+    const extractor = createMockExtractor([
+      [{ tool: "create_calendar_event", parameters: { title: "Call" } }],
+      [{ tool: "none", parameters: {} }],
+    ]);
+    const action = { id: "a1", actionType: "create_calendar_event", label: "Create calendar event", status: "awaiting_approval" };
+    const registry = createMockToolRegistry({
+      create_calendar_event: makeToolResult("create_calendar_event", "Waiting…", { action }),
+    });
+
+    const result = await sendChatMessage(
+      { conversationRepo, logger, intentExtractor: extractor, toolRegistry: registry },
+      { message: "Set up a call", now: NOW, userId: "user-A" }
+    );
+
+    expect(result.actions).toEqual([action]);
+    expect(registry.execute).toHaveBeenCalledWith(
+      "create_calendar_event",
+      expect.objectContaining({ turnId: result.userMessageId, turnExcerpt: "Set up a call" })
+    );
+  });
+
   it("persists tool calls JSON in assistant message", async () => {
     const extractor = createMockExtractor([
       [{ tool: "list_deadlines", parameters: {} }],
@@ -367,6 +389,120 @@ describe("sendChatMessage", () => {
 
     expect(result.response).toContain("2 deadlines");
     expect(result.response).toContain("5 emails found");
+  });
+
+  it("returns finance tool summaries for finance intents", async () => {
+    const extractor = createMockExtractor([
+      [{ tool: "search_finance_transactions", parameters: { q: "uber" } }],
+      [{ tool: "none", parameters: {} }],
+    ]);
+    const registry = createMockToolRegistry({
+      search_finance_transactions: makeToolResult(
+        "search_finance_transactions",
+        'Found 2 transactions for "uber".'
+      ),
+    });
+
+    const result = await sendChatMessage(
+      {
+        conversationRepo,
+        logger,
+        intentExtractor: extractor,
+        toolRegistry: registry,
+      },
+      { message: "Show my uber transactions", now: NOW, userId: "user-A" }
+    );
+
+    expect(result.response).toContain('Found 2 transactions for "uber".');
+
+    const appendCalls = (conversationRepo.append as ReturnType<typeof vi.fn>).mock.calls;
+    const assistantCall = appendCalls[1][0];
+    const parsedToolCalls = JSON.parse(assistantCall.toolCalls as string) as Array<{
+      tool: string;
+    }>;
+    expect(parsedToolCalls[0].tool).toBe("search_finance_transactions");
+  });
+
+  it("returns teams tool summaries for teams intents", async () => {
+    const extractor = createMockExtractor([
+      [
+        {
+          tool: "search_teams_messages",
+          parameters: { query: "release" },
+        },
+      ],
+      [{ tool: "none", parameters: {} }],
+    ]);
+    const registry = createMockToolRegistry({
+      search_teams_messages: makeToolResult(
+        "search_teams_messages",
+        'Found 1 Teams message(s) matching "release".',
+      ),
+    });
+
+    const result = await sendChatMessage(
+      {
+        conversationRepo,
+        logger,
+        intentExtractor: extractor,
+        toolRegistry: registry,
+      },
+      { message: "Find Teams updates about release", now: NOW, userId: "user-A" },
+    );
+
+    expect(result.response).toContain(
+      'Found 1 Teams message(s) matching "release".',
+    );
+
+    const appendCalls = (conversationRepo.append as ReturnType<typeof vi.fn>).mock.calls;
+    const assistantCall = appendCalls[1][0];
+    const parsedToolCalls = JSON.parse(assistantCall.toolCalls as string) as Array<{
+      tool: string;
+    }>;
+    expect(parsedToolCalls[0].tool).toBe("search_teams_messages");
+  });
+
+  it("Alfred-like milestone: returns memory-grounded response for style planning prompts", async () => {
+    const extractor = createMockExtractor([
+      [
+        {
+          tool: "search_personal_memory",
+          parameters: { query: "response style for action proposals", includeDocs: true },
+        },
+      ],
+      [{ tool: "none", parameters: {} }],
+    ]);
+
+    const registry = createMockToolRegistry({
+      search_personal_memory: makeToolResult(
+        "search_personal_memory",
+        'Found 2 personal memory matches for "response style for action proposals".',
+        [
+          { source: "note", title: "Style", snippet: "Keep output concise and direct." },
+          { source: "doc", title: "docs/style.md", snippet: "Use concise, action-oriented language." },
+        ],
+      ),
+    });
+
+    const result = await sendChatMessage(
+      {
+        conversationRepo,
+        logger,
+        intentExtractor: extractor,
+        toolRegistry: registry,
+      },
+      { message: "Draft my plan in my usual style", now: NOW, userId: "user-A" },
+    );
+
+    expect(registry.execute).toHaveBeenCalledWith(
+      "search_personal_memory",
+      expect.objectContaining({
+        query: "response style for action proposals",
+        includeDocs: true,
+        userId: "user-A",
+      }),
+    );
+    expect(result.response).toContain("Found 2 personal memory matches");
   });
 
   it("returns fallback when loop produces no tool calls", async () => {

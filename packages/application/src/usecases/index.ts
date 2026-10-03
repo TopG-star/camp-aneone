@@ -19,26 +19,6 @@ export {
 } from "./process-unclassified-items.js";
 
 export {
-  proposeActions,
-  deriveActions,
-  ACTION_RISK_LEVELS,
-  type ProposeActionsDeps,
-  type ProposeActionsResult,
-  type ProposedAction,
-} from "./propose-actions.js";
-
-export {
-  executeAction,
-  type ExecuteActionDeps,
-  type ExecuteActionResult,
-} from "./execute-action.js";
-
-export {
-  assertValidTransition,
-  InvalidTransitionError,
-} from "./transition-action-status.js";
-
-export {
   sendChatMessage,
   type SendChatMessageDeps,
   type SendChatMessageInput,
@@ -54,6 +34,7 @@ export {
   buildChatContext,
   type BuildChatContextInput,
   type ChatContextStats,
+  type ChatPersonaProfile,
   type ToolCallRecord,
 } from "./build-chat-context.js";
 
@@ -100,9 +81,17 @@ export {
 
 export {
   ingestGmail,
+  type BankStatementIntakeConfig,
   type IngestGmailDeps,
   type IngestGmailResult,
 } from "./ingest-gmail.js";
+
+export {
+  parseBankStatements,
+  type ParseBankStatementsDeps,
+  type ParseBankStatementsOptions,
+  type ParseBankStatementsSummary,
+} from "./parse-bank-statements.js";
 
 export {
   ingestGitHubWebhook,
@@ -124,3 +113,10 @@ export {
   type CheckApproachingDeadlinesOptions,
   type CheckApproachingDeadlinesResult,
 } from "./check-approaching-deadlines.js";
+
+export {
+  evaluateReminderPriorityPolicy,
+  type ReminderPriorityPolicyInput,
+  type ReminderPriorityPolicyDecision,
+  type ReminderPriorityPolicyReason,
+} from "./reminder-priority-policy.js";

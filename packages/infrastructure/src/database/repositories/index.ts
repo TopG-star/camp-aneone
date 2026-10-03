@@ -1,9 +1,17 @@
 export { SqliteInboundItemRepository } from "./sqlite-inbound-item.repository.js";
 export { SqliteClassificationRepository, SqliteClassificationFeedbackRepository } from "./sqlite-classification.repository.js";
 export { SqliteDeadlineRepository } from "./sqlite-deadline.repository.js";
-export { SqliteActionLogRepository } from "./sqlite-action-log.repository.js";
 export { SqliteNotificationRepository } from "./sqlite-notification.repository.js";
 export { SqliteConversationRepository } from "./sqlite-conversation.repository.js";
 export { SqlitePreferenceRepository } from "./sqlite-preference.repository.js";
+export { SqlitePushSubscriptionRepository } from "./sqlite-push-subscription.repository.js";
+export { SqliteBankStatementRepository } from "./sqlite-bank-statement.repository.js";
+export { SqliteBankStatementParseRepository } from "./sqlite-bank-statement-parse.repository.js";
 export { SqliteUserRepository } from "./sqlite-user.repository.js";
+export { SqliteUserProfileRepository } from "./sqlite-user-profile.repository.js";
 export { SqliteOAuthTokenRepository } from "./sqlite-oauth-token.repository.js";
+export { SqlitePersonalMemoryNoteRepository } from "./sqlite-personal-memory-note.repository.js";
+export { SqlitePersonalMemoryPinRepository } from "./sqlite-personal-memory-pin.repository.js";
+export { SqliteActionInstanceRepository } from "./sqlite-action-instance.repository.js";
+export { SqliteActionConfigRepository } from "./sqlite-action-config.repository.js";
+export { SqliteLegacyActionRepository } from "./sqlite-legacy-action.repository.js";

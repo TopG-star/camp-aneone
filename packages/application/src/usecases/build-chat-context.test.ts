@@ -218,4 +218,22 @@ describe("buildChatContext", () => {
     expect(contextIdx).toBeLessThan(toolsIdx);
     expect(toolsIdx).toBeLessThan(actionsIdx);
   });
+
+  it("includes profile personalization guidance when persona is provided", () => {
+    const result = buildChatContext(
+      {
+        ...defaultInput(),
+        // Cast here so we can drive RED first before adding persona type support.
+        persona: {
+          preferredName: "Adewale",
+          nickname: "Wale",
+          salutationMode: "sir_with_name",
+          communicationStyle: "technical",
+        },
+      } as BuildChatContextInput,
+    );
+
+    expect(result).toContain("Address the user as: Sir Adewale");
+    expect(result).toContain("Communication style: technical");
+  });
 });

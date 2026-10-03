@@ -8,27 +8,38 @@ import { createChatRouter } from "./chat.route.js";
 import { createDeadlinesRouter } from "./deadlines.route.js";
 import { createNotificationRouter } from "./notification.route.js";
 import { createNotificationPreferencesRouter } from "./notification-preferences.route.js";
+import { createProfileRouter } from "./profile.route.js";
+import { createFinanceStatementsRouter } from "./finance-statements.route.js";
+import { createDevFinanceRouter } from "./dev-finance.route.js";
 import { createInboxRouter } from "./inbox.route.js";
 import { createActionsRouter } from "./actions.route.js";
+import { createActionDefinitionsRouter } from "./action-definitions.route.js";
 import { createTodayRouter } from "./today.route.js";
 import { createCycleRouter } from "./cycle.route.js";
 import { createStatusRouter } from "./status.route.js";
 import { createOAuthRouter } from "./oauth.route.js";
 import { createIntegrationsRouter } from "./integrations.route.js";
+import { createPushSubscriptionsRouter } from "./push-subscriptions.route.js";
 import { createUsersRouter } from "./users.route.js";
+import { createMemoryRouter } from "./memory.route.js";
 import { createTokenAuthMiddleware } from "../middleware/auth.js";
 import { createSessionAuthMiddleware } from "../middleware/session-auth.js";
 import { requireUser } from "../middleware/require-user.js";
-import { StructuredLogger } from "@oneon/infrastructure";
+import {
+  LocalDocMemoryProvider,
+  StructuredLogger,
+  TTLCache,
+  GitHubHttpClient,
+  GitHubAdapter,
+} from "@oneon/infrastructure";
 import type { RequestHandler } from "express";
+import type { GitHubNotification, GitHubPullRequest } from "@oneon/domain";
 import {
   createToolRegistry,
   createListInboxTool,
   createSearchEmailsTool,
   createListDeadlinesTool,
   createListCalendarEventsTool,
-  createCreateCalendarEventTool,
-  createUpdateCalendarEventTool,
   createSearchCalendarTool,
   createListGitHubNotificationsTool,
   createListGitHubPRsTool,
@@ -38,10 +49,23 @@ import {
   createListNotificationsTool,
   createListUrgentItemsTool,
   createSearchTeamsMessagesTool,
+  createFinanceStatementStatusTool,
+  createSearchFinanceTransactionsTool,
+  createTopFinanceTransactionsTool,
+  createSummarizeFinanceSpendTool,
+  createFinanceSpendInsightsTool,
+  createSearchPersonalMemoryTool,
+  createChatActionTools,
 } from "@oneon/application";
 
 export function registerRoutes(app: Express, container: AppContainer): void {
   const { env } = container;
+  const docMemoryProvider = env.FEATURE_PERSONAL_MEMORY
+    ? new LocalDocMemoryProvider({
+        roots: env.MEMORY_DOC_ROOTS,
+        maxFiles: env.MEMORY_DOC_MAX_FILES,
+      })
+    : null;
 
   // ── Auth middleware ─────────────────────────────────────────
   //
@@ -63,6 +87,10 @@ export function registerRoutes(app: Express, container: AppContainer): void {
 
   // System routes: Bearer token only (admin scripts, CI triggers)
   const systemAuth: RequestHandler[] = [tokenAuth];
+
+  // One calendar adapter (and cache) per user, shared with the action executors, so a
+  // calendar write is visible to chat reads and Today without waiting for the cache TTL.
+  const resolveCalendarPort = (userId: string) => container.actions.calendarReaderFor(userId);
 
   // ── Webhook user resolution ───────────────────────────────
   // For MVP: if exactly one user exists, assign webhook items to them.
@@ -137,6 +165,44 @@ export function registerRoutes(app: Express, container: AppContainer): void {
   // ── Chat Endpoint ─────────────────────────────────────────
   if (env.FEATURE_CHAT) {
     const chatLogger = new StructuredLogger("chat", env.LOG_LEVEL);
+    const githubPortByUser = new Map<
+      string,
+      {
+        accessToken: string;
+        port: NonNullable<typeof container.githubPort>;
+      }
+    >();
+    const resolveGitHubPort = (userId: string) => {
+      if (!container.oauthTokenRepo) {
+        return null;
+      }
+
+      const token = container.oauthTokenRepo.get("github", userId);
+      if (!token) {
+        githubPortByUser.delete(userId);
+        return null;
+      }
+
+      const cached = githubPortByUser.get(userId);
+      if (cached && cached.accessToken === token.accessToken) {
+        return cached.port;
+      }
+
+      const port = new GitHubAdapter({
+        client: new GitHubHttpClient(token.accessToken),
+        notificationCache: new TTLCache<GitHubNotification[]>(),
+        searchCache: new TTLCache<GitHubPullRequest[]>(),
+        notificationCacheTtlMs: env.GITHUB_NOTIFICATION_CACHE_TTL_MS,
+        searchCacheTtlMs: env.GITHUB_SEARCH_CACHE_TTL_MS,
+      });
+
+      githubPortByUser.set(userId, {
+        accessToken: token.accessToken,
+        port,
+      });
+      return port;
+    };
+
 
     // Build tool registry with all available tools
     const toolRegistry = createToolRegistry();
@@ -154,7 +220,8 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       deadlineRepo: container.deadlineRepo,
     }));
     toolRegistry.register(createListPendingActionsTool({
-      actionLogRepo: container.actionLogRepo,
+      instanceRepo: container.actions.instanceRepo,
+      registry: container.actions.registry,
     }));
     toolRegistry.register(createListFollowUpsTool({
       classificationRepo: container.classificationRepo,
@@ -167,31 +234,74 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     toolRegistry.register(createListNotificationsTool({
       notificationRepo: container.notificationRepo,
     }));
+    if (env.FEATURE_PERSONAL_MEMORY) {
+      toolRegistry.register(createSearchPersonalMemoryTool({
+        personalMemoryNoteRepo: container.personalMemoryNoteRepo,
+        personalMemoryPinRepo: container.personalMemoryPinRepo,
+        docMemoryProvider,
+      }));
+    }
 
-    // Calendar tools (only if calendarPort available)
-    if (container.calendarPort) {
-      toolRegistry.register(createListCalendarEventsTool({
-        calendarPort: container.calendarPort,
+    // Finance tools (only when finance intake feature is enabled)
+    if (env.FEATURE_FINANCE_STATEMENT_INTAKE) {
+      toolRegistry.register(createFinanceStatementStatusTool({
+        bankStatementRepo: container.bankStatementRepo,
       }));
-      toolRegistry.register(createCreateCalendarEventTool({
-        calendarPort: container.calendarPort,
+      toolRegistry.register(createSearchFinanceTransactionsTool({
+        bankStatementRepo: container.bankStatementRepo,
+        bankStatementParseRepo: container.bankStatementParseRepo,
       }));
-      toolRegistry.register(createUpdateCalendarEventTool({
-        calendarPort: container.calendarPort,
+      toolRegistry.register(createTopFinanceTransactionsTool({
+        bankStatementRepo: container.bankStatementRepo,
+        bankStatementParseRepo: container.bankStatementParseRepo,
       }));
-      toolRegistry.register(createSearchCalendarTool({
-        calendarPort: container.calendarPort,
+      toolRegistry.register(createSummarizeFinanceSpendTool({
+        bankStatementRepo: container.bankStatementRepo,
+        bankStatementParseRepo: container.bankStatementParseRepo,
       }));
+      toolRegistry.register(createFinanceSpendInsightsTool({
+        bankStatementRepo: container.bankStatementRepo,
+        bankStatementParseRepo: container.bankStatementParseRepo,
+      }));
+    }
+
+
+    // Calendar read tools: registered even without the env-token port, because
+    // resolveCalendarPort serves each signed-in user's own calendar (OAuth-only deployments).
+    toolRegistry.register(createListCalendarEventsTool({
+      calendarPort: container.calendarPort ?? undefined,
+      resolveCalendarPort,
+    }));
+    toolRegistry.register(createSearchCalendarTool({
+      calendarPort: container.calendarPort ?? undefined,
+      resolveCalendarPort,
+    }));
+
+    // Chat action tools: writes go through the action framework, so they are
+    // registered even without a calendar port and fail honestly when it is missing.
+    const aiModel =
+      env.LLM_PROVIDER === "deepseek"
+        ? `deepseek:${env.DEEPSEEK_CLASSIFIER_MODEL ?? "unknown"}`
+        : `anthropic:${env.LLM_CLASSIFIER_MODEL}`;
+    for (const tool of createChatActionTools({
+      requestAction: container.actions.orchestrator.requestAction,
+      registry: container.actions.registry,
+      aiModel,
+      clock: () => new Date(),
+    })) {
+      toolRegistry.register(tool);
     }
 
     // GitHub tools (only if githubPort available)
     if (container.githubPort) {
       toolRegistry.register(createListGitHubNotificationsTool({
         githubPort: container.githubPort,
-      }));
+        resolveGitHubPort,
+      } as Parameters<typeof createListGitHubNotificationsTool>[0]));
       toolRegistry.register(createListGitHubPRsTool({
         githubPort: container.githubPort,
-      }));
+        resolveGitHubPort,
+      } as Parameters<typeof createListGitHubPRsTool>[0]));
     }
 
     // Teams tools (only if teamsPort available)
@@ -207,9 +317,10 @@ export function registerRoutes(app: Express, container: AppContainer): void {
         classificationRepo: container.classificationRepo,
         inboundItemRepo: container.inboundItemRepo,
         deadlineRepo: container.deadlineRepo,
-        actionLogRepo: container.actionLogRepo,
+        instanceRepo: container.actions.instanceRepo,
         synthesizer: container.llmPort,
         calendarPort: container.calendarPort ?? undefined,
+        resolveCalendarPort,
         logger: chatLogger,
       }));
     }
@@ -229,6 +340,11 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       createChatRouter({
         conversationRepo: container.conversationRepo,
         logger: chatLogger,
+        inboundItemRepo: container.inboundItemRepo,
+        classificationRepo: container.classificationRepo,
+        deadlineRepo: container.deadlineRepo,
+        instanceRepo: container.actions.instanceRepo,
+        userProfileRepo: container.userProfileRepo,
         intentExtractor: container.llmPort,
         synthesizer: container.llmPort,
         toolRegistry,
@@ -264,6 +380,61 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     }),
   );
   prefLogger.info("Notification preferences routes registered at /api/notification-preferences");
+  if (env.FEATURE_PUSH_NOTIFICATIONS) {
+    const pushLogger = new StructuredLogger("push-subscriptions", env.LOG_LEVEL);
+    app.use(
+      "/api/push",
+      ...userAuth,
+      createPushSubscriptionsRouter({
+        pushSubscriptionRepo: container.pushSubscriptionRepo,
+        logger: pushLogger,
+        vapidPublicKey: env.VAPID_PUBLIC_KEY ?? null,
+      }),
+    );
+    pushLogger.info("Push subscription routes registered at /api/push");
+  }
+
+  // ── User Profile Preferences ─────────────────────────────
+  const profileLogger = new StructuredLogger("profile", env.LOG_LEVEL);
+  app.use(
+    "/api/profile",
+    ...userAuth,
+    createProfileRouter({
+      userProfileRepo: container.userProfileRepo,
+      logger: profileLogger,
+    }),
+  );
+  profileLogger.info("Profile routes registered at /api/profile");
+
+  if (env.FEATURE_PERSONAL_MEMORY) {
+    const memoryLogger = new StructuredLogger("memory", env.LOG_LEVEL);
+    app.use(
+      "/api/memory",
+      ...userAuth,
+      createMemoryRouter({
+        personalMemoryNoteRepo: container.personalMemoryNoteRepo,
+        personalMemoryPinRepo: container.personalMemoryPinRepo,
+        docMemoryProvider,
+        logger: memoryLogger,
+      }),
+    );
+    memoryLogger.info("Memory routes registered at /api/memory");
+  }
+
+  // ── Finance Statement Intake (read-only) ────────────────
+  if (env.FEATURE_FINANCE_STATEMENT_INTAKE) {
+    const financeLogger = new StructuredLogger("finance-statements", env.LOG_LEVEL);
+    app.use(
+      "/api/finance/statements",
+      ...userAuth,
+      createFinanceStatementsRouter({
+        bankStatementRepo: container.bankStatementRepo,
+        bankStatementParseRepo: container.bankStatementParseRepo,
+        logger: financeLogger,
+      }),
+    );
+    financeLogger.info("Finance statement routes registered at /api/finance/statements");
+  }
 
   // ── Inbox ─────────────────────────────────────────────────
   const inboxLogger = new StructuredLogger("inbox", env.LOG_LEVEL);
@@ -274,7 +445,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       inboundItemRepo: container.inboundItemRepo,
       classificationRepo: container.classificationRepo,
       deadlineRepo: container.deadlineRepo,
-      actionLogRepo: container.actionLogRepo,
+      instanceRepo: container.actions.instanceRepo,
       logger: inboxLogger,
     }),
   );
@@ -286,12 +457,24 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     "/api/actions",
     ...userAuth,
     createActionsRouter({
-      actionLogRepo: container.actionLogRepo,
-      inboundItemRepo: container.inboundItemRepo,
+      orchestrator: container.actions.orchestrator,
+      registry: container.actions.registry,
+      instanceRepo: container.actions.instanceRepo,
+      configRepo: container.actions.configRepo,
+      legacyRepo: container.actions.legacyRepo,
       logger: actionsLogger,
     }),
   );
-  actionsLogger.info("Actions routes registered at /api/actions");
+  app.use(
+    "/api/action-definitions",
+    ...userAuth,
+    createActionDefinitionsRouter({
+      registry: container.actions.registry,
+      configRepo: container.actions.configRepo,
+      logger: actionsLogger,
+    }),
+  );
+  actionsLogger.info("Actions routes registered at /api/actions and /api/action-definitions");
 
   // ── Deadlines ─────────────────────────────────────────────
   const deadlinesLogger = new StructuredLogger("deadlines", env.LOG_LEVEL);
@@ -315,9 +498,10 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       classificationRepo: container.classificationRepo,
       inboundItemRepo: container.inboundItemRepo,
       deadlineRepo: container.deadlineRepo,
-      actionLogRepo: container.actionLogRepo,
+      instanceRepo: container.actions.instanceRepo,
       notificationRepo: container.notificationRepo,
-      calendarPort: container.calendarPort,
+      preferenceRepo: container.preferenceRepo,
+      resolveCalendarPort,
       logger: todayLogger,
     }),
   );
@@ -330,6 +514,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     ...userAuth,
     createCycleRouter({
       getBackgroundLoop: () => container.backgroundLoop ?? null,
+      instanceRepo: container.actions.instanceRepo,
       logger: cycleLogger,
     }),
   );
@@ -392,6 +577,24 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       }),
     );
     integrationsLogger.info("Integrations routes registered at /api/integrations");
+
+    if (env.NODE_ENV !== "production") {
+      const devFinanceLogger = new StructuredLogger("dev-finance", env.LOG_LEVEL);
+      app.use(
+        "/api/dev/finance",
+        ...systemAuth,
+        createDevFinanceRouter({
+          userRepo: container.userRepo,
+          bankStatementRepo: container.bankStatementRepo,
+          bankStatementParseRepo: container.bankStatementParseRepo,
+          bankStatementParserRegistry: container.bankStatementParserRegistry,
+          allowedEmails: env.ALLOWED_EMAILS,
+          maxTransactionRetries: env.FINANCE_STATEMENT_MAX_TRANSACTION_RETRIES,
+          logger: devFinanceLogger,
+        }),
+      );
+      devFinanceLogger.info("Dev finance routes registered at /api/dev/finance");
+    }
 
     // ── Users (system-auth only — for admin scripts) ────────────
     const usersLogger = new StructuredLogger("users", env.LOG_LEVEL);

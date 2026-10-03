@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import request from "supertest";
 import type { Notification, NotificationRepository, Logger } from "@oneon/domain";
+import { NotificationsListResponseSchema } from "@oneon/contracts";
 import {
   createNotificationRouter,
   type NotificationRouteDeps,
@@ -74,6 +75,15 @@ describe("Notification routes", () => {
 
       expect(res.body.notifications).toHaveLength(2);
       expect(notificationRepo.findUnread).toHaveBeenCalledWith(50, "user-A");
+    });
+
+    it("returns notifications in the shape the contract (and the dashboard) expects", async () => {
+      vi.mocked(notificationRepo.findUnread).mockReturnValue([makeNotification({ id: "n1" })]);
+
+      const res = await request(app).get("/api/notifications").expect(200);
+
+      expect(NotificationsListResponseSchema.safeParse(res.body).success).toBe(true);
+      expect(res.body.notifications[0].eventType).toBe("urgent_item");
     });
 
     it("returns all notifications when all=true", async () => {

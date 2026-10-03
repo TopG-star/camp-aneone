@@ -70,20 +70,6 @@ export {
 } from "./list-calendar-events.js";
 
 export {
-  createCreateCalendarEventTool,
-  createCalendarEventSchema,
-  type CreateCalendarEventDeps,
-  type CreateCalendarEventInput,
-} from "./create-calendar-event.js";
-
-export {
-  createUpdateCalendarEventTool,
-  updateCalendarEventSchema,
-  type UpdateCalendarEventDeps,
-  type UpdateCalendarEventInput,
-} from "./update-calendar-event.js";
-
-export {
   createSearchCalendarTool,
   searchCalendarSchema,
   type SearchCalendarDeps,
@@ -117,3 +103,56 @@ export {
   type SearchTeamsMessagesDeps,
   type SearchTeamsMessagesInput,
 } from "./search-teams-messages.js";
+
+export {
+  createFinanceStatementStatusTool,
+  financeStatementStatusSchema,
+  type FinanceStatementStatusDeps,
+  type FinanceStatementStatusInput,
+} from "./finance-statement-status.js";
+
+export {
+  createSearchFinanceTransactionsTool,
+  searchFinanceTransactionsSchema,
+  type SearchFinanceTransactionsDeps,
+  type SearchFinanceTransactionsInput,
+} from "./search-finance-transactions.js";
+
+export {
+  createTopFinanceTransactionsTool,
+  topFinanceTransactionsSchema,
+  type TopFinanceTransactionsDeps,
+  type TopFinanceTransactionsInput,
+} from "./top-finance-transactions.js";
+
+export {
+  createSummarizeFinanceSpendTool,
+  summarizeFinanceSpendSchema,
+  type SummarizeFinanceSpendDeps,
+  type SummarizeFinanceSpendInput,
+  type SpendCategoryRow,
+} from "./summarize-finance-spend.js";
+
+export {
+  createSearchPersonalMemoryTool,
+  searchPersonalMemorySchema,
+  retrievePersonalMemory,
+  type SearchPersonalMemoryInput,
+  type SearchPersonalMemoryDeps,
+  type PersonalMemoryHit,
+  type PersonalDocMemoryProvider,
+  type PersonalDocSearchResult,
+} from "./search-personal-memory.js";
+
+export {
+  createFinanceSpendInsightsTool,
+  financeSpendInsightsSchema,
+  buildFinanceSpendInsightsData,
+  summarizeFinanceInsights,
+  type FinanceSpendInsightsDeps,
+  type FinanceSpendInsightsInput,
+  type FinanceSpendInsightsData,
+  type FinanceInsightSummary,
+  type FinanceCategoryInsight,
+  type FinanceAnomaly,
+} from "./finance-spend-insights.js";

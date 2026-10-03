@@ -5,12 +5,12 @@ import {
   type GenerateDailyBriefingDeps,
   type GenerateDailyBriefingInput,
   type BriefingData,
+  type PendingActionSummary,
 } from "./generate-daily-briefing.js";
 import type {
   ClassificationRepository,
   InboundItemRepository,
   DeadlineRepository,
-  ActionLogRepository,
   CalendarPort,
   CalendarEvent,
   SynthesisPort,
@@ -18,7 +18,6 @@ import type {
   Classification,
   InboundItem,
   Deadline,
-  ActionLogEntry,
   Category,
   Priority,
 } from "@oneon/domain";
@@ -88,22 +87,8 @@ function makeDeadline(
   };
 }
 
-function makeAction(overrides: Partial<ActionLogEntry> = {}): ActionLogEntry {
-  return {
-    id: "action-1",
-    userId: null,
-    resourceId: "item-1",
-    actionType: "notify",
-    riskLevel: "approval_required",
-    status: "proposed",
-    payloadJson: "{}",
-    resultJson: null,
-    errorJson: null,
-    rollbackJson: null,
-    createdAt: "2026-04-17T08:10:00Z",
-    updatedAt: "2026-04-17T08:10:00Z",
-    ...overrides,
-  };
+function makeAction(overrides: Partial<PendingActionSummary> = {}): PendingActionSummary {
+  return { actionType: "create_reminder", resourceId: "deadline:d1", riskLevel: "L1", ...overrides };
 }
 
 function makeCalendarEvent(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
@@ -149,15 +134,6 @@ function createDeps(overrides: Partial<GenerateDailyBriefingDeps> = {}): Generat
     count: vi.fn(() => 0),
   };
 
-  const actionLogRepo: ActionLogRepository = {
-    create: vi.fn() as ActionLogRepository["create"],
-    findByResourceAndType: vi.fn(() => null),
-    findByStatus: vi.fn(() => []),
-    updateStatus: vi.fn(),
-    findAll: vi.fn(() => []),
-    count: vi.fn(() => 0),
-  };
-
   const synthesizer: SynthesisPort = {
     synthesize: vi.fn(async () => "Your morning briefing summary."),
   };
@@ -166,7 +142,7 @@ function createDeps(overrides: Partial<GenerateDailyBriefingDeps> = {}): Generat
     classificationRepo,
     inboundItemRepo,
     deadlineRepo,
-    actionLogRepo,
+    listPendingActions: () => [],
     synthesizer,
     logger: createMockLogger(),
     ...overrides,
@@ -177,6 +153,7 @@ function defaultInput(overrides: Partial<GenerateDailyBriefingInput> = {}): Gene
   return {
     now: new Date("2026-04-17T07:00:00Z"),
     timezone: "UTC",
+    userId: "user-A",
     ...overrides,
   };
 }
@@ -236,21 +213,91 @@ describe("generateDailyBriefing", () => {
     expect(deps.deadlineRepo.findByDateRange).toHaveBeenCalledWith(
       "2026-04-17T00:00:00.000Z",
       "2026-04-24T00:00:00.000Z",
-      "open"
+      "open",
+      "user-A"
     );
   });
 
-  it("populates pendingActions with status=proposed", async () => {
-    const action1 = makeAction({ id: "act-1", status: "proposed", riskLevel: "approval_required" });
-    const action2 = makeAction({ id: "act-2", status: "proposed", riskLevel: "auto" });
-
+  it("scopes urgent items and deadlines to the briefing's user", async () => {
+    const itemA = makeItem("item-A", { userId: "user-A" });
+    const itemB = makeItem("item-B", { userId: "user-B" });
+    const clsA = makeClassification("item-A", { userId: "user-A" });
+    const clsB = makeClassification("item-B", { userId: "user-B" });
+    const dlA = makeDeadline("item-A", { userId: "user-A" });
+    const dlB = makeDeadline("item-B", { userId: "user-B" });
     const deps = createDeps();
-    vi.mocked(deps.actionLogRepo.findByStatus).mockReturnValue([action1, action2]);
+    // Fakes honour the user filter the way the SQLite repositories do.
+    vi.mocked(deps.classificationRepo.findAll).mockImplementation((o) =>
+      [clsA, clsB].filter((c) => !o.userId || c.userId === o.userId),
+    );
+    vi.mocked(deps.inboundItemRepo.findById).mockImplementation((id) => [itemA, itemB].find((i) => i.id === id) ?? null);
+    vi.mocked(deps.deadlineRepo.findByDateRange).mockImplementation((_f, _t, _s, userId) =>
+      [dlA, dlB].filter((d) => !userId || d.userId === userId),
+    );
+
+    const result = await generateDailyBriefing(deps, defaultInput({ userId: "user-A" }));
+
+    expect(result.data.urgentItems.map((i) => i.id)).toEqual(["item-A"]);
+    expect(result.data.deadlines.map((d) => d.id)).toEqual(["dl-item-A"]);
+    expect(deps.classificationRepo.findAll).toHaveBeenCalledWith(expect.objectContaining({ userId: "user-A" }));
+  });
+
+  it("returns empty urgent items and deadlines without a user", async () => {
+    const deps = createDeps();
+    vi.mocked(deps.classificationRepo.findAll).mockReturnValue([makeClassification("item-B", { userId: "user-B" })]);
+    vi.mocked(deps.inboundItemRepo.findById).mockReturnValue(makeItem("item-B", { userId: "user-B" }));
+    vi.mocked(deps.deadlineRepo.findByDateRange).mockReturnValue([makeDeadline("item-B", { userId: "user-B" })]);
+
+    const result = await generateDailyBriefing(deps, defaultInput({ userId: undefined }));
+
+    expect(result.data.urgentItems).toEqual([]);
+    expect(result.data.deadlines).toEqual([]);
+    expect(deps.classificationRepo.findAll).not.toHaveBeenCalled();
+    expect(deps.deadlineRepo.findByDateRange).not.toHaveBeenCalled();
+  });
+
+  it("reads the user's own calendar and never the global port when a user is set", async () => {
+    const own: CalendarPort = { listEvents: vi.fn(async () => [makeCalendarEvent({ title: "A's call" })]), searchEvents: vi.fn() };
+    const global: CalendarPort = { listEvents: vi.fn(async () => [makeCalendarEvent({ title: "Env owner's call" })]), searchEvents: vi.fn() };
+    const resolveCalendarPort = vi.fn((userId: string) => (userId === "user-A" ? own : null));
+    const deps = createDeps({ calendarPort: global, resolveCalendarPort });
+
+    const result = await generateDailyBriefing(deps, defaultInput({ userId: "user-A" }));
+
+    expect(resolveCalendarPort).toHaveBeenCalledWith("user-A");
+    expect(result.data.calendar.events.map((e) => e.title)).toEqual(["A's call"]);
+    expect(global.listEvents).not.toHaveBeenCalled();
+  });
+
+  it("reports no calendar when the user has none, without falling back to the global port", async () => {
+    const global: CalendarPort = { listEvents: vi.fn(async () => [makeCalendarEvent()]), searchEvents: vi.fn() };
+    const deps = createDeps({ calendarPort: global, resolveCalendarPort: () => null });
+
+    const result = await generateDailyBriefing(deps, defaultInput({ userId: "user-B" }));
+
+    expect(result.data.calendar).toEqual({ status: "not_connected", events: [] });
+    expect(global.listEvents).not.toHaveBeenCalled();
+  });
+
+  it("uses the global port only when there is no user", async () => {
+    const global: CalendarPort = { listEvents: vi.fn(async () => [makeCalendarEvent()]), searchEvents: vi.fn() };
+    const resolveCalendarPort = vi.fn(() => null);
+    const deps = createDeps({ calendarPort: global, resolveCalendarPort });
+
+    const result = await generateDailyBriefing(deps, defaultInput({ userId: undefined }));
+
+    expect(resolveCalendarPort).not.toHaveBeenCalled();
+    expect(result.data.calendar.status).toBe("connected");
+  });
+
+  it("populates pendingActions from listPendingActions", async () => {
+    const pending = [makeAction(), makeAction({ actionType: "create_calendar_event", resourceId: "inbound_item:i1", riskLevel: "L2" })];
+    const deps = createDeps({ listPendingActions: vi.fn(() => pending) });
 
     const result = await generateDailyBriefing(deps, defaultInput());
 
-    expect(result.data.pendingActions).toHaveLength(2);
-    expect(deps.actionLogRepo.findByStatus).toHaveBeenCalledWith("proposed");
+    expect(result.data.pendingActions).toEqual(pending);
+    expect(deps.listPendingActions).toHaveBeenCalledTimes(1);
   });
 
   it("returns calendar.status='not_connected' when calendarPort absent", async () => {
@@ -268,8 +315,6 @@ describe("generateDailyBriefing", () => {
 
     const calendarPort: CalendarPort = {
       listEvents: vi.fn(async () => events),
-      createEvent: vi.fn(),
-      updateEvent: vi.fn(),
       searchEvents: vi.fn(),
     };
 
@@ -290,8 +335,6 @@ describe("generateDailyBriefing", () => {
   it("returns calendar.status='error' when calendarPort throws", async () => {
     const calendarPort: CalendarPort = {
       listEvents: vi.fn(async () => { throw new Error("OAuth expired"); }),
-      createEvent: vi.fn(),
-      updateEvent: vi.fn(),
       searchEvents: vi.fn(),
     };
 
@@ -339,7 +382,8 @@ describe("generateDailyBriefing", () => {
     expect(deps.deadlineRepo.findByDateRange).toHaveBeenCalledWith(
       "2026-04-18T00:00:00.000Z",
       "2026-04-25T00:00:00.000Z",
-      "open"
+      "open",
+      "user-A"
     );
   });
 
@@ -363,6 +407,42 @@ describe("generateDailyBriefing", () => {
     }));
 
     expect(result.data.date).toBe("2026-04-18");
+  });
+
+  it("uses correct day boundaries across DST start in America/New_York", async () => {
+    const calendarPort: CalendarPort = {
+      listEvents: vi.fn(async () => []),
+      searchEvents: vi.fn(),
+    };
+
+    const deps = createDeps({ calendarPort });
+    await generateDailyBriefing(deps, defaultInput({
+      now: new Date("2026-03-08T12:00:00Z"),
+      timezone: "America/New_York",
+    }));
+
+    expect(calendarPort.listEvents).toHaveBeenCalledWith(
+      "2026-03-08T05:00:00.000Z",
+      "2026-03-09T04:00:00.000Z",
+    );
+  });
+
+  it("uses correct day boundaries for non-hour offset timezone", async () => {
+    const calendarPort: CalendarPort = {
+      listEvents: vi.fn(async () => []),
+      searchEvents: vi.fn(),
+    };
+
+    const deps = createDeps({ calendarPort });
+    await generateDailyBriefing(deps, defaultInput({
+      now: new Date("2026-04-18T10:00:00Z"),
+      timezone: "Asia/Kathmandu",
+    }));
+
+    expect(calendarPort.listEvents).toHaveBeenCalledWith(
+      "2026-04-17T18:15:00.000Z",
+      "2026-04-18T18:15:00.000Z",
+    );
   });
 });
 
@@ -430,12 +510,11 @@ describe("buildBriefingPrompt", () => {
   it("includes pending actions section", () => {
     const data: BriefingData = {
       ...emptyData,
-      pendingActions: [makeAction({ actionType: "draft_reply", riskLevel: "approval_required" })],
+      pendingActions: [makeAction({ actionType: "create_reminder", resourceId: "deadline:d1", riskLevel: "L1" })],
     };
     const prompt = buildBriefingPrompt(data);
     expect(prompt).toContain("Pending");
-    expect(prompt).toContain("draft_reply");
-    expect(prompt).toContain("approval_required");
+    expect(prompt).toContain("- create_reminder on deadline:d1 [L1]");
   });
 
   it("includes calendar error status in prompt", () => {

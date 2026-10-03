@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { GmailHttpClient } from "../gmail-http-client.js";
 import type { TokenProvider } from "../token-provider.js";
-import type { GmailListResponse, GmailMessageResource } from "../gmail.types.js";
+import type {
+  GmailListResponse,
+  GmailMessageAttachmentResource,
+  GmailMessageFullResource,
+  GmailMessageResource,
+} from "../gmail.types.js";
 
 // ── Mock global fetch ────────────────────────────────────────
 
@@ -196,6 +201,82 @@ describe("GmailHttpClient", () => {
       await client.getMessage("msg-1");
 
       expect(tokenProvider.getAccessToken).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ── getMessageFull ──────────────────────────────────────
+
+  describe("getMessageFull", () => {
+    const fakeMessageFull: GmailMessageFullResource = {
+      id: "msg-1",
+      threadId: "t-1",
+      payload: {
+        mimeType: "multipart/mixed",
+        headers: [],
+        parts: [
+          {
+            partId: "1",
+            mimeType: "application/pdf",
+            filename: "statement.pdf",
+            body: {
+              attachmentId: "att-1",
+            },
+          },
+        ],
+      },
+    };
+
+    it("fetches message with format=full", async () => {
+      mockFetch.mockResolvedValue(jsonResponse(fakeMessageFull));
+
+      await client.getMessageFull("msg-1");
+
+      const [url, opts] = mockFetch.mock.calls[0];
+      const parsed = new URL(url.toString());
+      expect(parsed.pathname).toBe("/gmail/v1/users/me/messages/msg-1");
+      expect(parsed.searchParams.get("format")).toBe("full");
+      expect(opts.headers.Authorization).toBe("Bearer test-access-token");
+    });
+
+    it("returns full payload tree", async () => {
+      mockFetch.mockResolvedValue(jsonResponse(fakeMessageFull));
+
+      const result = await client.getMessageFull("msg-1");
+
+      expect(result.id).toBe("msg-1");
+      expect(result.payload.parts?.[0]?.filename).toBe("statement.pdf");
+      expect(result.payload.parts?.[0]?.body?.attachmentId).toBe("att-1");
+    });
+  });
+
+  // ── getMessageAttachment ────────────────────────────────
+
+  describe("getMessageAttachment", () => {
+    const fakeAttachment: GmailMessageAttachmentResource = {
+      size: 5,
+      data: "aGVsbG8",
+    };
+
+    it("fetches attachment by message and attachment id", async () => {
+      mockFetch.mockResolvedValue(jsonResponse(fakeAttachment));
+
+      await client.getMessageAttachment("msg-1", "att-1");
+
+      const [url, opts] = mockFetch.mock.calls[0];
+      const parsed = new URL(url.toString());
+      expect(parsed.pathname).toBe(
+        "/gmail/v1/users/me/messages/msg-1/attachments/att-1",
+      );
+      expect(opts.headers.Authorization).toBe("Bearer test-access-token");
+    });
+
+    it("returns attachment payload data", async () => {
+      mockFetch.mockResolvedValue(jsonResponse(fakeAttachment));
+
+      const result = await client.getMessageAttachment("msg-1", "att-1");
+
+      expect(result).toEqual(fakeAttachment);
+      expect(result.data).toBe("aGVsbG8");
     });
   });
 });

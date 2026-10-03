@@ -32,13 +32,13 @@ export function ingestTeamsWebhook(
 ): IngestTeamsWebhookResult {
   const { inboundItemRepo, logger } = deps;
 
-  const existing = inboundItemRepo.findBySourceAndExternalId("teams", payload.id);
+  const userId = deps.resolveUserId?.() ?? null;
+
+  const existing = inboundItemRepo.findBySourceAndExternalId("teams", payload.id, userId);
 
   const labels: string[] = [];
   if (payload.teamName) labels.push(payload.teamName);
   if (payload.channelName) labels.push(payload.channelName);
-
-  const userId = deps.resolveUserId?.() ?? null;
 
   const item = inboundItemRepo.upsert({
     userId,

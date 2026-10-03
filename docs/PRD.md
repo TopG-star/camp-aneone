@@ -1,7 +1,7 @@
 # Camp-Aneone (Oneon) — Product Requirements Document
 
-**Version:** 1.0
-**Date:** 2026-04-14
+**Version:** 1.2
+**Date:** 2026-05-08
 **Author:** Product Owner
 **Status:** Draft → Approved
 
@@ -113,21 +113,21 @@ execution. *LLM decides; software guarantees.*
 | FR-022 | Store deadlines in separate `deadlines` table linked to inbound item | P0 |
 | FR-023 | Dashboard page showing upcoming and overdue deadlines | P0 |
 | FR-024 | Deadline status transitions: open → done / dismissed | P0 |
-| FR-025 | Confidence threshold: only auto-create reminders for confidence ≥ 0.6 | P1 |
+| FR-025 | Confidence threshold: only auto-create reminders for confidence ≥ 0.7 | P1 |
 
 ### 5.4 Action Lifecycle (Event-Sourced)
 
 | ID | Requirement | Priority |
 |----|------------|----------|
-| FR-026 | Rules engine evaluates classification → proposes one or more actions | P0 |
-| FR-027 | Actions follow lifecycle: Proposed → Approved → Executed (or Rejected / RolledBack) | P0 |
-| FR-028 | Risk levels: Auto (Classify, Notify, DraftReply, CreateReminder) and ApprovalRequired (Archive, Delete, Send, Forward) | P0 |
-| FR-029 | Idempotent: no duplicate proposals for same `(resourceId, actionType)` | P0 |
-| FR-030 | Append-only audit log — never UPDATE or DELETE `action_log` rows | P0 |
-| FR-031 | Store rollback data for destructive actions | P1 |
-| FR-032 | Dashboard approval queue with approve/reject buttons + quick-action deep links | P0 |
-| FR-033 | Auto-execute low-risk actions immediately upon proposal | P0 |
-| FR-034 | Failed execution leaves action in Approved state (retryable), does not roll back to Proposed | P1 |
+| FR-026 | Inbox rules and chat request actions through the code registry; unregistered types are refused | P0 |
+| FR-027 | Actions follow a 15-status forward-only lifecycle (see ADR-011) | P0 |
+| FR-028 | Risk tiers L0–L4 and per-action approval policy, configurable but never looser than the code floor | P0 |
+| FR-029 | Idempotent: one action per (scope, owner, type, idempotency key) | P0 |
+| FR-030 | Every status change is an immutable event; the instance row is a projection | P0 |
+| FR-031 | Undo is verified, version-checked, and refused for irreversible actions | P1 |
+| FR-032 | Action Center shows origin, plan, evidence, policy reasons, checks and timeline; buttons follow policy | P0 |
+| FR-033 | Actions whose policy outcome is auto run immediately after validation | P0 |
+| FR-034 | Retrying a failed or expired action creates a new linked action | P1 |
 
 ### 5.5 Daily Briefing
 
@@ -181,6 +181,26 @@ execution. *LLM decides; software guarantees.*
 | FR-060 | Normalize GitHub webhook payloads to `InboundItem` | P0 |
 | FR-061 | Verify webhook signatures via HMAC-SHA256 (`GITHUB_WEBHOOK_SECRET`) | P0 |
 
+### 5.10 Finance Statement Intake Foundation (FIN-001a)
+
+| ID | Requirement | Priority |
+|----|------------|----------|
+| FR-062 | Detect candidate bank-statement emails from configurable sender allowlist + subject keyword rules | P0 |
+| FR-063 | Persist candidates in `bank_statements` table with idempotent uniqueness on `(user_id, source, external_id)` | P0 |
+| FR-064 | Record intake status lifecycle: `discovered`, `skipped_duplicate`, `queued_for_parse` | P0 |
+| FR-065 | Store immutable message metadata evidence (`message_id`, `thread_id`, sender, subject, received_at, detection_rule_version) | P1 |
+| FR-066 | FIN-001a scope boundary: no PDF parsing, no transaction extraction, no finance analytics/chat/dashboard UI in this slice | P0 |
+
+### 5.11 Personal Memory RAG (v1)
+
+| ID | Requirement | Priority |
+|----|------------|----------|
+| FR-067 | Persist user-authored personal memory notes (`title`, `content`, `tags`, `pinned`) in user-scoped storage | P0 |
+| FR-068 | Persist explicitly user-pinned assistant outputs as memory pins (deduplicated by source message when available) | P0 |
+| FR-069 | Provide user-scoped retrieval API that can search notes, pins, and curated docs with ranked results | P0 |
+| FR-070 | Expose `search_personal_memory` tool to chat agent loop for grounding responses and action proposals | P0 |
+| FR-071 | Personal Memory v1 explicitly includes curated docs (markdown docs roots) as a retrieval source; embeddings/vector index are not required for v1 | P0 |
+
 ---
 
 ## 6. Non-Functional Requirements
@@ -213,9 +233,16 @@ execution. *LLM decides; software guarantees.*
 | `inbound_items` | Unified inbox across all sources | Upsert on `(source, external_id)` |
 | `classifications` | AI classification results | Unique on `inbound_item_id`; raw item untouched |
 | `deadlines` | Extracted deadlines from items | Linked to `inbound_items`; status: open/done/dismissed |
-| `action_log` | Append-only action state machine | Never UPDATE/DELETE; full lifecycle audit trail |
+| `action_instances` | Current state of each action (projection) | Status changes only through the transition repository |
+| `action_events` | Immutable action history | UPDATE/DELETE abort by trigger |
+| `action_definition_configs` | Per-owner action policy | Clamped to the code floor on read |
+| `action_definition_config_history` | Who changed action policy, and how | Append-only by trigger |
+| `action_log_legacy` | MVP1 action rows, read-only | UPDATE/DELETE abort by trigger |
 | `notifications` | In-app notification queue | Read status tracking; deep links |
 | `conversations` | Chat message history | Chronological order; never edited/deleted |
+| `bank_statements` | Idempotent intake registry for bank-statement candidates (FIN-001a) | Unique on `(user_id, source, external_id)` |
+| `personal_memory_notes` | User-authored memory notes for grounding and style continuity | User-scoped, ordered by recency |
+| `personal_memory_pins` | Explicit user-pinned assistant outputs | User-scoped, dedupe by source message when present |
 | `preferences` | User settings (polling, notifications) | Key-value store |
 | `push_subscriptions` | Web push endpoints (MVP1.5 foundation) | Unique on `endpoint` |
 | `classification_feedback` | User corrections for eval loop | Links to `classifications` |
@@ -230,7 +257,8 @@ execution. *LLM decides; software guarantees.*
 | `list_inbox` | List recent inbox items by priority threshold | `maxPriority?, source?, since?, limit?` |
 | `list_deadlines` | List deadlines in date range | `from?, to?, status?` |
 | `list_calendar_events` | List Google Calendar events | `timeMin, timeMax` |
-| `create_calendar_event` | Create a new calendar event | `title, start, end, attendees?, description?` |
+| `create_calendar_event` | Request a new calendar event | `title, start, end, attendees?, description?` |
+| `update_calendar_event` | Request a change to an existing calendar event | `eventId + fields` |
 | `search_calendar` | Search events by keyword | `query, timeMin?, timeMax?` |
 | `list_github_notifications` | List GitHub notifications | `all?, participating?` |
 | `list_github_prs` | List open PRs | `state?, author?, repo?` |
@@ -238,7 +266,10 @@ execution. *LLM decides; software guarantees.*
 | `list_pending_actions` | List actions awaiting approval | `status?` |
 | `list_follow_ups` | List items needing follow-up | `overdue?` |
 | `daily_briefing` | Generate today's full briefing | `{}` (no input) |
+| `search_personal_memory` | Retrieve user notes, explicit pins, and curated docs for grounding | `query, limit?, includeNotes?, includePins?, includeDocs?` |
 | `none` | Signal no more tools needed (stop loop) | `{}` (no input) |
+
+`create_calendar_event` and `update_calendar_event` request actions; they never write to Google directly.
 
 ---
 
@@ -283,11 +314,11 @@ execution. *LLM decides; software guarantees.*
 
 These are explicitly deferred to future phases:
 
-- Multi-user / multi-tenant authentication and data isolation
-- Finance / bank statement processing pipeline
-- Pharmaceutical ERP / sales management system integration
+- Tenant linking and ERP actions — planned as Action Spec sub-projects B and C.
+- Full finance pipeline beyond FIN-001a foundation (PDF parsing, transaction extraction, conversational finance insights, finance dashboard)
 - Deployed software monitoring and alerting
-- RAG / vector search over personal knowledge base
+- Embedding/vector index for memory retrieval (lexical+ranked retrieval is sufficient for v1)
+- Automatic ingestion of all prior conversation outputs into memory (v1 remains explicit pin-only)
 - WhatsApp / LinkedIn integration
 - Smart home integration (HomeKit, robot vacuum status)
 - Tool-use chat mode (Claude native tool calling — planned MVP1.5)
@@ -321,7 +352,7 @@ These are explicitly deferred to future phases:
 | **Classification** | AI-generated metadata for an inbound item: category, priority, summary, action items, follow-up flag |
 | **Deadline** | An explicit or implied due date extracted from an inbound item's text |
 | **Action** | A proposed operation on an inbound item: archive, delete, draft reply, create reminder, notify, etc. |
-| **Risk Level** | Whether an action auto-executes (Auto) or requires dashboard approval (ApprovalRequired) |
+| **Risk Tier** | L0–L4 classification of an action; the approval policy decides auto-run or approval, never looser than the code floor |
 | **Agent Loop** | The background polling cycle: ingest → deduplicate → classify → extract deadlines → propose actions |
 | **Chat Turn** | One user message → multi-round intent extraction/execution → synthesized response |
 | **Tool Registry** | Central catalog of all capabilities available to the chat system |

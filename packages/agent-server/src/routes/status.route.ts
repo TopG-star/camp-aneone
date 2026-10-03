@@ -28,16 +28,32 @@ export function createStatusRouter(deps: StatusRouteDeps): Router {
       }> = [];
 
       // Gmail / Outlook (inbound mail)
+      const hasGoogleClientCreds =
+        !!container.env.GOOGLE_CLIENT_ID && !!container.env.GOOGLE_CLIENT_SECRET;
       const gmailDb = container.oauthTokenRepo
         ? container.oauthTokenRepo.listByUser(userId).find((t) => t.provider === "google")
         : null;
-      const gmailEnv = !!container.env.GOOGLE_CLIENT_ID && !!container.env.GOOGLE_REFRESH_TOKEN;
+      const gmailDbUsable = !!gmailDb && hasGoogleClientCreds;
+      const gmailEnv =
+        !!container.env.GOOGLE_CLIENT_ID &&
+        !!container.env.GOOGLE_CLIENT_SECRET &&
+        !!container.env.GOOGLE_REFRESH_TOKEN;
+
+      let gmailDetail = "not configured";
+      if (gmailDbUsable) {
+        gmailDetail = "oauth";
+      } else if (gmailDb && !hasGoogleClientCreds) {
+        gmailDetail = "oauth token saved, missing Google client credentials";
+      } else if (gmailEnv) {
+        gmailDetail = "configured";
+      }
+
       integrations.push({
         name: "gmail",
-        connected: !!gmailDb || gmailEnv,
-        source: gmailDb ? "db" : gmailEnv ? "env" : "none",
-        connectedAs: gmailDb?.providerEmail ?? null,
-        detail: gmailDb ? "oauth" : gmailEnv ? "configured" : "not configured",
+        connected: gmailDbUsable || gmailEnv,
+        source: gmailDbUsable ? "db" : gmailEnv ? "env" : "none",
+        connectedAs: gmailDbUsable ? gmailDb?.providerEmail ?? null : null,
+        detail: gmailDetail,
       });
 
       // GitHub
@@ -60,18 +76,43 @@ export function createStatusRouter(deps: StatusRouteDeps): Router {
         detail: container.calendarPort ? "connected" : "not configured",
       });
 
+      // Teams
+      integrations.push({
+        name: "teams",
+        connected: !!container.teamsPort,
+        detail: container.teamsPort ? "local search active" : "not configured",
+      });
+
       // LLM
+      const llmProvider = container.env.LLM_PROVIDER;
+      const llmConnected =
+        llmProvider === "deepseek"
+          ? !!container.env.DEEPSEEK_API_KEY
+          : !!container.env.ANTHROPIC_API_KEY;
       integrations.push({
         name: "llm",
-        connected: !!container.env.ANTHROPIC_API_KEY,
-        detail: container.env.ANTHROPIC_API_KEY ? "anthropic" : "not configured",
+        connected: llmConnected,
+        detail: llmConnected ? llmProvider : "not configured",
       });
 
       // Notifications
+      const pushFeatureEnabled = !!container.env.FEATURE_PUSH_NOTIFICATIONS;
+      const hasCompleteVapidConfig =
+        !!container.env.VAPID_PUBLIC_KEY &&
+        !!container.env.VAPID_PRIVATE_KEY &&
+        !!container.env.VAPID_SUBJECT;
+
+      let notificationsDetail = "in-app";
+      if (pushFeatureEnabled && hasCompleteVapidConfig) {
+        notificationsDetail = "in-app + web-push";
+      } else if (pushFeatureEnabled) {
+        notificationsDetail = "in-app (push misconfigured)";
+      }
+
       integrations.push({
         name: "notifications",
         connected: true,
-        detail: "in-app",
+        detail: notificationsDetail,
       });
 
       res.json({

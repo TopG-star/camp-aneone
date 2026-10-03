@@ -1,123 +1,182 @@
-import { Router } from "express";
-import type {
-  ActionLogRepository,
-  InboundItemRepository,
-  Logger,
+import { Router, type Response } from "express";
+import { ActionViewQuerySchema, LEGACY_BANNER, OffsetPaginationQuerySchema, STATUS_GROUPS } from "@oneon/contracts";
+import {
+  personalActor,
+  type ActionConfigRepository,
+  type ActionInstance,
+  type ActionInstanceRepository,
+  type LegacyActionRepository,
+  type Logger,
 } from "@oneon/domain";
-import { ActionsQuerySchema } from "@oneon/contracts";
+import {
+  ActionOperationError,
+  clampPolicy,
+  type ActionOrchestrator,
+  type ActionRegistry,
+  type RequestOutcome,
+} from "@oneon/application";
+import { toActionView } from "./action-views.js";
 
-// ── Types ────────────────────────────────────────────────────
+const LEGACY_MAX_LIMIT = 100;
+const MAX_REASON_LENGTH = 1000;
 
 export interface ActionsRouteDeps {
-  actionLogRepo: ActionLogRepository;
-  inboundItemRepo: InboundItemRepository;
+  orchestrator: ActionOrchestrator;
+  registry: ActionRegistry;
+  instanceRepo: ActionInstanceRepository;
+  configRepo: ActionConfigRepository;
+  legacyRepo: LegacyActionRepository;
   logger: Logger;
 }
 
-// ── Router ───────────────────────────────────────────────────
-
 export function createActionsRouter(deps: ActionsRouteDeps): Router {
   const router = Router();
-  const { actionLogRepo, inboundItemRepo, logger } = deps;
 
-  // ── GET / — Paginated action list ─────────────────────────
+  const view = (userId: string, instance: ActionInstance) => {
+    const def = deps.registry.get(instance.actionType);
+    const stored = deps.configRepo.get(instance.scope, instance.ownerId, def.type);
+    const { policy } = clampPolicy({
+      floor: def.floor,
+      defaults: def.defaults,
+      storedJson: stored?.configJson ?? null,
+      declaredMetrics: Object.keys(def.thresholdMetrics),
+      executorAvailable: def.execute !== null,
+    });
+    return toActionView(instance, {
+      registry: deps.registry,
+      events: deps.instanceRepo.listEvents(userId, instance.id),
+      viewer: personalActor(userId),
+      policy,
+    });
+  };
+
+  const fail = (res: Response, error: unknown, context: Record<string, unknown>) => {
+    if (error instanceof ActionOperationError) {
+      const status = error.code === "not_found" ? 404 : error.code === "not_allowed" ? 403 : 409;
+      res.status(status).json({ error: error.message });
+      return;
+    }
+    deps.logger.error("Action request failed", { ...context, error: error instanceof Error ? error.message : String(error) });
+    res.status(500).json({ error: "Internal server error" });
+  };
+
   router.get("/", (req, res) => {
+    const parsed = ActionViewQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid query parameters", details: parsed.error.format() });
+      return;
+    }
+    const userId = req.userId!;
+    const { limit, offset, status, group } = parsed.data;
+    const statuses = status ? [status] : group ? [...STATUS_GROUPS[group]] : undefined;
     try {
-      const parsed = ActionsQuerySchema.safeParse(req.query);
-      if (!parsed.success) {
-        res.status(400).json({ error: "Invalid query parameters", details: parsed.error.format() });
-        return;
-      }
+      const actions = deps.instanceRepo
+        .list(userId, { statuses, limit, offset })
+        .filter((i) => {
+          if (deps.registry.has(i.actionType)) return true;
+          deps.logger.warn("Skipping action with unregistered type", { actionId: i.id, actionType: i.actionType });
+          return false;
+        })
+        .map((i) => view(userId, i));
+      const total = deps.instanceRepo.count(userId, { statuses });
+      res.json({ actions, pagination: { limit, offset, total, hasMore: offset + limit < total } });
+    } catch (error) {
+      fail(res, error, { route: "list" });
+    }
+  });
 
-      const { limit, offset, status } = parsed.data;
-      const userId = req.userId!;
-
-      const actions = actionLogRepo.findAll({ status, limit, offset, userId });
-      const total = actionLogRepo.count({ status, userId });
-
-      const enriched = actions.map((a) => {
-        const item = inboundItemRepo.findById(a.resourceId);
-        return {
-          id: a.id,
-          resourceId: a.resourceId,
-          actionType: a.actionType,
-          riskLevel: a.riskLevel,
-          status: a.status,
-          payloadJson: a.payloadJson,
-          resultJson: a.resultJson,
-          errorJson: a.errorJson,
-          createdAt: a.createdAt,
-          updatedAt: a.updatedAt,
-          itemSubject: item?.subject ?? null,
-        };
-      });
-
+  router.get("/legacy", (req, res) => {
+    const parsed = OffsetPaginationQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid query parameters", details: parsed.error.format() });
+      return;
+    }
+    const userId = req.userId!;
+    const limit = Math.min(parsed.data.limit, LEGACY_MAX_LIMIT);
+    const offset = parsed.data.offset;
+    try {
+      const rows = deps.legacyRepo.listForUser(userId, { limit, offset });
+      const total = deps.legacyRepo.countForUser(userId);
       res.json({
-        actions: enriched,
-        pagination: {
-          limit,
-          offset,
-          total,
-          hasMore: offset + limit < total,
-        },
+        banner: LEGACY_BANNER,
+        actions: rows.map((r) => {
+          let payload: Record<string, unknown> = {};
+          try {
+            payload = JSON.parse(r.payloadJson) as Record<string, unknown>;
+          } catch {
+            payload = {};
+          }
+          return { id: r.id, actionType: r.actionType, status: r.status, payload, createdAt: r.createdAt };
+        }),
+        pagination: { limit, offset, total, hasMore: offset + limit < total },
       });
     } catch (error) {
-      logger.error("Failed to fetch actions", { error: error instanceof Error ? error.message : String(error) });
-      res.status(500).json({ error: "Internal server error" });
+      fail(res, error, { route: "legacy" });
     }
   });
 
-  // ── POST /:id/approve ─────────────────────────────────────
-  router.post("/:id/approve", (req, res) => {
+  router.get("/:id", (req, res) => {
+    const userId = req.userId!;
     try {
-      const userId = req.userId!;
-      const actions = actionLogRepo.findAll({ limit: 1000, userId });
-      const action = actions.find((a) => a.id === req.params.id);
-      if (!action) {
+      const instance = deps.instanceRepo.findById(userId, req.params.id);
+      if (!instance) {
         res.status(404).json({ error: "Action not found" });
         return;
       }
-
-      if (action.status !== "proposed") {
-        res.status(409).json({
-          error: `Cannot approve action in "${action.status}" status`,
-        });
-        return;
-      }
-
-      actionLogRepo.updateStatus(action.id, "approved");
-      logger.info("Action approved", { actionId: action.id });
-      res.json({ id: action.id, status: "approved" });
+      res.json(view(userId, instance));
     } catch (error) {
-      logger.error("Failed to approve action", { error: error instanceof Error ? error.message : String(error) });
-      res.status(500).json({ error: "Internal server error" });
+      fail(res, error, { route: "get", actionId: req.params.id });
     }
   });
 
-  // ── POST /:id/reject ──────────────────────────────────────
-  router.post("/:id/reject", (req, res) => {
+  router.get("/:id/events", (req, res) => {
+    const userId = req.userId!;
     try {
-      const userId = req.userId!;
-      const actions = actionLogRepo.findAll({ limit: 1000, userId });
-      const action = actions.find((a) => a.id === req.params.id);
-      if (!action) {
+      if (!deps.instanceRepo.findById(userId, req.params.id)) {
         res.status(404).json({ error: "Action not found" });
         return;
       }
+      res.json({ events: deps.instanceRepo.listEvents(userId, req.params.id) });
+    } catch (error) {
+      fail(res, error, { route: "events", actionId: req.params.id });
+    }
+  });
 
-      if (action.status !== "proposed") {
-        res.status(409).json({
-          error: `Cannot reject action in "${action.status}" status`,
-        });
+  type Op = "approve" | "reject" | "cancel" | "undo";
+  const run: Record<Op, (userId: string, id: string, body: { reason?: unknown }) => Promise<ActionInstance>> = {
+    approve: (u, id) => deps.orchestrator.approve(personalActor(u), id),
+    reject: (u, id, b) => deps.orchestrator.reject(personalActor(u), id, typeof b.reason === "string" ? b.reason : undefined),
+    cancel: (u, id) => deps.orchestrator.cancel(personalActor(u), id),
+    undo: (u, id) => deps.orchestrator.requestUndo(personalActor(u), id),
+  };
+  for (const op of Object.keys(run) as Op[]) {
+    router.post(`/:id/${op}`, async (req, res) => {
+      const userId = req.userId!;
+      if (op === "reject" && typeof req.body?.reason === "string" && req.body.reason.length > MAX_REASON_LENGTH) {
+        res.status(422).json({ error: `Reason must be ${MAX_REASON_LENGTH} characters or fewer.` });
         return;
       }
+      try {
+        // Execution never depends on this request's connection (spec §10.2).
+        const instance = await run[op](userId, req.params.id, req.body ?? {});
+        res.json(view(userId, instance));
+      } catch (error) {
+        fail(res, error, { route: op, actionId: req.params.id });
+      }
+    });
+  }
 
-      actionLogRepo.updateStatus(action.id, "rejected");
-      logger.info("Action rejected", { actionId: action.id });
-      res.json({ id: action.id, status: "rejected" });
+  router.post("/:id/retry", async (req, res) => {
+    const userId = req.userId!;
+    try {
+      const outcome: RequestOutcome = await deps.orchestrator.retry(personalActor(userId), req.params.id);
+      if (outcome.kind === "refused") {
+        res.status(422).json({ error: "Retry refused", issues: outcome.issues });
+        return;
+      }
+      res.json(view(userId, outcome.instance));
     } catch (error) {
-      logger.error("Failed to reject action", { error: error instanceof Error ? error.message : String(error) });
-      res.status(500).json({ error: "Internal server error" });
+      fail(res, error, { route: "retry", actionId: req.params.id });
     }
   });
 

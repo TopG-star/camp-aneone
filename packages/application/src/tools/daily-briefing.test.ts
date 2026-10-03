@@ -8,11 +8,11 @@ import type {
   ClassificationRepository,
   InboundItemRepository,
   DeadlineRepository,
-  ActionLogRepository,
   SynthesisPort,
   Logger,
 } from "@oneon/domain";
 import type { ToolResult } from "./tool-registry.js";
+import { InMemoryActionRepo } from "../actions/__tests__/in-memory-repos.js";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -49,14 +49,7 @@ function createToolDeps(overrides: Partial<DailyBriefingDeps> = {}): DailyBriefi
     count: vi.fn(() => 0),
   };
 
-  const actionLogRepo: ActionLogRepository = {
-    create: vi.fn() as ActionLogRepository["create"],
-    findByResourceAndType: vi.fn(() => null),
-    findByStatus: vi.fn(() => []),
-    updateStatus: vi.fn(),
-    findAll: vi.fn(() => []),
-    count: vi.fn(() => 0),
-  };
+  const instanceRepo = new InMemoryActionRepo(() => new Date("2026-10-01T12:00:00Z"));
 
   const synthesizer: SynthesisPort = {
     synthesize: vi.fn(async () => "Your morning briefing."),
@@ -66,7 +59,7 @@ function createToolDeps(overrides: Partial<DailyBriefingDeps> = {}): DailyBriefi
     classificationRepo,
     inboundItemRepo,
     deadlineRepo,
-    actionLogRepo,
+    instanceRepo,
     synthesizer,
     logger: createMockLogger(),
     ...overrides,
@@ -85,6 +78,11 @@ describe("dailyBriefingSchema", () => {
     const result = dailyBriefingSchema.safeParse({ timezone: "America/New_York" });
     expect(result.success).toBe(true);
     expect(result.data?.timezone).toBe("America/New_York");
+  });
+
+  it("accepts an optional userId and rejects an empty one", () => {
+    expect(dailyBriefingSchema.safeParse({ userId: "u1" }).data?.userId).toBe("u1");
+    expect(dailyBriefingSchema.safeParse({ userId: "" }).success).toBe(false);
   });
 
   it("defaults timezone to UTC", () => {
@@ -141,11 +139,11 @@ describe("createDailyBriefingTool", () => {
   it("passes timezone through to the use case", async () => {
     const deps = createToolDeps();
     const tool = createDailyBriefingTool(deps);
-    await tool.execute({ timezone: "Asia/Tokyo" });
+    await tool.execute({ timezone: "Asia/Tokyo", userId: "u1" });
 
     // If timezone is respected, the date queried from repos should differ
     // We just verify it ran without errors — timezone logic tested in use case tests
-    expect(deps.classificationRepo.findAll).toHaveBeenCalled();
+    expect(deps.classificationRepo.findAll).toHaveBeenCalledWith(expect.objectContaining({ userId: "u1" }));
   });
 
   it("handles execute being async (returns Promise)", async () => {
@@ -157,5 +155,41 @@ describe("createDailyBriefingTool", () => {
     const result = await resultPromise;
     expect(result).toHaveProperty("data");
     expect(result).toHaveProperty("summary");
+  });
+
+  it("lists only the session user's awaiting-approval actions as pending", async () => {
+    const instanceRepo = new InMemoryActionRepo(() => new Date("2026-10-01T12:00:00Z"));
+    const base = {
+      scope: "personal" as const, tenantId: null, locationIds: [], actionType: "create_reminder", definitionVersion: "1",
+      initiator: "system", initiatorUserId: null, input: {}, evidence: [], retryOf: null, attemptNumber: 1,
+    };
+    for (const [id, userId] of [["a1", "u1"], ["a2", "u2"]] as const) {
+      instanceRepo.create({ ...base, id, ownerId: userId, userId, idempotencyKey: id, resourceRef: `deadline:${id}` }, { kind: "system" });
+      instanceRepo.appendTransition({ actionId: id, expectedStatus: "proposed", toStatus: "validating", actor: { kind: "system" } });
+      instanceRepo.appendTransition({ actionId: id, expectedStatus: "validating", toStatus: "awaiting_approval", actor: { kind: "system" } });
+    }
+    const synthesize = vi.fn(async () => "ok");
+    const tool = createDailyBriefingTool(createToolDeps({ instanceRepo, synthesizer: { synthesize } }));
+
+    const result = await tool.execute(dailyBriefingSchema.parse({ userId: "u1" })) as ToolResult;
+    expect((result.data as { pendingActions: unknown[] }).pendingActions).toEqual([
+      { actionType: "create_reminder", resourceId: "deadline:a1", riskLevel: "L1" },
+    ]);
+
+    const anonymous = await tool.execute(dailyBriefingSchema.parse({})) as ToolResult;
+    expect((anonymous.data as { pendingActions: unknown[] }).pendingActions).toEqual([]);
+  });
+
+  it("passes the session user to resolveCalendarPort and ignores the global port", async () => {
+    const own = { listEvents: vi.fn(async () => []), searchEvents: vi.fn() };
+    const global = { listEvents: vi.fn(async () => []), searchEvents: vi.fn() };
+    const resolveCalendarPort = vi.fn(() => own);
+    const tool = createDailyBriefingTool(createToolDeps({ calendarPort: global, resolveCalendarPort }));
+
+    await tool.execute(dailyBriefingSchema.parse({ userId: "u1" }));
+
+    expect(resolveCalendarPort).toHaveBeenCalledWith("u1");
+    expect(own.listEvents).toHaveBeenCalledTimes(1);
+    expect(global.listEvents).not.toHaveBeenCalled();
   });
 });

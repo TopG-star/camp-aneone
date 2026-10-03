@@ -4,6 +4,8 @@ import type {
   NotificationRepository,
   Logger,
 } from "@oneon/domain";
+import { NotificationEventType } from "@oneon/domain";
+import { evaluateReminderPriorityPolicy } from "./reminder-priority-policy.js";
 
 export interface CheckApproachingDeadlinesDeps {
   deadlineRepo: DeadlineRepository;
@@ -61,16 +63,27 @@ export async function checkApproachingDeadlines(
   for (const deadline of deadlines) {
     const deepLink = `/deadlines/${deadline.id}`;
 
+    const policyDecision = evaluateReminderPriorityPolicy({
+      userId: deps.userId,
+      eventType: NotificationEventType.DeadlineApproaching,
+      confidence: deadline.confidence,
+    });
+
+    if (!policyDecision.shouldNotify) {
+      continue;
+    }
+
     if (hasExistingNotification(notificationRepo, deepLink, dedupeThreshold, deps.userId)) {
       result.skippedAlreadyNotified++;
       continue;
     }
 
     await notificationPort.send({
-      eventType: "deadline_approaching",
+      eventType: NotificationEventType.DeadlineApproaching,
       title: `Deadline approaching: ${deadline.description}`,
       body: `Due ${formatDueDate(deadline.dueDate)}`,
       deepLink,
+      userId: deps.userId,
     });
 
     result.notified++;

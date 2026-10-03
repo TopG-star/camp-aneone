@@ -9,3 +9,4 @@ export * from "./status.contract.js";
 export * from "./chat.contract.js";
 export * from "./deadlines.contract.js";
 export * from "./notifications.contract.js";
+export * from "./profile.contract.js";

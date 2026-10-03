@@ -7,7 +7,6 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { SqliteInboundItemRepository } from "./repositories/sqlite-inbound-item.repository.js";
 import { SqliteClassificationRepository, SqliteClassificationFeedbackRepository } from "./repositories/sqlite-classification.repository.js";
 import { SqliteDeadlineRepository } from "./repositories/sqlite-deadline.repository.js";
-import { SqliteActionLogRepository } from "./repositories/sqlite-action-log.repository.js";
 import { SqliteNotificationRepository } from "./repositories/sqlite-notification.repository.js";
 import { SqliteConversationRepository } from "./repositories/sqlite-conversation.repository.js";
 import { SqlitePreferenceRepository } from "./repositories/sqlite-preference.repository.js";
@@ -29,12 +28,24 @@ function createTestDb(): Database.Database {
   const migration4 = readFileSync(join(migrationsDir, "004_add_conversation_id.sql"), "utf-8");
   const migration5 = readFileSync(join(migrationsDir, "005_users_and_oauth_tokens.sql"), "utf-8");
   const migration6 = readFileSync(join(migrationsDir, "006_add_user_id_to_core_tables.sql"), "utf-8");
+  const migration7 = readFileSync(join(migrationsDir, "007_user_profiles.sql"), "utf-8");
+  const migration8 = readFileSync(join(migrationsDir, "008_bank_statement_intake.sql"), "utf-8");
+  const migration9 = readFileSync(join(migrationsDir, "009_bank_statement_status_canonicalization.sql"), "utf-8");
+  const migration10 = readFileSync(join(migrationsDir, "010_bank_statement_parser_framework.sql"), "utf-8");
+  const migration11 = readFileSync(join(migrationsDir, "011_push_subscriptions_user_scope.sql"), "utf-8");
+  const migration12 = readFileSync(join(migrationsDir, "012_inbound_items_user_scope.sql"), "utf-8");
   db.exec(migration1);
   db.exec(migration2);
   db.exec(migration3);
   db.exec(migration4);
   db.exec(migration5);
   db.exec(migration6);
+  db.exec(migration7);
+  db.exec(migration8);
+  db.exec(migration9);
+  db.exec(migration10);
+  db.exec(migration11);
+  db.exec(migration12);
 
   return db;
 }
@@ -116,7 +127,7 @@ describe("SqliteInboundItemRepository", () => {
   });
 
   it("findBySourceAndExternalId returns null for missing", () => {
-    const found = repo.findBySourceAndExternalId("gmail" as Source, "nope");
+    const found = repo.findBySourceAndExternalId("gmail" as Source, "nope", null);
     expect(found).toBeNull();
   });
 
@@ -606,159 +617,6 @@ describe("SqliteDeadlineRepository", () => {
     expect(repo.count()).toBe(1);
     expect(repo.count({ status: "open" })).toBe(1);
     expect(repo.count({ status: "done" })).toBe(0);
-  });
-});
-
-// ── ActionLogRepository ──────────────────────────────────────
-
-describe("SqliteActionLogRepository", () => {
-  let db: Database.Database;
-  let repo: SqliteActionLogRepository;
-
-  beforeEach(() => {
-    db = createTestDb();
-    repo = new SqliteActionLogRepository(db);
-  });
-
-  it("creates and retrieves an action log entry", () => {
-    const entry = repo.create({
-      userId: null,
-      resourceId: "item-1",
-      actionType: "archive",
-      riskLevel: "auto",
-      status: "proposed",
-      payloadJson: "{}",
-      resultJson: null,
-      errorJson: null,
-      rollbackJson: null,
-    });
-
-    expect(entry.id).toBeTruthy();
-    expect(entry.status).toBe("proposed");
-    expect(entry.actionType).toBe("archive");
-  });
-
-  it("state machine allows valid transition: proposed → approved", () => {
-    const entry = repo.create({
-      userId: null,
-      resourceId: "item-1",
-      actionType: "archive",
-      riskLevel: "approval_required",
-      status: "proposed",
-      payloadJson: "{}",
-      resultJson: null,
-      errorJson: null,
-      rollbackJson: null,
-    });
-
-    expect(() => {
-      repo.updateStatus(entry.id, "approved" as any);
-    }).not.toThrow();
-
-    const found = repo.findByResourceAndType("item-1", "archive" as any);
-    expect(found!.status).toBe("approved");
-  });
-
-  it("state machine allows valid transition: approved → executed", () => {
-    const entry = repo.create({
-      userId: null,
-      resourceId: "item-1",
-      actionType: "archive",
-      riskLevel: "auto",
-      status: "proposed",
-      payloadJson: "{}",
-      resultJson: null,
-      errorJson: null,
-      rollbackJson: null,
-    });
-
-    repo.updateStatus(entry.id, "approved" as any);
-    repo.updateStatus(entry.id, "executed" as any, { resultJson: '{"ok":true}' });
-
-    const found = repo.findByResourceAndType("item-1", "archive" as any);
-    expect(found!.status).toBe("executed");
-    expect(found!.resultJson).toBe('{"ok":true}');
-  });
-
-  it("state machine rejects invalid transition: proposed → executed", () => {
-    const entry = repo.create({
-      userId: null,
-      resourceId: "item-1",
-      actionType: "archive",
-      riskLevel: "auto",
-      status: "proposed",
-      payloadJson: "{}",
-      resultJson: null,
-      errorJson: null,
-      rollbackJson: null,
-    });
-
-    expect(() => {
-      repo.updateStatus(entry.id, "executed" as any);
-    }).toThrow("Invalid status transition: proposed → executed");
-  });
-
-  it("state machine rejects invalid transition: rejected → approved", () => {
-    const entry = repo.create({
-      userId: null,
-      resourceId: "item-1",
-      actionType: "archive",
-      riskLevel: "auto",
-      status: "proposed",
-      payloadJson: "{}",
-      resultJson: null,
-      errorJson: null,
-      rollbackJson: null,
-    });
-
-    repo.updateStatus(entry.id, "rejected" as any);
-
-    expect(() => {
-      repo.updateStatus(entry.id, "approved" as any);
-    }).toThrow("Invalid status transition: rejected → approved");
-  });
-
-  it("updateStatus throws for non-existent entry", () => {
-    expect(() => {
-      repo.updateStatus("nonexistent-id", "approved" as any);
-    }).toThrow("ActionLogEntry not found: nonexistent-id");
-  });
-
-  it("findAll with limit:0 returns zero rows", () => {
-    repo.create({
-      userId: null,
-      resourceId: "item-1",
-      actionType: "archive",
-      riskLevel: "auto",
-      status: "proposed",
-      payloadJson: "{}",
-      resultJson: null,
-      errorJson: null,
-      rollbackJson: null,
-    });
-
-    const results = repo.findAll({ limit: 0 });
-    expect(results).toHaveLength(0);
-  });
-
-  it("count returns correct count", () => {
-    expect(repo.count()).toBe(0);
-
-    repo.create({
-      userId: null,
-      resourceId: "item-1",
-      actionType: "archive",
-      riskLevel: "auto",
-      status: "proposed",
-      payloadJson: "{}",
-      resultJson: null,
-      errorJson: null,
-      rollbackJson: null,
-    });
-
-    expect(repo.count()).toBe(1);
-    expect(repo.count({ status: "proposed" as any })).toBe(1);
-    expect(repo.count({ status: "executed" as any })).toBe(0);
   });
 });
 

@@ -9,24 +9,54 @@ import rateLimit from "express-rate-limit";
 // Load .env from monorepo root
 config({ path: resolve(import.meta.dirname!, "../../..", ".env") });
 
-import { loadEnv } from "./config/env.js";
+import { loadEnv, retiredEnvWarnings } from "./config/env.js";
 import { createContainer } from "./container.js";
 import { registerRoutes } from "./routes/index.js";
 import { BackgroundLoop } from "./background-loop.js";
-import { ingestGmail, runProcessingCycle } from "@oneon/application";
-import type { DailyCallCounter } from "@oneon/application";
+import { runActionRecovery, runActionStartupTasks } from "./actions-wiring.js";
+import {
+  ingestGmail,
+  parseBankStatements,
+  runProcessingCycle,
+} from "@oneon/application";
+import type { CycleSummary, DailyCallCounter } from "@oneon/application";
 import {
   GmailHttpClient,
   GmailPollingAdapter,
+  GmailStatementDocumentProvider,
 } from "@oneon/infrastructure";
+
+function emptyCycleSummary(): CycleSummary {
+  return {
+    classification: {
+      total: 0,
+      classified: 0,
+      skippedByRule: 0,
+      skippedMaxAttempts: 0,
+      skippedDailyLimit: 0,
+      failed: 0,
+    },
+    actionsProposed: 0,
+    actionsAutoExecuted: 0,
+    actionErrors: 0,
+    notificationsSent: 0,
+    abortedEarly: false,
+    durationMs: 0,
+  };
+}
 
 // ── Bootstrap ────────────────────────────────────────────────
 const env = loadEnv();
 const container = createContainer(env);
 const { logger } = container;
+for (const message of retiredEnvWarnings(process.env)) logger.warn(message);
 
 // ── Express App ──────────────────────────────────────────────
 const app = express();
+// Requests normally arrive through the dashboard's /api proxy (and the tunnel in front of it),
+// which set X-Forwarded-For. Trust only proxies on loopback and private networks, so rate limits
+// key on the real client while a client connecting directly can't spoof its address.
+app.set("trust proxy", "loopback, linklocal, uniquelocal");
 
 // ── Security Middleware ──────────────────────────────────────
 app.use(helmet({
@@ -63,6 +93,7 @@ app.get("/health", (_req, res) => {
       calendar: container.calendarPort !== null,
       github: container.githubPort !== null,
       notifications: container.notificationPort !== null,
+      financeStatementParser: env.FEATURE_FINANCE_STATEMENT_PARSER,
     },
   };
   res.json(health);
@@ -97,17 +128,25 @@ logger.info("Camp-Aneone (Oneon) agent-server starting", {
   nodeEnv: env.NODE_ENV,
   port: env.PORT,
   features: {
-    autoExecute: env.FEATURE_AUTO_EXECUTE,
     pushNotifications: env.FEATURE_PUSH_NOTIFICATIONS,
     chat: env.FEATURE_CHAT,
     backgroundLoop: env.FEATURE_BACKGROUND_LOOP,
+    financeStatementIntake: env.FEATURE_FINANCE_STATEMENT_INTAKE,
+    financeStatementParser: env.FEATURE_FINANCE_STATEMENT_PARSER,
   },
 });
 
 // ── Background Processing Loop ──────────────────────────────
 let backgroundLoop: BackgroundLoop | null = null;
 
-if (env.FEATURE_BACKGROUND_LOOP && container.llmPort) {
+if (env.FEATURE_BACKGROUND_LOOP) {
+  if (!container.llmPort) {
+    logger.warn(
+      "Background loop running in ingest-only mode (LLM unavailable). " +
+        "Inbox will populate, but classification/actions are paused.",
+    );
+  }
+
   // Shared daily LLM call counter (mutable, survives across cycles)
   const dailyCallCounter: DailyCallCounter = {
     date: new Date().toISOString().slice(0, 10),
@@ -116,7 +155,34 @@ if (env.FEATURE_BACKGROUND_LOOP && container.llmPort) {
   // First cycle uses smaller batch to avoid burst on startup
   let isFirstCycle = true;
 
-  const userCycleRunner = async (userId: string) => {
+  const bankStatementIntake =
+    env.FEATURE_FINANCE_STATEMENT_INTAKE &&
+    env.FINANCE_STATEMENT_SENDER_ALLOWLIST.length > 0 &&
+    env.FINANCE_STATEMENT_SUBJECT_KEYWORDS.length > 0
+      ? {
+          repository: container.bankStatementRepo,
+          senderAllowlist: env.FINANCE_STATEMENT_SENDER_ALLOWLIST,
+          subjectKeywords: env.FINANCE_STATEMENT_SUBJECT_KEYWORDS,
+          detectionRuleVersion: env.FINANCE_STATEMENT_DETECTION_RULE_VERSION,
+        }
+      : undefined;
+
+  if (env.FEATURE_FINANCE_STATEMENT_INTAKE && !bankStatementIntake) {
+    logger.warn(
+      "Finance statement intake is enabled but missing allowlist/keywords; intake is disabled for this run",
+    );
+  }
+
+  if (
+    env.FEATURE_FINANCE_STATEMENT_PARSER &&
+    !env.FEATURE_FINANCE_STATEMENT_INTAKE
+  ) {
+    logger.warn(
+      "Finance statement parser is enabled while intake is disabled; only existing discovered statements can be parsed",
+    );
+  }
+
+  const runUserCycle = async (userId: string) => {
     // 1. Create per-user Google token provider
     const tokenProvider = container.createGoogleTokenProvider(userId);
     if (!tokenProvider) {
@@ -141,7 +207,38 @@ if (env.FEATURE_BACKGROUND_LOOP && container.llmPort) {
       inboundItemRepo: container.inboundItemRepo,
       logger,
       userId,
+      bankStatementIntake,
     });
+
+    if (env.FEATURE_FINANCE_STATEMENT_PARSER) {
+      const parseSummary = await parseBankStatements(
+        {
+          bankStatementRepo: container.bankStatementRepo,
+          parseRepo: container.bankStatementParseRepo,
+          parserRegistry: container.bankStatementParserRegistry,
+          documentProvider: new GmailStatementDocumentProvider({
+            client: gmailClient,
+            logger,
+          }),
+          logger,
+        },
+        {
+          userId,
+          batchSize: env.FINANCE_STATEMENT_PARSE_BATCH_SIZE,
+          maxTransactionRetries: env.FINANCE_STATEMENT_MAX_TRANSACTION_RETRIES,
+        },
+      );
+
+      logger.info("Finance statement parse cycle complete", {
+        userId,
+        ...parseSummary,
+      });
+    }
+
+    if (!container.llmPort) {
+      // Ingest-first fallback: keep Inbox/TODAY counts flowing even without LLM.
+      return emptyCycleSummary();
+    }
 
     // 3. Run processing cycle for this user
     const batchSize = isFirstCycle
@@ -155,7 +252,6 @@ if (env.FEATURE_BACKGROUND_LOOP && container.llmPort) {
         inboundItemRepo: container.inboundItemRepo,
         classificationRepo: container.classificationRepo,
         deadlineRepo: container.deadlineRepo,
-        actionLogRepo: container.actionLogRepo,
         transactionRunner: container.transactionRunner,
         llmPort: container.llmPort!,
         logger,
@@ -170,7 +266,7 @@ if (env.FEATURE_BACKGROUND_LOOP && container.llmPort) {
             priority: 5 as const,
           },
         ],
-        featureAutoExecute: env.FEATURE_AUTO_EXECUTE,
+        requestAction: container.actions.orchestrator.requestAction,
         notificationPort: container.notificationPort,
         notificationRepo: container.notificationRepo,
         dailyCallCounter,
@@ -181,6 +277,15 @@ if (env.FEATURE_BACKGROUND_LOOP && container.llmPort) {
         maxDurationMs: env.PROCESSING_MAX_DURATION_MS,
       },
     );
+  };
+
+  // Spec §7.4: recovery runs on every cycle for the user (no-LLM, success or failure) and never fails it.
+  const userCycleRunner = async (userId: string) => {
+    try {
+      return await runUserCycle(userId);
+    } finally {
+      await runActionRecovery(container.actions, userId, logger);
+    }
   };
 
   backgroundLoop = new BackgroundLoop(
@@ -198,9 +303,13 @@ if (env.FEATURE_BACKGROUND_LOOP && container.llmPort) {
     },
   );
   container.backgroundLoop = backgroundLoop;
-} else if (env.FEATURE_BACKGROUND_LOOP) {
-  logger.warn("Background loop enabled but LLM port unavailable — loop not started");
+} else {
+  logger.info("Background loop disabled via FEATURE_BACKGROUND_LOOP=false");
 }
+
+void runActionStartupTasks(container, logger).catch((error: unknown) =>
+  logger.error("Action startup tasks failed", { error: error instanceof Error ? error.message : String(error) }),
+);
 
 server = app.listen(env.PORT, () => {
   logger.info(`Server ready on port ${env.PORT}`);

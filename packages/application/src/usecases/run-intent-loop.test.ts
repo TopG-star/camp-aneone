@@ -479,6 +479,68 @@ describe("runIntentLoop", () => {
     expect(result.toolCalls[1].round).toBe(2);
   });
 
+  it("injects userId into tool execution parameters when provided", async () => {
+    const extractor = createMockExtractor([
+      [{ tool: "list_deadlines", parameters: { from: "2026-04-17" } }],
+      [{ tool: "none", parameters: {} }],
+    ]);
+    const registry = createMockToolRegistry({
+      list_deadlines: makeToolResult("list_deadlines", "ok"),
+    });
+
+    await runIntentLoop(
+      { intentExtractor: extractor, toolRegistry: registry, logger },
+      defaultInput({ userId: "user-123" }),
+    );
+
+    expect(registry.execute).toHaveBeenCalledWith(
+      "list_deadlines",
+      expect.objectContaining({
+        from: "2026-04-17",
+        userId: "user-123",
+      }),
+    );
+  });
+
+  it("overwrites AI-supplied userId/turnId/turnExcerpt with the server values", async () => {
+    const extractor = createMockExtractor([
+      [{ tool: "list_deadlines", parameters: { userId: "evil", turnId: "evil", turnExcerpt: "evil", from: "x" } }],
+      [{ tool: "none", parameters: {} }],
+    ]);
+    const registry = createMockToolRegistry({
+      list_deadlines: makeToolResult("list_deadlines", "ok"),
+    });
+
+    await runIntentLoop(
+      { intentExtractor: extractor, toolRegistry: registry, logger },
+      defaultInput({ userId: "user-123", turnId: "t1" }),
+    );
+
+    expect(registry.execute).toHaveBeenCalledWith("list_deadlines", {
+      from: "x",
+      userId: "user-123",
+      turnId: "t1",
+      turnExcerpt: "What are my deadlines?",
+    });
+  });
+
+  it("drops AI-supplied identity keys when the server supplies none", async () => {
+    const extractor = createMockExtractor([
+      [{ tool: "list_deadlines", parameters: { userId: "evil", turnId: "evil", turnExcerpt: "evil", from: "x" } }],
+      [{ tool: "none", parameters: {} }],
+    ]);
+    const registry = createMockToolRegistry({
+      list_deadlines: makeToolResult("list_deadlines", "ok"),
+    });
+
+    await runIntentLoop(
+      { intentExtractor: extractor, toolRegistry: registry, logger },
+      defaultInput(),
+    );
+
+    expect(registry.execute).toHaveBeenCalledWith("list_deadlines", { from: "x" });
+  });
+
   // ── Context Assembly ─────────────────────────────────────
 
   it("passes growing executedActions to extractor each round", async () => {

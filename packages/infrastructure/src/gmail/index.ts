@@ -7,6 +7,9 @@ export {
 } from "./gmail-polling-adapter.js";
 export type {
   GmailListResponse,
+  GmailMessageAttachmentResource,
+  GmailMessageFullResource,
+  GmailMessagePart,
   GmailMessageResource,
   GmailSkipConfig,
   ParsedGmailMessage,

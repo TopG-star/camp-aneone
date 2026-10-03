@@ -4,17 +4,24 @@ import type {
   ClassificationRepository,
   ClassificationFeedbackRepository,
   DeadlineRepository,
-  ActionLogRepository,
   NotificationRepository,
   ConversationRepository,
   PreferenceRepository,
+  PushSubscriptionRepository,
+  BankStatementRepository,
+  BankStatementParseRepository,
+  BankStatementParserRegistry,
   UserRepository,
+  UserProfileRepository,
   OAuthTokenRepository,
+  PersonalMemoryNoteRepository,
+  PersonalMemoryPinRepository,
   LLMPort,
   CalendarPort,
   GitHubPort,
   TeamsPort,
   NotificationPort,
+  NotificationWriter,
   TransactionRunner,
   Logger,
 } from "@oneon/domain";
@@ -26,14 +33,22 @@ import {
   SqliteClassificationRepository,
   SqliteClassificationFeedbackRepository,
   SqliteDeadlineRepository,
-  SqliteActionLogRepository,
   SqliteNotificationRepository,
   SqliteConversationRepository,
   SqlitePreferenceRepository,
+  SqlitePushSubscriptionRepository,
+  SqliteBankStatementRepository,
+  SqliteBankStatementParseRepository,
   SqliteUserRepository,
+  SqliteUserProfileRepository,
   SqliteOAuthTokenRepository,
+  SqlitePersonalMemoryNoteRepository,
+  SqlitePersonalMemoryPinRepository,
   SqliteTransactionRunner,
   ClaudeClassifierAdapter,
+  DeepSeekClassifierAdapter,
+  ShadowLlmAdapter,
+  RoutingLlmAdapter,
   StructuredLogger,
   EnvRefreshTokenProvider,
   DbGoogleTokenProvider,
@@ -43,15 +58,21 @@ import {
   GCAL_REQUIRED_SCOPES,
   GitHubHttpClient,
   GitHubAdapter,
+  TeamsInboundAdapter,
   InAppNotificationAdapter,
+  WebPushNotificationAdapter,
   TokenCipher,
+  StaticBankStatementParserRegistry,
+  ChaseBankStatementParser,
 } from "@oneon/infrastructure";
 
 import type { Env } from "./config/env.js";
+import { recordGmailRefreshFailure } from "./gmail-refresh-state.js";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type { BackgroundLoop } from "./background-loop.js";
+import { createActionsModule, type ActionsModule } from "./actions-wiring.js";
 
 export interface AppContainer {
   // ── Config ────────────────────────────────────────────────
@@ -65,12 +86,18 @@ export interface AppContainer {
   classificationRepo: ClassificationRepository;
   classificationFeedbackRepo: ClassificationFeedbackRepository;
   deadlineRepo: DeadlineRepository;
-  actionLogRepo: ActionLogRepository;
   notificationRepo: NotificationRepository;
   conversationRepo: ConversationRepository;
   preferenceRepo: PreferenceRepository;
+  pushSubscriptionRepo: PushSubscriptionRepository;
+  bankStatementRepo: BankStatementRepository;
+  bankStatementParseRepo: BankStatementParseRepository;
+  bankStatementParserRegistry: BankStatementParserRegistry;
   userRepo: UserRepository | null;
+  userProfileRepo: UserProfileRepository;
   oauthTokenRepo: OAuthTokenRepository | null;
+  personalMemoryNoteRepo: PersonalMemoryNoteRepository;
+  personalMemoryPinRepo: PersonalMemoryPinRepository;
 
   // ── External Ports ────────────────────────────────────────
   llmPort: LLMPort | null;
@@ -89,6 +116,10 @@ export interface AppContainer {
 
   // ── Infrastructure Services ───────────────────────────────
   transactionRunner: TransactionRunner;
+
+  // ── Actions (spec: Action Spec framework) ─────────────────
+  actions: ActionsModule;
+  notificationWriter: NotificationWriter;
 
   // ── Background Loop (mutable, set after creation) ─────────
   backgroundLoop: BackgroundLoop | null;
@@ -115,10 +146,22 @@ export function createContainer(env: Env): AppContainer {
   const classificationFeedbackRepo =
     new SqliteClassificationFeedbackRepository(db);
   const deadlineRepo = new SqliteDeadlineRepository(db);
-  const actionLogRepo = new SqliteActionLogRepository(db);
   const notificationRepo = new SqliteNotificationRepository(db);
   const conversationRepo = new SqliteConversationRepository(db);
   const preferenceRepo = new SqlitePreferenceRepository(db);
+  const pushSubscriptionRepo = new SqlitePushSubscriptionRepository(db);
+  const bankStatementRepo = new SqliteBankStatementRepository(db);
+  const bankStatementParseRepo = new SqliteBankStatementParseRepository(db);
+  const bankStatementParserRegistry = new StaticBankStatementParserRegistry([
+    {
+      senderDomains: ["chase.com"],
+      sources: ["gmail"],
+      parser: new ChaseBankStatementParser(),
+    },
+  ]);
+  const userProfileRepo = new SqliteUserProfileRepository(db);
+  const personalMemoryNoteRepo = new SqlitePersonalMemoryNoteRepository(db);
+  const personalMemoryPinRepo = new SqlitePersonalMemoryPinRepository(db);
 
   // ── OAuth Repositories (requires OAUTH_TOKEN_ENCRYPTION_KEY) ──
   let userRepo: UserRepository | null = null;
@@ -166,6 +209,7 @@ export function createContainer(env: Env): AppContainer {
         env.GOOGLE_CLIENT_ID!,
         env.GOOGLE_CLIENT_SECRET!,
         primaryUser!.id,
+        () => recordGmailRefreshFailure(preferenceRepo, primaryUser!.id),
       );
       logger.info("Google: ✓ active (DB token)", {
         user: dbGoogleToken.providerEmail ?? primaryUser!.email,
@@ -196,7 +240,7 @@ export function createContainer(env: Env): AppContainer {
   // createGoogleTokenProvider: creates DbGoogleTokenProvider for a userId
 
   const getEligibleUsers = (): string[] => {
-    if (!userRepo || !oauthTokenRepo) return [];
+    if (!userRepo || !oauthTokenRepo || !hasGoogleClientCreds) return [];
     const users = userRepo.list();
     return users
       .filter((u) => oauthTokenRepo!.get("google", u.id) !== null)
@@ -214,29 +258,90 @@ export function createContainer(env: Env): AppContainer {
       env.GOOGLE_CLIENT_ID!,
       env.GOOGLE_CLIENT_SECRET!,
       userId,
+      () => recordGmailRefreshFailure(preferenceRepo, userId),
     );
   };
 
   let llmPort: LLMPort | null = null;
-  if (env.ANTHROPIC_API_KEY) {
-    llmPort = new ClaudeClassifierAdapter({
-      apiKey: env.ANTHROPIC_API_KEY,
-      classifierModel: env.LLM_CLASSIFIER_MODEL,
-      synthesisModel: env.LLM_SYNTHESIS_MODEL,
-      maxRetries: env.LLM_MAX_RETRIES,
-      timeoutMs: env.LLM_TIMEOUT_MS,
-      circuitBreaker: {
-        failureThreshold: env.CB_FAILURE_THRESHOLD,
-        resetTimeoutMs: env.CB_RESET_TIMEOUT_MS,
-      },
-      logger,
-    });
+
+  // ── LLM Provider Factory ───────────────────────────────────
+  function buildLlmAdapter(provider: "anthropic" | "deepseek"): LLMPort | null {
+    if (provider === "anthropic") {
+      if (!env.ANTHROPIC_API_KEY) return null;
+      return new ClaudeClassifierAdapter({
+        apiKey: env.ANTHROPIC_API_KEY,
+        classifierModel: env.LLM_CLASSIFIER_MODEL,
+        synthesisModel: env.LLM_SYNTHESIS_MODEL,
+        maxRetries: env.LLM_MAX_RETRIES,
+        timeoutMs: env.LLM_TIMEOUT_MS,
+        circuitBreaker: {
+          failureThreshold: env.CB_FAILURE_THRESHOLD,
+          resetTimeoutMs: env.CB_RESET_TIMEOUT_MS,
+        },
+        logger,
+      });
+    }
+    if (provider === "deepseek") {
+      // DEEPSEEK_API_KEY + model IDs are guaranteed present by env superRefine
+      return new DeepSeekClassifierAdapter({
+        apiKey: env.DEEPSEEK_API_KEY!,
+        classifierModel: env.DEEPSEEK_CLASSIFIER_MODEL!,
+        synthesisModel: env.DEEPSEEK_SYNTHESIS_MODEL!,
+        maxRetries: env.LLM_MAX_RETRIES,
+        classifierTimeoutMs: env.LLM_CLASSIFIER_TIMEOUT_MS,
+        synthesisTimeoutMs: env.LLM_SYNTHESIS_TIMEOUT_MS,
+        circuitBreaker: {
+          failureThreshold: env.CB_FAILURE_THRESHOLD,
+          resetTimeoutMs: env.CB_RESET_TIMEOUT_MS,
+        },
+        logger,
+      });
+    }
+    return null;
+  }
+
+  // Primary adapter
+  const primaryAdapter = buildLlmAdapter(env.LLM_PROVIDER);
+
+  if (primaryAdapter) {
+    llmPort = primaryAdapter;
+
+    // Premium reasoning provider for synthesize() calls
+    if (env.LLM_REASONING_PROVIDER_PREMIUM !== "none") {
+      const reasoningAdapter = buildLlmAdapter(
+        env.LLM_REASONING_PROVIDER_PREMIUM as "anthropic" | "deepseek",
+      );
+      if (reasoningAdapter) {
+        llmPort = new RoutingLlmAdapter({ standard: llmPort, reasoning: reasoningAdapter });
+        logger.info("LLM: ✓ premium routing enabled", {
+          reasoning: env.LLM_REASONING_PROVIDER_PREMIUM,
+        });
+      }
+    }
+
+    // Shadow harness for A/B comparison (fire-and-forget)
+    if (env.LLM_SHADOW_PROVIDER !== "none") {
+      const shadowAdapter = buildLlmAdapter(
+        env.LLM_SHADOW_PROVIDER as "anthropic" | "deepseek",
+      );
+      if (shadowAdapter) {
+        llmPort = new ShadowLlmAdapter({ primary: llmPort, shadow: shadowAdapter, logger });
+        logger.info("LLM: ✓ shadow mode enabled", {
+          shadowProvider: env.LLM_SHADOW_PROVIDER,
+        });
+      }
+    }
+
     logger.info("LLM: ✓ active", {
-      classifier: env.LLM_CLASSIFIER_MODEL,
-      synthesis: env.LLM_SYNTHESIS_MODEL,
+      provider: env.LLM_PROVIDER,
+      classifier: env.LLM_PROVIDER === "deepseek" ? env.DEEPSEEK_CLASSIFIER_MODEL : env.LLM_CLASSIFIER_MODEL,
+      synthesis: env.LLM_PROVIDER === "deepseek" ? env.DEEPSEEK_SYNTHESIS_MODEL : env.LLM_SYNTHESIS_MODEL,
     });
   } else {
-    logger.warn("LLM: ✗ disabled (missing ANTHROPIC_API_KEY)");
+    logger.warn("LLM: ✗ disabled", {
+      provider: env.LLM_PROVIDER,
+      reason: env.LLM_PROVIDER === "anthropic" ? "missing ANTHROPIC_API_KEY" : "missing DEEPSEEK_API_KEY",
+    });
   }
 
   let calendarPort: CalendarPort | null = null;
@@ -297,12 +402,74 @@ export function createContainer(env: Env): AppContainer {
     logger.warn("GitHub: ✗ disabled (no DB token and no GITHUB_TOKEN env var)");
   }
 
-  const notificationPort: NotificationPort = new InAppNotificationAdapter({
+  const teamsPort: TeamsPort = new TeamsInboundAdapter({
+    inboundItemRepo,
+  });
+  logger.info("Teams: ✓ local search active (inbound_items-backed)");
+
+  const inAppNotifications = new InAppNotificationAdapter({ notificationRepo, preferenceRepo, logger });
+  const inAppNotificationPort: NotificationPort = inAppNotifications;
+  let webPushNotifications: WebPushNotificationAdapter | null = null;
+
+  let notificationPort: NotificationPort = inAppNotificationPort;
+
+  if (env.FEATURE_PUSH_NOTIFICATIONS) {
+    if (env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY && env.VAPID_SUBJECT) {
+      const webPush = new WebPushNotificationAdapter({
+        pushSubscriptionRepo,
+        preferenceRepo,
+        vapidPublicKey: env.VAPID_PUBLIC_KEY,
+        vapidPrivateKey: env.VAPID_PRIVATE_KEY,
+        vapidSubject: env.VAPID_SUBJECT,
+        logger,
+      });
+      webPushNotifications = webPush;
+
+      notificationPort = {
+        async send(notification): Promise<void> {
+          await inAppNotificationPort.send(notification);
+          await webPush.send(notification);
+        },
+      };
+
+      logger.info("Notifications: ✓ in-app + web-push mode");
+    } else {
+      logger.warn(
+        "Notifications: FEATURE_PUSH_NOTIFICATIONS enabled but VAPID config missing; falling back to in-app mode",
+      );
+      logger.info("Notifications: ✓ in-app mode");
+    }
+  } else {
+    logger.info("Notifications: ✓ in-app mode");
+  }
+
+  // The notify executor needs to know what happened; web push stays best effort.
+  const notificationWriter: NotificationWriter = {
+    async deliver(notification) {
+      const result = await inAppNotifications.deliver(notification);
+      if (result.status === "delivered" && webPushNotifications) {
+        await webPushNotifications.send(notification).catch((error: unknown) =>
+          logger.warn("Web push delivery failed", { error: error instanceof Error ? error.message : String(error) }),
+        );
+      }
+      return result;
+    },
+  };
+
+  const actions = createActionsModule({
+    db,
+    publicUrl: env.PUBLIC_URL,
+    calendarId: env.CALENDAR_ID,
+    calendarCacheTtlMs: env.CALENDAR_CACHE_TTL_MS,
+    oauthTokenRepo,
+    deadlines: deadlineRepo,
     notificationRepo,
     preferenceRepo,
+    notificationPort,
+    notificationWriter,
+    createGoogleTokenProvider,
     logger,
   });
-  logger.info("Notifications: ✓ in-app mode");
 
   // ── Power Automate status ─────────────────────────────────
   if (env.PA_OUTLOOK_WEBHOOK_SECRET) {
@@ -331,21 +498,29 @@ export function createContainer(env: Env): AppContainer {
     classificationRepo,
     classificationFeedbackRepo,
     deadlineRepo,
-    actionLogRepo,
     notificationRepo,
     conversationRepo,
     preferenceRepo,
+    pushSubscriptionRepo,
+    bankStatementRepo,
+    bankStatementParseRepo,
+    bankStatementParserRegistry,
     userRepo,
+    userProfileRepo,
     oauthTokenRepo,
+    personalMemoryNoteRepo,
+    personalMemoryPinRepo,
     hasGoogleCredentials: hasGoogleClientCreds,
     getEligibleUsers,
     createGoogleTokenProvider,
     llmPort,
     calendarPort,
     githubPort,
-    teamsPort: null, // No Teams adapter yet — will be wired when Graph API integration is added
+    teamsPort,
     notificationPort,
     transactionRunner,
+    actions,
+    notificationWriter,
     backgroundLoop: null,
     logger,
     shutdown,

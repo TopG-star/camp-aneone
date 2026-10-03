@@ -1,6 +1,6 @@
 # ADR-006: Append-Only Audit Log for Action Lifecycle
 
-## Status: Accepted
+## Status: Superseded by ADR-011
 
 ## Date: 2026-04-14
 

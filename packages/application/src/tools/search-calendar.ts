@@ -16,6 +16,7 @@ export const searchCalendarSchema = z.object({
     .string()
     .optional()
     .default(() => new Date(Date.now() + THIRTY_DAYS_MS).toISOString()),
+  userId: z.string().trim().min(1).optional(),
 });
 
 export type SearchCalendarInput = z.infer<typeof searchCalendarSchema>;
@@ -23,7 +24,8 @@ export type SearchCalendarInput = z.infer<typeof searchCalendarSchema>;
 // ── Deps ─────────────────────────────────────────────────────
 
 export interface SearchCalendarDeps {
-  calendarPort: CalendarPort;
+  calendarPort?: CalendarPort;
+  resolveCalendarPort?: (userId: string) => CalendarPort | null;
 }
 
 // ── Factory ──────────────────────────────────────────────────
@@ -40,7 +42,19 @@ export function createSearchCalendarTool(
     async execute(validatedInput: unknown): Promise<ToolResult> {
       const input = validatedInput as SearchCalendarInput;
 
-      const events = await deps.calendarPort.searchEvents(
+      // With a userId, only that user's own calendar may answer; never the global env-token port.
+      const calendarPort = input.userId
+        ? deps.resolveCalendarPort?.(input.userId) ?? null
+        : deps.calendarPort ?? null;
+
+      if (!calendarPort) {
+        return {
+          data: [],
+          summary: "Calendar integration is not configured for this user.",
+        };
+      }
+
+      const events = await calendarPort.searchEvents(
         input.query,
         input.timeMin,
         input.timeMax,

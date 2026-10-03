@@ -4,6 +4,7 @@ import type { IntentExtractionPort, Logger } from "@oneon/domain";
 import type { ToolRegistry } from "../tools/tool-registry.js";
 import {
   buildChatContext,
+  type ChatPersonaProfile,
   type ChatContextStats,
   type ToolCallRecord,
 } from "./build-chat-context.js";
@@ -43,11 +44,15 @@ export interface RunIntentLoopDeps {
 
 export interface RunIntentLoopInput {
   userMessage: string;
+  userId?: string;
+  /** The persisted user message ID for this turn; injected into tool calls for idempotency. */
+  turnId?: string;
   history: ConversationMessage[];
   toolDefinitions: Array<{ name: string; description: string }>;
   stats: ChatContextStats;
   now: Date;
   timezone: string;
+  persona?: ChatPersonaProfile | null;
 }
 
 export interface RunIntentLoopResult {
@@ -63,7 +68,7 @@ export async function runIntentLoop(
   input: RunIntentLoopInput
 ): Promise<RunIntentLoopResult> {
   const { intentExtractor, toolRegistry, logger } = deps;
-  const { userMessage, history, toolDefinitions, stats, now, timezone } = input;
+  const { userMessage, history, toolDefinitions, stats, now, timezone, persona, userId, turnId } = input;
 
   const allToolCalls: ToolCallRecord[] = [];
   const executedSet = new Set<string>(); // Refinement #3: dedupe
@@ -79,6 +84,7 @@ export async function runIntentLoop(
       executedActions: allToolCalls,
       now,
       timezone,
+      persona,
     });
 
     // Extract intents from LLM
@@ -149,7 +155,14 @@ export async function runIntentLoop(
       anyToolExecuted = true;
       const startTime = performance.now();
       try {
-        const result = await toolRegistry.execute(intent.tool, intent.parameters);
+        // Identity comes from the server only: drop any AI-supplied reserved keys first.
+        const { userId: _u, turnId: _t, turnExcerpt: _e, ...aiParams } = intent.parameters;
+        const executionParameters = {
+          ...aiParams,
+          ...(userId ? { userId } : {}),
+          ...(turnId ? { turnId, turnExcerpt: userMessage.slice(0, 280) } : {}),
+        };
+        const result = await toolRegistry.execute(intent.tool, executionParameters);
         const durationMs =
           Math.round((performance.now() - startTime) * 100) / 100;
 

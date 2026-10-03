@@ -5,9 +5,20 @@ import type { ToolDefinition, ToolResult } from "./tool-registry.js";
 // ── Input Schema ─────────────────────────────────────────────
 
 export const searchTeamsMessagesSchema = z.object({
-  query: z.string().describe("Search query for Teams messages"),
+  query: z
+    .string()
+    .trim()
+    .min(1, "query is required")
+    .describe("Search query for Teams messages"),
   channelName: z.string().optional().describe("Filter by channel name"),
-  since: z.string().optional().describe("Only return messages after this ISO-8601 date"),
+  since: z
+    .string()
+    .refine(
+      (value) => !Number.isNaN(Date.parse(value)),
+      "since must be a valid ISO-8601 date",
+    )
+    .optional()
+    .describe("Only return messages after this ISO-8601 date"),
 });
 
 export type SearchTeamsMessagesInput = z.infer<typeof searchTeamsMessagesSchema>;

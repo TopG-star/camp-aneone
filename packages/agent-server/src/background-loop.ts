@@ -7,6 +7,15 @@ export type CycleRunner = () => Promise<CycleSummary>;
 export type UserCycleRunner = (userId: string) => Promise<CycleSummary>;
 export type EligibleUserProvider = () => string[];
 
+export interface LoopErrorEvent {
+  id: string;
+  occurredAt: string;
+  component: string;
+  stage: string;
+  userId: string | null;
+  message: string;
+}
+
 export interface BackgroundLoopOptions {
   intervalMs: number;
   batchSize: number;
@@ -43,6 +52,8 @@ export class BackgroundLoop {
   private nextRunAt = 0;
   private _lastCycleAt: string | null = null;
   private _lastError: string | null = null;
+  private readonly recentErrors: LoopErrorEvent[] = [];
+  private static readonly MAX_RECENT_ERRORS = 100;
 
   constructor(
     userCycleRunner: UserCycleRunner,
@@ -65,6 +76,7 @@ export class BackgroundLoop {
     this.running = true;
     this.consecutiveErrors = 0;
     this.nextRunAt = 0;
+    this.recentErrors.length = 0;
 
     this.logger.info("Background processing loop started", {
       intervalMs: this.options.intervalMs,
@@ -117,6 +129,14 @@ export class BackgroundLoop {
 
   get isCycleInFlight(): boolean {
     return this.inFlightPromise !== null;
+  }
+
+  getRecentErrors(limit = 25, userId?: string): LoopErrorEvent[] {
+    const normalizedLimit = Math.max(1, Math.min(limit, BackgroundLoop.MAX_RECENT_ERRORS));
+    const filtered = userId
+      ? this.recentErrors.filter((e) => e.userId === null || e.userId === userId)
+      : this.recentErrors;
+    return filtered.slice(0, normalizedLimit);
   }
 
   /**
@@ -203,11 +223,39 @@ export class BackgroundLoop {
           aggregated.notificationsSent += summary.notificationsSent;
           aggregated.durationMs += summary.durationMs;
           if (summary.abortedEarly) aggregated.abortedEarly = true;
+
+          if (summary.classification.failed > 0) {
+            this.pushError({
+              component: "classifier",
+              stage: "classify",
+              userId,
+              message: `${summary.classification.failed} classification failure(s) in cycle`,
+            });
+          }
+
+          if (summary.actionErrors > 0) {
+            this.pushError({
+              component: "actions",
+              stage: "execute",
+              userId,
+              message: `${summary.actionErrors} action execution/proposal failure(s) in cycle`,
+            });
+          }
         } catch (userError) {
           userErrors++;
+          const message =
+            userError instanceof Error ? userError.message : String(userError);
+
+          this.pushError({
+            component: "processing_cycle",
+            stage: "user_run",
+            userId,
+            message,
+          });
+
           this.logger.error("Processing cycle failed for user", {
             userId,
-            error: userError instanceof Error ? userError.message : String(userError),
+            error: message,
           });
         }
       }
@@ -217,6 +265,12 @@ export class BackgroundLoop {
         this.consecutiveErrors++;
         this._lastCycleAt = new Date().toISOString();
         this._lastError = `All ${userErrors} user(s) failed`;
+        this.pushError({
+          component: "processing_cycle",
+          stage: "tick",
+          userId: null,
+          message: this._lastError,
+        });
 
         const backoffMs = Math.min(
           this.options.intervalMs *
@@ -253,6 +307,12 @@ export class BackgroundLoop {
       this.consecutiveErrors++;
       this._lastCycleAt = new Date().toISOString();
       this._lastError = error instanceof Error ? error.message : String(error);
+      this.pushError({
+        component: "processing_cycle",
+        stage: "loop",
+        userId: null,
+        message: this._lastError,
+      });
 
       const backoffMs = Math.min(
         this.options.intervalMs *
@@ -268,6 +328,27 @@ export class BackgroundLoop {
       });
     } finally {
       this.inFlightPromise = null;
+    }
+  }
+
+  private pushError(error: {
+    component: string;
+    stage: string;
+    userId: string | null;
+    message: string;
+  }): void {
+    const entry: LoopErrorEvent = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      occurredAt: new Date().toISOString(),
+      component: error.component,
+      stage: error.stage,
+      userId: error.userId,
+      message: error.message,
+    };
+
+    this.recentErrors.unshift(entry);
+    if (this.recentErrors.length > BackgroundLoop.MAX_RECENT_ERRORS) {
+      this.recentErrors.length = BackgroundLoop.MAX_RECENT_ERRORS;
     }
   }
 }

@@ -106,7 +106,7 @@ export class SqliteDeadlineRepository implements DeadlineRepository {
     return row.count;
   }
 
-  private findById(id: string): Deadline | null {
+  findById(id: string): Deadline | null {
     const row = this.db
       .prepare("SELECT * FROM deadlines WHERE id = ?")
       .get(id) as RawDeadline | undefined;

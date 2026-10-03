@@ -44,21 +44,6 @@ export interface Deadline {
   updatedAt: string;
 }
 
-export interface ActionLogEntry {
-  id: string;
-  userId: string | null;
-  resourceId: string;
-  actionType: string;
-  riskLevel: "auto" | "approval_required";
-  status: "proposed" | "approved" | "executed" | "rejected" | "rolled_back";
-  payloadJson: string;
-  resultJson: string | null;
-  errorJson: string | null;
-  rollbackJson: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface Notification {
   id: string;
   userId: string | null;
@@ -88,6 +73,7 @@ export interface Preference {
 
 export interface PushSubscription {
   id: string;
+  userId: string | null;
   endpoint: string;
   keysJson: string;
   createdAt: string;
@@ -102,10 +88,115 @@ export interface ClassificationFeedback {
   createdAt: string;
 }
 
+export type BankStatementIntakeStatus =
+  | "discovered"
+  | "metadata_parsed"
+  | "error_metadata"
+  | "transactions_parsed"
+  | "error_transactions";
+
+export interface BankStatement {
+  id: string;
+  userId: string;
+  source: Source;
+  externalId: string;
+  messageId: string;
+  threadId: string | null;
+  sender: string;
+  senderDomain: string;
+  subject: string;
+  receivedAt: string;
+  status: BankStatementIntakeStatus;
+  detectionRuleVersion: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BankStatementParsedMetadata {
+  id: string;
+  statementId: string;
+  userId: string;
+  accountLast4: string;
+  statementDate: string;
+  periodStart: string;
+  periodEnd: string;
+  currency: string;
+  openingBalanceMinor: number;
+  closingBalanceMinor: number;
+  parserId: string;
+  parserVersion: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BankStatementParsedTransaction {
+  id: string;
+  statementId: string;
+  userId: string;
+  postedAt: string;
+  description: string;
+  amountMinor: number;
+  balanceMinor: number | null;
+  dedupeKey: string;
+  createdAt: string;
+}
+
+export interface BankStatementParseRun {
+  id: string;
+  statementId: string;
+  userId: string;
+  stage: "metadata" | "transactions";
+  outcome: "success" | "error";
+  parserId: string | null;
+  parserVersion: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  durationMs: number;
+  createdAt: string;
+}
+
+export interface PersonalMemoryNote {
+  id: string;
+  userId: string;
+  title: string;
+  content: string;
+  tags: string;
+  pinned: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PersonalMemoryPin {
+  id: string;
+  userId: string;
+  sourceMessageId: string | null;
+  conversationId: string | null;
+  content: string;
+  createdAt: string;
+}
+
 export interface User {
   id: string;
   email: string;
   createdAt: string;
+}
+
+export type SalutationMode = "sir" | "sir_with_name" | "nickname";
+export type CommunicationStyle =
+  | "formal"
+  | "friendly"
+  | "concise"
+  | "technical";
+
+export interface UserProfile {
+  userId: string;
+  preferredName: string | null;
+  nickname: string | null;
+  salutationMode: SalutationMode;
+  communicationStyle: CommunicationStyle;
+  timezone: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type OAuthProvider = "google" | "github";

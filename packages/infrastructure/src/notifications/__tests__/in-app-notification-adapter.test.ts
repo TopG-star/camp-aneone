@@ -116,11 +116,50 @@ describe("InAppNotificationAdapter", () => {
         }),
       );
     });
+
+    it("persists notifications with user scope when userId is provided", async () => {
+      await adapter.send({
+        eventType: "urgent_item",
+        title: "Scoped",
+        body: "Should be user-scoped",
+        userId: "user-A",
+      });
+
+      expect(notificationRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: "user-A" }),
+      );
+    });
   });
 
   // ── Per-event-type toggle ───────────────────────────────
 
   describe("per-event-type toggle", () => {
+    it("uses user-scoped toggle when userId is provided", async () => {
+      (preferenceRepo.get as ReturnType<typeof vi.fn>).mockImplementation(
+        (key: string) => {
+          if (key === "user:user-A:notification.enabled.urgent_item") {
+            return "false";
+          }
+          if (key === "notification.enabled.urgent_item") {
+            return "true";
+          }
+          return null;
+        },
+      );
+
+      await adapter.send({
+        eventType: "urgent_item",
+        title: "Suppressed",
+        body: "Should not be created",
+        userId: "user-A",
+      });
+
+      expect(notificationRepo.create).not.toHaveBeenCalled();
+      expect(preferenceRepo.get).toHaveBeenCalledWith(
+        "user:user-A:notification.enabled.urgent_item",
+      );
+    });
+
     it("suppresses notification when event type is disabled", async () => {
       (preferenceRepo.get as ReturnType<typeof vi.fn>).mockImplementation(
         (key: string) =>
@@ -396,6 +435,32 @@ describe("InAppNotificationAdapter", () => {
       expect(notificationRepo.create).toHaveBeenCalledOnce();
 
       vi.useRealTimers();
+    });
+  });
+
+  describe("InAppNotificationAdapter.deliver", () => {
+    it("returns the created notification's id", async () => {
+      const created = { id: "n-1" };
+      const notificationRepo = { create: vi.fn().mockReturnValue(created) } as unknown as NotificationRepository;
+      const preferenceRepo = { get: vi.fn().mockReturnValue(null) } as unknown as PreferenceRepository;
+      const adapter = new InAppNotificationAdapter({ notificationRepo, preferenceRepo, logger });
+
+      await expect(
+        adapter.deliver({ eventType: "urgent_item", title: "Urgent: Q4", body: "s", userId: "u1" }),
+      ).resolves.toEqual({ status: "delivered", notificationId: "n-1" });
+    });
+
+    it("reports suppression instead of writing", async () => {
+      const notificationRepo = { create: vi.fn() } as unknown as NotificationRepository;
+      const preferenceRepo = {
+        get: vi.fn((key: string) => (key === "user:u1:notification.enabled.urgent_item" ? "false" : null)),
+      } as unknown as PreferenceRepository;
+      const adapter = new InAppNotificationAdapter({ notificationRepo, preferenceRepo, logger });
+
+      await expect(
+        adapter.deliver({ eventType: "urgent_item", title: "t", body: "b", userId: "u1" }),
+      ).resolves.toEqual({ status: "suppressed", reason: "type_disabled" });
+      expect(notificationRepo.create).not.toHaveBeenCalled();
     });
   });
 });

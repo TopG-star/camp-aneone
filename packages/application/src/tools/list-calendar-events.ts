@@ -7,6 +7,7 @@ import type { ToolDefinition, ToolResult } from "./tool-registry.js";
 export const listCalendarEventsSchema = z.object({
   timeMin: z.string().describe("Start of time range (ISO-8601)"),
   timeMax: z.string().describe("End of time range (ISO-8601)"),
+  userId: z.string().trim().min(1).optional(),
 });
 
 export type ListCalendarEventsInput = z.infer<typeof listCalendarEventsSchema>;
@@ -14,7 +15,8 @@ export type ListCalendarEventsInput = z.infer<typeof listCalendarEventsSchema>;
 // ── Deps ─────────────────────────────────────────────────────
 
 export interface ListCalendarEventsDeps {
-  calendarPort: CalendarPort;
+  calendarPort?: CalendarPort;
+  resolveCalendarPort?: (userId: string) => CalendarPort | null;
 }
 
 // ── Factory ──────────────────────────────────────────────────
@@ -31,7 +33,19 @@ export function createListCalendarEventsTool(
     async execute(validatedInput: unknown): Promise<ToolResult> {
       const input = validatedInput as ListCalendarEventsInput;
 
-      const events = await deps.calendarPort.listEvents(
+      // With a userId, only that user's own calendar may answer; never the global env-token port.
+      const calendarPort = input.userId
+        ? deps.resolveCalendarPort?.(input.userId) ?? null
+        : deps.calendarPort ?? null;
+
+      if (!calendarPort) {
+        return {
+          data: [],
+          summary: "Calendar integration is not configured for this user.",
+        };
+      }
+
+      const events = await calendarPort.listEvents(
         input.timeMin,
         input.timeMax,
       );
