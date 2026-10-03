@@ -149,3 +149,8 @@ export function useLegacyActions(query: string | null, config?: SWRConfiguration
 export function useActionDefinitions(config?: SWRConfiguration) {
   return useSWR("/api/action-definitions", fetcher, config);
 }
+
+/** Settings → AI data, and the paused-sorting notice on Today */
+export function useAiData(config?: SWRConfiguration) {
+  return useSWR("/api/ai-data", fetcher, config);
+}
