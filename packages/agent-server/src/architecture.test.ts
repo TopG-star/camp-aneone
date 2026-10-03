@@ -92,9 +92,19 @@ describe("architecture", () => {
 
   it("only provider clients import a model SDK or the model HTTP client", () => {
     const offenders = allSources()
-      .filter((f) => /from\s+["'](@anthropic-ai\/sdk|[./]*deepseek-http-client(\.js)?)["']/.test(f.text))
+      .filter((f) => /(from\s+|import\(\s*|require\(\s*)["'](@anthropic-ai\/sdk|[./]*deepseek-http-client(\.js)?)["']/.test(f.text))
       .map((f) => f.path)
       .filter((p) => !isTest(p) && !/^infrastructure\/src\/llm\/providers\//.test(p) && p !== "infrastructure/src/llm/index.ts");
+    expect(offenders).toEqual([]);
+  });
+
+  it("model clients and providers are named in imports or exports only by the llm module and the model wiring", () => {
+    const names = /\b(DeepSeekHttpClient|DeepSeekProvider|AnthropicProvider)\b/;
+    const statements = /\b(?:import|export)\b[^;'"]*?\bfrom\s*["'][^"']+["']/g;
+    const offenders = allSources()
+      .filter((f) => [...f.text.matchAll(statements)].some(([m]) => names.test(m)) || /(import|require)\(\s*["']@anthropic-ai\/sdk["']/.test(f.text))
+      .map((f) => f.path)
+      .filter((p) => !isTest(p) && !/^infrastructure\/src\/llm\//.test(p) && p !== "agent-server/src/model-wiring.ts");
     expect(offenders).toEqual([]);
   });
 });
