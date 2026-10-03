@@ -143,6 +143,12 @@ function createDeps(overrides: Partial<GenerateDailyBriefingDeps> = {}): Generat
   };
 }
 
+function createDepsWithDeadline(overrides: Partial<GenerateDailyBriefingDeps>): GenerateDailyBriefingDeps {
+  const deps = createDeps(overrides);
+  vi.mocked(deps.deadlineRepo.findByDateRange).mockReturnValue([makeDeadline("item-1")]);
+  return deps;
+}
+
 function defaultInput(overrides: Partial<GenerateDailyBriefingInput> = {}): GenerateDailyBriefingInput {
   return {
     now: new Date("2026-04-17T07:00:00Z"),
@@ -342,7 +348,7 @@ describe("generateDailyBriefing", () => {
 
   it("sends a daily_briefing request through the gateway and returns its text as summary", async () => {
     const gateway = stubGateway({ respond: () => answered(null, "Here is your briefing: nothing urgent.") });
-    const result = await generateDailyBriefing(createDeps({ modelGateway: gateway }), defaultInput());
+    const result = await generateDailyBriefing(createDepsWithDeadline({ modelGateway: gateway }), defaultInput());
 
     expect(result.summary).toBe("Here is your briefing: nothing urgent.");
     expect(result.aiWithheld).toBe(false);
@@ -351,7 +357,7 @@ describe("generateDailyBriefing", () => {
   });
 
   it("falls back to the structured summary and flags aiWithheld when the gateway denies", async () => {
-    const deps = createDeps({ modelGateway: stubGateway({ respond: () => denied("required_part_withheld") }) });
+    const deps = createDepsWithDeadline({ modelGateway: stubGateway({ respond: () => denied("required_part_withheld") }) });
     const result = await generateDailyBriefing(deps, defaultInput());
     expect(result.aiWithheld).toBe(true);
     expect(result.summary).toContain("Briefing for");
@@ -359,7 +365,7 @@ describe("generateDailyBriefing", () => {
   });
 
   it("falls back without flagging aiWithheld when the gateway blocks the answer", async () => {
-    const deps = createDeps({ modelGateway: stubGateway({ respond: () => blocked("placeholder_leak" as never) }) });
+    const deps = createDepsWithDeadline({ modelGateway: stubGateway({ respond: () => blocked("placeholder_leak" as never) }) });
     const result = await generateDailyBriefing(deps, defaultInput());
     expect(result.aiWithheld).toBe(false);
     expect(result.summary).toContain("Briefing for");
@@ -372,6 +378,23 @@ describe("generateDailyBriefing", () => {
     expect(gateway.requests).toHaveLength(0);
     expect(result.aiWithheld).toBe(false);
     expect(result.summary).toContain("Briefing for");
+  });
+
+  it("skips the gateway on an empty day and does not flag aiWithheld", async () => {
+    const gateway = stubGateway({ respond: () => denied("required_part_withheld") });
+    const result = await generateDailyBriefing(createDeps({ modelGateway: gateway }), defaultInput());
+    expect(gateway.requests).toHaveLength(0);
+    expect(result.aiWithheld).toBe(false);
+    expect(result.summary).toContain("Nothing urgent");
+  });
+
+  it("falls back without flagging aiWithheld when the gateway fails, logging only the kind", async () => {
+    const failed = { kind: "failed" as const, message: "no answer", withheld: [], decisionId: "d" };
+    const deps = createDepsWithDeadline({ modelGateway: stubGateway({ respond: () => failed }) });
+    const result = await generateDailyBriefing(deps, defaultInput());
+    expect(result.aiWithheld).toBe(false);
+    expect(result.summary).toContain("Briefing for");
+    expect(deps.logger.warn).toHaveBeenCalledWith("Briefing synthesis failed, using fallback", { kind: "failed" });
   });
 
   it("uses the fallback when there is no gateway", async () => {

@@ -126,15 +126,34 @@ describe("createDailyBriefingTool", () => {
 
   it("summary is the synthesized text, not JSON", async () => {
     const modelGateway = stubGateway({ respond: () => answered(null, "Good morning! Here is your day.") });
-    const tool = createDailyBriefingTool(createToolDeps({ modelGateway }));
+    const deps = createToolDeps({ modelGateway });
+    vi.mocked(deps.deadlineRepo.findByDateRange).mockReturnValue([{
+      id: "d1", userId: "u1", inboundItemId: "i1", dueDate: "2099-01-01", description: "Report", confidence: 0.9,
+      status: "open", createdAt: "x", updatedAt: "x",
+    }]);
+    const tool = createDailyBriefingTool(deps);
     const result = await tool.execute({ timezone: "UTC", userId: "u1" }) as ToolResult;
 
     expect(result.summary).toBe("Good morning! Here is your day.");
   });
 
-  it("appends the withheld note to the structured summary when the gateway denies", async () => {
+  it("adds no withheld note on an empty day, where the gateway is never called", async () => {
     const modelGateway = stubGateway({ respond: () => denied("required_part_withheld") });
     const tool = createDailyBriefingTool(createToolDeps({ modelGateway }));
+    const result = await tool.execute({ timezone: "UTC", userId: "u1" }) as ToolResult;
+
+    expect(modelGateway.requests).toHaveLength(0);
+    expect(result.summary).not.toContain(BRIEFING_WITHHELD_NOTE);
+  });
+
+  it("appends the withheld note to the structured summary when the gateway denies", async () => {
+    const modelGateway = stubGateway({ respond: () => denied("required_part_withheld") });
+    const deps = createToolDeps({ modelGateway });
+    vi.mocked(deps.deadlineRepo.findByDateRange).mockReturnValue([{
+      id: "d1", userId: "u1", inboundItemId: "i1", dueDate: "2099-01-01", description: "Report", confidence: 0.9,
+      status: "open", createdAt: "x", updatedAt: "x",
+    }]);
+    const tool = createDailyBriefingTool(deps);
     const result = await tool.execute({ timezone: "UTC", userId: "u1" }) as ToolResult;
 
     expect(result.summary).toContain("Briefing for");

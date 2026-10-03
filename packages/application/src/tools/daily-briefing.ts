@@ -80,9 +80,7 @@ export function createDailyBriefingTool(deps: DailyBriefingDeps): ToolDefinition
 
       return {
         data: result.data,
-        summary: result.aiWithheld ? `${result.summary}
-
-${BRIEFING_WITHHELD_NOTE}` : result.summary,
+        summary: result.aiWithheld ? `${result.summary}\n\n${BRIEFING_WITHHELD_NOTE}` : result.summary,
       };
     },
   };

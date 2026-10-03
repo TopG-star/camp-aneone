@@ -291,7 +291,10 @@ export async function generateDailyBriefing(
   // ── 5. Synthesize ──
   let summary = buildFallbackSummary(data);
   let aiWithheld = false;
-  if (deps.modelGateway && input.userId) {
+  // On an empty day no briefing field is available to the model, so the purpose would be denied for a
+  // reason the user's settings did not cause. Skip the call rather than report a false withhold.
+  const hasContent = urgentItems.length > 0 || deadlines.length > 0 || calendar.events.length > 0;
+  if (deps.modelGateway && input.userId && hasContent) {
     const result = await deps.modelGateway
       .beginTurn({ kind: "personal", identityId: input.userId }, { channel: "briefing" })
       .call(buildBriefingRequest(data));
