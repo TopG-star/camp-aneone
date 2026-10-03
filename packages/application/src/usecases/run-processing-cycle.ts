@@ -3,7 +3,6 @@ import type {
   ClassificationRepository,
   DeadlineRepository,
   TransactionRunner,
-  LLMPort,
   Logger,
   NotificationPort,
   NotificationRepository,
@@ -13,6 +12,10 @@ import { type SkipRule } from "./process-unclassified-items.js";
 import { checkApproachingDeadlines } from "./check-approaching-deadlines.js";
 import { deriveInboxActionRequests } from "../actions/inbox-rules.js";
 import type { ActionRequest, RequestOutcome } from "../actions/orchestrator/types.js";
+import { classRank } from "../ai-boundary/types.js";
+import type { ModelGateway } from "../ai-boundary/gateway.js";
+import type { ClassificationOutput } from "../ai-boundary/purposes/schemas.js";
+import { emailClassificationRequest } from "../ai-boundary/requests/email.js";
 
 // ── Daily Call Limiter ───────────────────────────────────────
 
@@ -29,7 +32,7 @@ export interface RunProcessingCycleDeps {
   classificationRepo: ClassificationRepository;
   deadlineRepo: DeadlineRepository;
   transactionRunner: TransactionRunner;
-  llmPort: LLMPort;
+  modelGateway: ModelGateway;
   logger: Logger;
   classifierModel: string;
   promptVersion: string;
@@ -60,6 +63,8 @@ export interface CycleSummary {
     skippedMaxAttempts: number;
     skippedDailyLimit: number;
     failed: number;
+    /** Items left unclassified because the AI data policy does not allow the call (spec §10.3). */
+    pausedByPolicy: number;
   };
   actionsProposed: number;
   actionsAutoExecuted: number;
@@ -98,6 +103,7 @@ export async function runProcessingCycle(
       skippedMaxAttempts: 0,
       skippedDailyLimit: 0,
       failed: 0,
+      pausedByPolicy: 0,
     },
     actionsProposed: 0,
     actionsAutoExecuted: 0,
@@ -125,8 +131,16 @@ export async function runProcessingCycle(
   // so we can respect the time budget between items.
   const items = deps.inboundItemRepo.findUnclassified(options.batchSize, deps.userId);
 
+  const turn = () => deps.modelGateway.beginTurn({ kind: "personal", identityId: deps.userId }, { channel: "background" });
+  const limit = turn().effectiveLimit("email_classification");
+  const paused = limit === null || classRank(limit) < classRank("D2");
+  if (paused) {
+    summary.classification.pausedByPolicy = items.length;
+    logger.info("Email classification paused by AI data policy", { userId: deps.userId, effectiveLimit: limit });
+  }
+
   // Process items one at a time, checking time budget between each
-  for (const item of items) {
+  for (const item of paused ? [] : items) {
     if (isOverBudget(startTime, options.maxDurationMs)) {
       summary.abortedEarly = true;
       break;
@@ -206,13 +220,14 @@ export async function runProcessingCycle(
 
     // LLM classification
     try {
-      const classifyResult = await deps.llmPort.classify({
-        from: item.from,
-        subject: item.subject,
-        bodyPreview: item.bodyPreview,
-        source: item.source,
-        receivedAt: item.receivedAt,
-      });
+      const result = await turn().call(emailClassificationRequest(item));
+      if (result.kind === "denied") {
+        summary.classification.pausedByPolicy++;
+        logger.info("Email classification denied by AI data policy", { itemId: item.id, reason: result.reason });
+        continue;
+      }
+      if (result.kind !== "answered") throw new Error(`Classification ${result.kind}: ${result.kind === "blocked" ? result.reason : result.message}`);
+      const classifyResult = result.json as ClassificationOutput;
 
       // Increment daily counter after successful LLM call
       if (deps.dailyCallCounter) {

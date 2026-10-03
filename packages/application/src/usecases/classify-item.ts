@@ -6,21 +6,32 @@ import type {
   ClassificationRepository,
   DeadlineRepository,
   TransactionRunner,
-  LLMPort,
   Logger,
 } from "@oneon/domain";
+import type { ModelGateway } from "../ai-boundary/gateway.js";
+import type { DenyReason } from "../ai-boundary/decide.js";
+import type { ClassificationOutput } from "../ai-boundary/purposes/schemas.js";
+import { emailClassificationRequest } from "../ai-boundary/requests/email.js";
 
 export interface ClassifyItemDeps {
   inboundItemRepo: InboundItemRepository;
   classificationRepo: ClassificationRepository;
   deadlineRepo: DeadlineRepository;
   transactionRunner: TransactionRunner;
-  llmPort: LLMPort;
+  modelGateway: ModelGateway;
   logger: Logger;
   /** Model name to record, e.g. "claude-3-5-haiku-20241022" */
   classifierModel: string;
   /** Prompt version identifier, e.g. "v1" */
   promptVersion: string;
+}
+
+/** The AI data policy does not allow this call. The item stays unclassified and no attempt is counted (spec §10.3). */
+export class ClassificationPausedError extends Error {
+  constructor(readonly reason: DenyReason) {
+    super(`Email classification paused by AI data policy: ${reason}`);
+    this.name = "ClassificationPausedError";
+  }
 }
 
 export interface ClassifyItemResult {
@@ -29,10 +40,11 @@ export interface ClassifyItemResult {
 }
 
 /**
- * Classifies a single InboundItem via the LLM and persists the results
+ * Classifies a single InboundItem via the model gateway and persists the results
  * (classification + deadlines + markClassified) in a single transaction.
  *
- * On LLM or persistence failure, increments classifyAttempts so the item
+ * Throws ClassificationPausedError, without counting an attempt, when the
+ * gateway denies the call. On LLM or persistence failure, increments classifyAttempts so the item
  * can be retried later up to a configured maximum.
  */
 export async function classifyItem(
@@ -44,22 +56,25 @@ export async function classifyItem(
     classificationRepo,
     deadlineRepo,
     transactionRunner,
-    llmPort,
+    modelGateway,
     logger,
     classifierModel,
     promptVersion,
   } = deps;
 
-  let llmResult;
+  let llmResult: ClassificationOutput;
   try {
-    llmResult = await llmPort.classify({
-      from: item.from,
-      subject: item.subject,
-      bodyPreview: item.bodyPreview,
-      source: item.source,
-      receivedAt: item.receivedAt,
-    });
+    const result = await modelGateway
+      .beginTurn({ kind: "personal", identityId: item.userId ?? "" }, { channel: "background" })
+      .call(emailClassificationRequest(item));
+    if (result.kind === "denied") {
+      logger.info("Email classification denied by AI data policy", { itemId: item.id, reason: result.reason });
+      throw new ClassificationPausedError(result.reason);
+    }
+    if (result.kind !== "answered") throw new Error(`Classification ${result.kind}: ${result.kind === "blocked" ? result.reason : result.message}`);
+    llmResult = result.json as ClassificationOutput;
   } catch (error) {
+    if (error instanceof ClassificationPausedError) throw error;
     inboundItemRepo.incrementClassifyAttempts(item.id);
     logger.error("LLM classification failed, attempts incremented", {
       itemId: item.id,

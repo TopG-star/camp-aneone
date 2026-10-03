@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { classifyItem, type ClassifyItemDeps } from "./classify-item.js";
+import { classifyItem, ClassificationPausedError, type ClassifyItemDeps } from "./classify-item.js";
+import type { GatewayResult } from "../ai-boundary/gateway.js";
+import { emailClassificationRequest } from "../ai-boundary/requests/email.js";
+import { answered, denied, stubGateway } from "../ai-boundary/__tests__/stub-gateway.js";
 import type {
   InboundItem,
   Classification,
@@ -8,7 +11,6 @@ import type {
   ClassificationRepository,
   DeadlineRepository,
   TransactionRunner,
-  LLMPort,
   Logger,
 } from "@oneon/domain";
 
@@ -122,12 +124,11 @@ function createMockTransactionRunner(): TransactionRunner {
   return { run: vi.fn().mockImplementation((fn: () => unknown) => fn()) };
 }
 
-function createMockLLMPort(): LLMPort {
-  return {
-    classify: vi.fn().mockResolvedValue(LLM_RESULT),
-    synthesize: vi.fn(),
-    extractIntents: vi.fn(),
-  };
+const failedResult = (message: string): GatewayResult => ({ kind: "failed", message, withheld: [], decisionId: "d" });
+
+/** A stub gateway that records the requests it gets; it answers with LLM_RESULT unless told otherwise. */
+function createGateway(respond: () => GatewayResult = () => answered(LLM_RESULT)) {
+  return stubGateway({ respond });
 }
 
 function createDeps(overrides: Partial<ClassifyItemDeps> = {}): ClassifyItemDeps {
@@ -136,7 +137,7 @@ function createDeps(overrides: Partial<ClassifyItemDeps> = {}): ClassifyItemDeps
     classificationRepo: createMockClassificationRepo(),
     deadlineRepo: createMockDeadlineRepo(),
     transactionRunner: createMockTransactionRunner(),
-    llmPort: createMockLLMPort(),
+    modelGateway: createGateway(),
     logger: createMockLogger(),
     classifierModel: "claude-3-5-haiku-20241022",
     promptVersion: "v1",
@@ -157,16 +158,21 @@ describe("classifyItem", () => {
 
   // ── LLM call ────────────────────────────────────────────
 
-  it("calls llmPort.classify with correct input", async () => {
+  it("sends the email classification request through the gateway", async () => {
     await classifyItem(deps, item);
 
-    expect(deps.llmPort.classify).toHaveBeenCalledWith({
-      from: "alice@example.com",
-      subject: "Project deadline",
-      bodyPreview: "The report is due Friday.",
-      source: "outlook",
-      receivedAt: "2026-04-10T09:00:00Z",
-    });
+    const { requests } = deps.modelGateway as ReturnType<typeof stubGateway>;
+    expect(requests).toEqual([emailClassificationRequest(item)]);
+  });
+
+  it("throws ClassificationPausedError without counting an attempt when the gateway denies the call", async () => {
+    deps = createDeps({ modelGateway: createGateway(() => denied("required_part_withheld")) });
+
+    await expect(classifyItem(deps, item)).rejects.toBeInstanceOf(ClassificationPausedError);
+
+    expect(deps.inboundItemRepo.incrementClassifyAttempts).not.toHaveBeenCalled();
+    expect(deps.classificationRepo.create).not.toHaveBeenCalled();
+    expect(deps.inboundItemRepo.markClassified).not.toHaveBeenCalled();
   });
 
   // ── Transaction wrapping ────────────────────────────────
@@ -230,7 +236,7 @@ describe("classifyItem", () => {
         { dueDate: "2026-04-25T17:00:00Z", description: "Review meeting", confidence: 0.7 },
       ],
     };
-    (deps.llmPort.classify as ReturnType<typeof vi.fn>).mockResolvedValue(multiDeadlineResult);
+    deps = createDeps({ modelGateway: createGateway(() => answered(multiDeadlineResult)) });
 
     const result = await classifyItem(deps, item);
 
@@ -240,7 +246,7 @@ describe("classifyItem", () => {
 
   it("handles zero deadlines from LLM result", async () => {
     const noDeadlineResult = { ...LLM_RESULT, deadlines: [] };
-    (deps.llmPort.classify as ReturnType<typeof vi.fn>).mockResolvedValue(noDeadlineResult);
+    deps = createDeps({ modelGateway: createGateway(() => answered(noDeadlineResult)) });
 
     const result = await classifyItem(deps, item);
 
@@ -271,9 +277,7 @@ describe("classifyItem", () => {
   // ── LLM failure ─────────────────────────────────────────
 
   it("increments classifyAttempts on LLM failure", async () => {
-    (deps.llmPort.classify as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error("API timeout")
-    );
+    deps = createDeps({ modelGateway: createGateway(() => failedResult("API timeout")) });
 
     await expect(classifyItem(deps, item)).rejects.toThrow("API timeout");
 
@@ -281,9 +285,7 @@ describe("classifyItem", () => {
   });
 
   it("does not create classification on LLM failure", async () => {
-    (deps.llmPort.classify as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error("API timeout")
-    );
+    deps = createDeps({ modelGateway: createGateway(() => failedResult("API timeout")) });
 
     await expect(classifyItem(deps, item)).rejects.toThrow();
 
@@ -292,9 +294,7 @@ describe("classifyItem", () => {
   });
 
   it("logs error on LLM failure", async () => {
-    (deps.llmPort.classify as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error("API timeout")
-    );
+    deps = createDeps({ modelGateway: createGateway(() => failedResult("API timeout")) });
 
     await expect(classifyItem(deps, item)).rejects.toThrow();
 
@@ -352,7 +352,7 @@ describe("classifyItem", () => {
       ...LLM_RESULT,
       actionItems: ["Draft email", "Schedule meeting"],
     };
-    (deps.llmPort.classify as ReturnType<typeof vi.fn>).mockResolvedValue(result);
+    deps = createDeps({ modelGateway: createGateway(() => answered(result)) });
 
     await classifyItem(deps, item);
 

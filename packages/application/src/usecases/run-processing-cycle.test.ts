@@ -12,13 +12,18 @@ import type {
   ClassificationRepository,
   DeadlineRepository,
   TransactionRunner,
-  LLMPort,
   Logger,
   NotificationPort,
   NotificationRepository,
 } from "@oneon/domain";
 import type { ActionInstance, Category, Priority } from "@oneon/domain";
 import type { ActionRequest, RequestOutcome } from "../actions/orchestrator/types.js";
+import type { ClassificationOutput } from "../ai-boundary/purposes/schemas.js";
+import { answered, blocked, denied, stubGateway } from "../ai-boundary/__tests__/stub-gateway.js";
+import { createModelGateway } from "../ai-boundary/gateway.js";
+import { Fingerprinter } from "../ai-boundary/fingerprints.js";
+import { InMemoryChoices, InMemoryModelAudit } from "../ai-boundary/__tests__/in-memory-audit.js";
+import { FakeProvider } from "../ai-boundary/__tests__/fake-provider.js";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -85,6 +90,17 @@ function makeDeadline(
   };
 }
 
+const DEFAULT_CLASSIFICATION: ClassificationOutput = {
+  category: "work",
+  priority: 2,
+  summary: "Test summary",
+  actionItems: [],
+  followUpNeeded: false,
+  deadlines: [],
+};
+// Tests reassign this where they previously stubbed llmPort.classify; the stub gateway answers with it.
+let currentClassification: ClassificationOutput = DEFAULT_CLASSIFICATION;
+
 function createDeps(
   overrides: Partial<RunProcessingCycleDeps> = {}
 ): RunProcessingCycleDeps {
@@ -120,18 +136,8 @@ function createDeps(
     run: vi.fn((fn: () => unknown) => fn()) as TransactionRunner["run"],
   };
 
-  const llmPort: LLMPort = {
-    classify: vi.fn(async () => ({
-      category: "actionable" as Category,
-      priority: 2 as Priority,
-      summary: "Test summary",
-      actionItems: [] as string[],
-      followUpNeeded: false,
-      deadlines: [] as Array<{ dueDate: string; description: string; confidence: number }>,
-    })),
-    extractIntents: vi.fn(async () => []),
-    synthesize: vi.fn(async () => "response"),
-  };
+  currentClassification = { ...DEFAULT_CLASSIFICATION };
+  const modelGateway = stubGateway({ respond: () => answered(currentClassification) });
 
   return {
     userId: "test-user",
@@ -139,7 +145,7 @@ function createDeps(
     classificationRepo,
     deadlineRepo,
     transactionRunner,
-    llmPort,
+    modelGateway,
     logger: createMockLogger(),
     classifierModel: "claude-3-5-haiku",
     promptVersion: "v1",
@@ -187,14 +193,14 @@ describe("runProcessingCycle", () => {
     vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
     vi.mocked(deps.inboundItemRepo.findById).mockReturnValue(item1);
 
-    vi.mocked(deps.llmPort.classify).mockResolvedValue({
+    currentClassification = {
       category: "urgent" as Category,
       priority: 1 as Priority,
       summary: "Urgent email",
       actionItems: ["Respond ASAP"],
       followUpNeeded: true,
       deadlines: [{ dueDate: "2026-04-20", description: "Report due", confidence: 0.9 }],
-    });
+    };
 
     vi.mocked(deps.classificationRepo.create).mockReturnValue(cls1);
     vi.mocked(deps.inboundItemRepo.markClassified).mockReturnValue(undefined);
@@ -215,22 +221,23 @@ describe("runProcessingCycle", () => {
 
   it("tells the classifier when the email arrived, so relative deadlines resolve correctly", async () => {
     const item1 = makeItem("item-1");
-    const deps = createDeps();
+    const deps = createDeps({ modelGateway: stubGateway({ respond: () => blocked("invalid_output") }) });
     vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
-    vi.mocked(deps.llmPort.classify).mockRejectedValue(new Error("stop after the call"));
 
     await runProcessingCycle(deps, defaultOptions());
 
-    expect(deps.llmPort.classify).toHaveBeenCalledWith(expect.objectContaining({ receivedAt: "2026-04-17T08:00:00Z" }));
+    const { requests } = deps.modelGateway as ReturnType<typeof stubGateway>;
+    expect(requests).toHaveLength(1);
+    const fields = (requests[0].parts[0] as { rows: Array<{ fields: Array<{ name: string; value: string }> }> }).rows[0].fields;
+    expect(fields.find((f) => f.name === "receivedAt")?.value).toBe("2026-04-17T08:00:00Z");
   });
 
   it("does NOT propose actions for items that failed classification", async () => {
     const item1 = makeItem("item-1");
 
-    const deps = createDeps();
+    const deps = createDeps({ modelGateway: stubGateway({ respond: () => blocked("invalid_output") }) });
     vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
 
-    vi.mocked(deps.llmPort.classify).mockRejectedValue(new Error("LLM error"));
     vi.mocked(deps.inboundItemRepo.incrementClassifyAttempts).mockReturnValue(undefined);
 
     const result = await runProcessingCycle(deps, defaultOptions());
@@ -245,14 +252,14 @@ describe("runProcessingCycle", () => {
     const deps = createDeps();
     vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue(items);
 
-    vi.mocked(deps.llmPort.classify).mockResolvedValue({
+    currentClassification = {
       category: "actionable" as Category,
       priority: 3 as Priority,
       summary: "Test",
       actionItems: [],
       followUpNeeded: false,
       deadlines: [],
-    });
+    };
 
     let fakeTime = 1000;
     vi.spyOn(Date, "now").mockImplementation(() => {
@@ -288,14 +295,14 @@ describe("runProcessingCycle", () => {
     });
 
     const cls2 = makeClassification("item-2", { category: "urgent" as Category, priority: 1 as Priority });
-    vi.mocked(deps.llmPort.classify).mockResolvedValue({
+    currentClassification = {
       category: "urgent" as Category,
       priority: 1 as Priority,
       summary: "Urgent",
       actionItems: [],
       followUpNeeded: false,
       deadlines: [],
-    });
+    };
     vi.mocked(deps.classificationRepo.create).mockReturnValue(cls2);
     vi.mocked(deps.inboundItemRepo.markClassified).mockReturnValue(undefined);
     vi.mocked(deps.deadlineRepo.findByInboundItemId).mockReturnValue([]);
@@ -324,14 +331,14 @@ describe("runProcessingCycle", () => {
     const deps = createDeps();
     vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
     vi.mocked(deps.inboundItemRepo.findById).mockReturnValue(item1);
-    vi.mocked(deps.llmPort.classify).mockResolvedValue({
+    currentClassification = {
       category: "urgent" as Category,
       priority: 1 as Priority,
       summary: "Urgent",
       actionItems: [],
       followUpNeeded: false,
       deadlines: [],
-    });
+    };
     vi.mocked(deps.classificationRepo.create).mockReturnValue(cls1);
     vi.mocked(deps.inboundItemRepo.markClassified).mockReturnValue(undefined);
     vi.mocked(deps.deadlineRepo.findByInboundItemId).mockReturnValue([]);
@@ -349,14 +356,14 @@ describe("runProcessingCycle", () => {
     const items = [makeItem("item-1"), makeItem("item-2")];
     const deps = createDeps();
     vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue(items);
-    vi.mocked(deps.llmPort.classify).mockResolvedValue({
+    currentClassification = {
       category: "urgent" as Category,
       priority: 1 as Priority,
       summary: "Urgent with a deadline",
       actionItems: [],
       followUpNeeded: false,
       deadlines: [],
-    });
+    };
     vi.mocked(deps.classificationRepo.create).mockImplementation((c) => makeClassification(c.inboundItemId, { category: "urgent" as Category, priority: 1 as Priority }));
     vi.mocked(deps.deadlineRepo.findByInboundItemId).mockImplementation((itemId) => [makeDeadline(itemId, { dueDate: "2099-01-01" })]);
     // The first request (item-1's notify) throws, e.g. capabilitiesFor failing.
@@ -379,14 +386,14 @@ describe("runProcessingCycle", () => {
     const item1 = makeItem("item-1");
     const cls1 = makeClassification("item-1", { category: "urgent" as Category, priority: 1 as Priority });
     vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
-    vi.mocked(deps.llmPort.classify).mockResolvedValue({
+    currentClassification = {
       category: "urgent" as Category,
       priority: 1 as Priority,
       summary: "Critical issue",
       actionItems: [],
       followUpNeeded: false,
       deadlines: [],
-    });
+    };
     vi.mocked(deps.classificationRepo.create).mockReturnValue(cls1);
     vi.mocked(deps.inboundItemRepo.markClassified).mockReturnValue(undefined);
     vi.mocked(deps.deadlineRepo.findByInboundItemId).mockReturnValue([]);
@@ -469,5 +476,59 @@ describe("runProcessingCycle", () => {
     const result = await runProcessingCycle(deps, defaultOptions());
 
     expect(result.notificationsSent).toBe(0);
+  });
+
+  it("pauses classification without touching items when the policy limit is below D2 (spec §10.3)", async () => {
+    const item1 = makeItem("item-1");
+    const deps = createDeps({ modelGateway: stubGateway({ limit: "D1" }) });
+    vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
+    const result = await runProcessingCycle(deps, defaultOptions());
+    expect(result.classification).toMatchObject({ classified: 0, failed: 0, pausedByPolicy: 1 });
+    expect(deps.inboundItemRepo.incrementClassifyAttempts).not.toHaveBeenCalled();
+    expect((deps.modelGateway as ReturnType<typeof stubGateway>).requests).toHaveLength(0);
+  });
+
+  it("counts a denied call as paused, not as a failed attempt", async () => {
+    const item1 = makeItem("item-1");
+    const deps = createDeps({ modelGateway: stubGateway({ respond: () => denied("secret_present") }) });
+    vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
+    const result = await runProcessingCycle(deps, defaultOptions());
+    expect(result.classification).toMatchObject({ pausedByPolicy: 1, failed: 0 });
+    expect(deps.inboundItemRepo.incrementClassifyAttempts).not.toHaveBeenCalled();
+  });
+
+  it("counts a blocked answer as a failed attempt", async () => {
+    const item1 = makeItem("item-1");
+    const deps = createDeps({ modelGateway: stubGateway({ respond: () => blocked("invalid_output") }) });
+    vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
+    const result = await runProcessingCycle(deps, defaultOptions());
+    expect(result.classification.failed).toBe(1);
+    expect(deps.inboundItemRepo.incrementClassifyAttempts).toHaveBeenCalledWith("item-1");
+  });
+
+  it("classifies after opt-in and pauses again after the person revokes it (Review Focus 2)", async () => {
+    const choices = new InMemoryChoices();
+    const gateway = createModelGateway({
+      providers: { deepseek: new FakeProvider("deepseek", [JSON.stringify({ category: "work", priority: 3, summary: "s", actionItems: [], followUpNeeded: false, deadlines: [] })]) },
+      overrides: new Map(),
+      routing: { standard: "deepseek", reasoning: "deepseek" },
+      models: { deepseek: { standard: "s", reasoning: "r" } },
+      choices,
+      audit: new InMemoryModelAudit(),
+      fingerprinter: new Fingerprinter("k".repeat(32), 1),
+      maxRetries: 0,
+      timeouts: { standard: 1000, reasoning: 1000 },
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    choices.record({ identityId: "user-1", provider: "deepseek", maxClass: "D2", decidedOn: "2026-10-03", note: null, confirmedAt: "t1" });
+    const first = createDeps({ modelGateway: gateway, userId: "user-1" });
+    vi.mocked(first.inboundItemRepo.findUnclassified).mockReturnValue([makeItem("item-1")]);
+    vi.mocked(first.classificationRepo.create).mockReturnValue(makeClassification("item-1"));
+    expect((await runProcessingCycle(first, defaultOptions())).classification.classified).toBe(1);
+
+    choices.record({ identityId: "user-1", provider: "deepseek", maxClass: "D1", decidedOn: null, note: null, confirmedAt: "t2" });
+    const second = createDeps({ modelGateway: gateway, userId: "user-1" });
+    vi.mocked(second.inboundItemRepo.findUnclassified).mockReturnValue([makeItem("item-2")]);
+    expect((await runProcessingCycle(second, defaultOptions())).classification).toMatchObject({ classified: 0, pausedByPolicy: 1 });
   });
 });

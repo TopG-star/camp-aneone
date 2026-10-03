@@ -10,6 +10,7 @@ import type {
   Deadline,
   Logger,
 } from "@oneon/domain";
+import { answered, denied, stubGateway } from "../ai-boundary/__tests__/stub-gateway.js";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -113,11 +114,7 @@ function createDeps(
     transactionRunner: {
       run: vi.fn().mockImplementation((fn: () => unknown) => fn()),
     },
-    llmPort: {
-      classify: vi.fn().mockResolvedValue(LLM_RESULT),
-      synthesize: vi.fn(),
-      extractIntents: vi.fn(),
-    },
+    modelGateway: stubGateway({ respond: () => answered(LLM_RESULT) }),
     logger: createMockLogger(),
     classifierModel: "claude-3-5-haiku-20241022",
     promptVersion: "v1",
@@ -126,6 +123,8 @@ function createDeps(
     ...overrides,
   };
 }
+
+const gatewayRequests = (deps: ProcessUnclassifiedItemsDeps) => (deps.modelGateway as ReturnType<typeof stubGateway>).requests;
 
 // ── Tests ────────────────────────────────────────────────────
 
@@ -180,7 +179,7 @@ describe("processUnclassifiedItems", () => {
 
     expect(summary.total).toBe(3);
     expect(summary.classified).toBe(3);
-    expect(deps.llmPort.classify).toHaveBeenCalledTimes(3);
+    expect(gatewayRequests(deps)).toHaveLength(3);
   });
 
   // ── Max attempts ─────────────────────────────────────────
@@ -194,7 +193,7 @@ describe("processUnclassifiedItems", () => {
     expect(summary.skippedMaxAttempts).toBe(1);
     expect(summary.classified).toBe(0);
     expect(summary.results[0].outcome).toBe("max_attempts");
-    expect(deps.llmPort.classify).not.toHaveBeenCalled();
+    expect(gatewayRequests(deps)).toHaveLength(0);
   });
 
   it("skips items that have exceeded max attempts", async () => {
@@ -239,7 +238,7 @@ describe("processUnclassifiedItems", () => {
     expect(summary.skippedByRule).toBe(1);
     expect(summary.classified).toBe(0);
     expect(summary.results[0].outcome).toBe("skip_rule");
-    expect(deps.llmPort.classify).not.toHaveBeenCalled();
+    expect(gatewayRequests(deps)).toHaveLength(0);
   });
 
   it("skip rule creates classification with correct fields", async () => {
@@ -389,9 +388,13 @@ describe("processUnclassifiedItems", () => {
       makeFakeItem({ id: "item-ok" }),
     ];
     (deps.inboundItemRepo.findUnclassified as ReturnType<typeof vi.fn>).mockReturnValue(items);
-    (deps.llmPort.classify as ReturnType<typeof vi.fn>)
-      .mockRejectedValueOnce(new Error("LLM down"))
-      .mockResolvedValueOnce(LLM_RESULT);
+    let calls = 0;
+    deps = createDeps({
+      modelGateway: stubGateway({
+        respond: () => (calls++ === 0 ? { kind: "failed", message: "LLM down", withheld: [], decisionId: "d" } : answered(LLM_RESULT)),
+      }),
+    });
+    (deps.inboundItemRepo.findUnclassified as ReturnType<typeof vi.fn>).mockReturnValue(items);
 
     const summary = await processUnclassifiedItems(deps, 10);
 
@@ -400,6 +403,22 @@ describe("processUnclassifiedItems", () => {
     expect(summary.results[0].outcome).toBe("failed");
     expect(summary.results[0].error).toContain("LLM down");
     expect(summary.results[1].outcome).toBe("classified");
+  });
+
+  // ── Paused by policy ─────────────────────────────────────
+
+  it("counts denied items as paused, leaves them unclassified, and continues", async () => {
+    const items = [makeFakeItem({ id: "item-paused" }), makeFakeItem({ id: "item-2" })];
+    deps = createDeps({ modelGateway: stubGateway({ respond: () => denied("required_part_withheld") }) });
+    (deps.inboundItemRepo.findUnclassified as ReturnType<typeof vi.fn>).mockReturnValue(items);
+
+    const summary = await processUnclassifiedItems(deps, 10);
+
+    expect(summary.paused).toBe(2);
+    expect(summary.failed).toBe(0);
+    expect(summary.results.map((r) => r.outcome)).toEqual(["paused", "paused"]);
+    expect(deps.inboundItemRepo.incrementClassifyAttempts).not.toHaveBeenCalled();
+    expect(deps.inboundItemRepo.markClassified).not.toHaveBeenCalled();
   });
 
   // ── Skip rule persistence failure ─────────────────────────

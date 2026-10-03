@@ -6,12 +6,12 @@ import type {
   ClassificationRepository,
   DeadlineRepository,
   TransactionRunner,
-  LLMPort,
   Logger,
   Category,
   Priority,
 } from "@oneon/domain";
-import { classifyItem, type ClassifyItemResult } from "./classify-item.js";
+import type { ModelGateway } from "../ai-boundary/gateway.js";
+import { classifyItem, ClassificationPausedError, type ClassifyItemResult } from "./classify-item.js";
 
 // ── Skip Rules ──────────────────────────────────────────────
 
@@ -35,7 +35,7 @@ export interface ProcessUnclassifiedItemsDeps {
   classificationRepo: ClassificationRepository;
   deadlineRepo: DeadlineRepository;
   transactionRunner: TransactionRunner;
-  llmPort: LLMPort;
+  modelGateway: ModelGateway;
   logger: Logger;
   classifierModel: string;
   promptVersion: string;
@@ -51,9 +51,11 @@ export interface ProcessUnclassifiedItemsSummary {
   skippedByRule: number;
   skippedMaxAttempts: number;
   failed: number;
+  /** Left unclassified because the AI data policy denied the call. */
+  paused: number;
   results: Array<{
     itemId: string;
-    outcome: "classified" | "skip_rule" | "max_attempts" | "failed";
+    outcome: "classified" | "skip_rule" | "max_attempts" | "failed" | "paused";
     classification?: Classification;
     deadlines?: Deadline[];
     error?: string;
@@ -135,7 +137,7 @@ export async function processUnclassifiedItems(
     classificationRepo,
     deadlineRepo,
     transactionRunner,
-    llmPort,
+    modelGateway,
     logger,
     classifierModel,
     promptVersion,
@@ -151,6 +153,7 @@ export async function processUnclassifiedItems(
     skippedByRule: 0,
     skippedMaxAttempts: 0,
     failed: 0,
+    paused: 0,
     results: [],
   };
 
@@ -216,7 +219,7 @@ export async function processUnclassifiedItems(
           classificationRepo,
           deadlineRepo,
           transactionRunner,
-          llmPort,
+          modelGateway,
           logger,
           classifierModel,
           promptVersion,
@@ -231,6 +234,11 @@ export async function processUnclassifiedItems(
         deadlines: result.deadlines,
       });
     } catch (error) {
+      if (error instanceof ClassificationPausedError) {
+        summary.paused++;
+        summary.results.push({ itemId: item.id, outcome: "paused" });
+        continue;
+      }
       summary.failed++;
       summary.results.push({
         itemId: item.id,
@@ -247,6 +255,7 @@ export async function processUnclassifiedItems(
     skippedByRule: summary.skippedByRule,
     skippedMaxAttempts: summary.skippedMaxAttempts,
     failed: summary.failed,
+    paused: summary.paused,
   });
 
   return summary;
