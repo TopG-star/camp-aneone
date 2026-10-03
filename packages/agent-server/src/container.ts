@@ -73,6 +73,8 @@ import { dirname } from "node:path";
 
 import type { BackgroundLoop } from "./background-loop.js";
 import { createActionsModule, type ActionsModule } from "./actions-wiring.js";
+import { createModelWiring } from "./model-wiring.js";
+import type { AiDataChoiceRepository, ModelAuditRepository, ModelGateway, ModelRouting } from "@oneon/application";
 
 export interface AppContainer {
   // ── Config ────────────────────────────────────────────────
@@ -101,6 +103,10 @@ export interface AppContainer {
 
   // ── External Ports ────────────────────────────────────────
   llmPort: LLMPort | null;
+  modelGateway: ModelGateway | null;
+  modelRouting: ModelRouting | null;
+  aiDataChoices: AiDataChoiceRepository;
+  modelAudit: ModelAuditRepository;
   calendarPort: CalendarPort | null;
   githubPort: GitHubPort | null;
   teamsPort: TeamsPort | null;
@@ -139,6 +145,8 @@ export function createContainer(env: Env): AppContainer {
   const db = createDatabase(env.DATABASE_PATH);
   runMigrations(db);
   logger.info("Database ready", { path: env.DATABASE_PATH });
+
+  const modelWiring = createModelWiring(env, { db, logger });
 
   // ── Repositories ──────────────────────────────────────────
   const inboundItemRepo = new SqliteInboundItemRepository(db);
@@ -514,6 +522,10 @@ export function createContainer(env: Env): AppContainer {
     getEligibleUsers,
     createGoogleTokenProvider,
     llmPort,
+    modelGateway: modelWiring.gateway,
+    modelRouting: modelWiring.routing,
+    aiDataChoices: modelWiring.choices,
+    modelAudit: modelWiring.audit,
     calendarPort,
     githubPort,
     teamsPort,

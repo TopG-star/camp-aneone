@@ -19,6 +19,7 @@ function stubEnv(): void {
   vi.stubEnv("GOOGLE_CLIENT_SECRET", "test-client-secret");
   vi.stubEnv("DATABASE_PATH", ":memory:");
   vi.stubEnv("LOG_LEVEL", "error");
+  vi.stubEnv("MODEL_AUDIT_HMAC_KEY", "test-model-audit-key-at-least-32-chars");
 }
 
 describe("createContainer", () => {

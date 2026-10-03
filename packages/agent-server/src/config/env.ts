@@ -171,6 +171,11 @@ const envSchema = z.object({
   CB_FAILURE_THRESHOLD: z.coerce.number().default(5),
   CB_RESET_TIMEOUT_MS: z.coerce.number().default(60000),
 
+  // ── Model gateway (AI data boundary) ──────────────────────
+  MODEL_PROVIDER_OVERRIDES: z.string().optional(),
+  MODEL_AUDIT_HMAC_KEY: z.string().optional(),
+  MODEL_AUDIT_HMAC_KEY_VERSION: z.coerce.number().int().positive().default(1),
+
   // ── Logging ───────────────────────────────────────────────
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 }).superRefine((data, ctx) => {
@@ -218,6 +223,14 @@ const envSchema = z.object({
       message:
         "DEEPSEEK_SYNTHESIS_MODEL must be set explicitly when using DeepSeek " +
         "(no default). E.g. deepseek-reasoner",
+    });
+  }
+
+  if ((data.ANTHROPIC_API_KEY || data.DEEPSEEK_API_KEY) && (!data.MODEL_AUDIT_HMAC_KEY || data.MODEL_AUDIT_HMAC_KEY.length < 32)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["MODEL_AUDIT_HMAC_KEY"],
+      message: "MODEL_AUDIT_HMAC_KEY (at least 32 characters) is required when a model provider key is set. Generate with: openssl rand -base64 32",
     });
   }
 });
