@@ -25,6 +25,7 @@ beforeEach(() => {
       ANTHROPIC_API_KEY: "sk-test",
       LLM_PROVIDER: "anthropic",
     },
+    modelGateway: {},
     calendarPort: { listEvents: vi.fn() },
     teamsPort: { searchMessages: vi.fn() },
     oauthTokenRepo: null,
@@ -151,9 +152,10 @@ describe("GET /api/status", () => {
     expect(gmail.detail).toContain("missing Google client credentials");
   });
 
-  it("shows llm connected=true with detail='deepseek' when LLM_PROVIDER is deepseek and key is present", async () => {
+  it("shows llm connected=true with detail='model gateway' when the gateway is wired", async () => {
     container = {
-      env: { LLM_PROVIDER: "deepseek", DEEPSEEK_API_KEY: "sk-ds-test" },
+      env: {},
+      modelGateway: {},
       calendarPort: null,
       oauthTokenRepo: null,
       userRepo: null,
@@ -165,12 +167,13 @@ describe("GET /api/status", () => {
     const res = await request(app).get("/api/status");
     const llm = res.body.integrations.find((i: any) => i.name === "llm");
     expect(llm.connected).toBe(true);
-    expect(llm.detail).toBe("deepseek");
+    expect(llm.detail).toBe("model gateway");
   });
 
-  it("shows llm connected=false when LLM_PROVIDER is deepseek but no DEEPSEEK_API_KEY", async () => {
+  it("shows llm connected=false when the gateway is not wired", async () => {
     container = {
-      env: { LLM_PROVIDER: "deepseek" },
+      env: {},
+      modelGateway: null,
       calendarPort: null,
       oauthTokenRepo: null,
       userRepo: null,

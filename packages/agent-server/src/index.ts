@@ -90,7 +90,7 @@ app.get("/health", (_req, res) => {
     timestamp: new Date().toISOString(),
     features: {
       ingestion: container.hasGoogleCredentials,
-      llm: container.llmPort !== null,
+      llm: container.modelGateway !== null,
       calendar: container.calendarPort !== null,
       github: container.githubPort !== null,
       notifications: container.notificationPort !== null,

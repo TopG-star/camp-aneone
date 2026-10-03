@@ -61,4 +61,40 @@ describe("architecture", () => {
     expect(routes).not.toMatch(/createCreateCalendarEventTool|createUpdateCalendarEventTool/);
     expect(readFileSync(join(ROOT, "application", "src", "actions", "chat-action-tools.ts"), "utf8")).not.toMatch(/CalendarWriter|writers/);
   });
+
+  const allSources = () =>
+    ["domain", "application", "infrastructure", "agent-server"].flatMap((pkg) => sourceFiles(join(ROOT, pkg, "src"))).map((f) => ({ path: posix(relative(ROOT, f)), text: readFileSync(f, "utf8") }));
+  const isTest = (p: string) => /\.test\.ts$/.test(p) || /\/__tests__\//.test(p);
+
+  it("only the gateway mints approved model calls (spec §5.5)", () => {
+    const offenders = allSources()
+      .filter((f) => /ApprovedModelCall\.mint\(/.test(f.text))
+      .map((f) => f.path)
+      .filter((p) => !isTest(p) && p !== "application/src/ai-boundary/gateway.ts" && p !== "application/src/ai-boundary/approved-call.ts");
+    expect(offenders).toEqual([]);
+  });
+
+  it("nothing casts to ApprovedModelCall or Instruction outside their own modules", () => {
+    const offenders = allSources()
+      .filter((f) => /\bas\s+(ApprovedModelCall|Instruction)\b/.test(f.text))
+      .map((f) => f.path)
+      .filter((p) => !isTest(p) && !/^application\/src\/ai-boundary\/(instruction|approved-call)\.ts$/.test(p));
+    expect(offenders).toEqual([]);
+  });
+
+  it("provider clients are constructed only by the model wiring", () => {
+    const offenders = allSources()
+      .filter((f) => /new\s+(DeepSeekProvider|AnthropicProvider)\(/.test(f.text))
+      .map((f) => f.path)
+      .filter((p) => !isTest(p) && p !== "agent-server/src/model-wiring.ts");
+    expect(offenders).toEqual([]);
+  });
+
+  it("only provider clients import a model SDK or the model HTTP client", () => {
+    const offenders = allSources()
+      .filter((f) => /from\s+["'](@anthropic-ai\/sdk|[./]*deepseek-http-client(\.js)?)["']/.test(f.text))
+      .map((f) => f.path)
+      .filter((p) => !isTest(p) && !/^infrastructure\/src\/llm\/providers\//.test(p) && p !== "infrastructure/src/llm/index.ts");
+    expect(offenders).toEqual([]);
+  });
 });

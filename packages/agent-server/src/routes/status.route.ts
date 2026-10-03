@@ -84,15 +84,11 @@ export function createStatusRouter(deps: StatusRouteDeps): Router {
       });
 
       // LLM
-      const llmProvider = container.env.LLM_PROVIDER;
-      const llmConnected =
-        llmProvider === "deepseek"
-          ? !!container.env.DEEPSEEK_API_KEY
-          : !!container.env.ANTHROPIC_API_KEY;
+      const llmConnected = container.modelGateway !== null;
       integrations.push({
         name: "llm",
         connected: llmConnected,
-        detail: llmConnected ? llmProvider : "not configured",
+        detail: llmConnected ? "model gateway" : "not configured",
       });
 
       // Notifications

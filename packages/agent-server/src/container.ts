@@ -16,7 +16,6 @@ import type {
   OAuthTokenRepository,
   PersonalMemoryNoteRepository,
   PersonalMemoryPinRepository,
-  LLMPort,
   CalendarPort,
   GitHubPort,
   TeamsPort,
@@ -45,10 +44,6 @@ import {
   SqlitePersonalMemoryNoteRepository,
   SqlitePersonalMemoryPinRepository,
   SqliteTransactionRunner,
-  ClaudeClassifierAdapter,
-  DeepSeekClassifierAdapter,
-  ShadowLlmAdapter,
-  RoutingLlmAdapter,
   StructuredLogger,
   EnvRefreshTokenProvider,
   DbGoogleTokenProvider,
@@ -102,7 +97,6 @@ export interface AppContainer {
   personalMemoryPinRepo: PersonalMemoryPinRepository;
 
   // ── External Ports ────────────────────────────────────────
-  llmPort: LLMPort | null;
   modelGateway: ModelGateway | null;
   modelRouting: ModelRouting | null;
   aiDataChoices: AiDataChoiceRepository;
@@ -269,88 +263,6 @@ export function createContainer(env: Env): AppContainer {
       () => recordGmailRefreshFailure(preferenceRepo, userId),
     );
   };
-
-  let llmPort: LLMPort | null = null;
-
-  // ── LLM Provider Factory ───────────────────────────────────
-  function buildLlmAdapter(provider: "anthropic" | "deepseek"): LLMPort | null {
-    if (provider === "anthropic") {
-      if (!env.ANTHROPIC_API_KEY) return null;
-      return new ClaudeClassifierAdapter({
-        apiKey: env.ANTHROPIC_API_KEY,
-        classifierModel: env.LLM_CLASSIFIER_MODEL,
-        synthesisModel: env.LLM_SYNTHESIS_MODEL,
-        maxRetries: env.LLM_MAX_RETRIES,
-        timeoutMs: env.LLM_TIMEOUT_MS,
-        circuitBreaker: {
-          failureThreshold: env.CB_FAILURE_THRESHOLD,
-          resetTimeoutMs: env.CB_RESET_TIMEOUT_MS,
-        },
-        logger,
-      });
-    }
-    if (provider === "deepseek") {
-      // DEEPSEEK_API_KEY + model IDs are guaranteed present by env superRefine
-      return new DeepSeekClassifierAdapter({
-        apiKey: env.DEEPSEEK_API_KEY!,
-        classifierModel: env.DEEPSEEK_CLASSIFIER_MODEL!,
-        synthesisModel: env.DEEPSEEK_SYNTHESIS_MODEL!,
-        maxRetries: env.LLM_MAX_RETRIES,
-        classifierTimeoutMs: env.LLM_CLASSIFIER_TIMEOUT_MS,
-        synthesisTimeoutMs: env.LLM_SYNTHESIS_TIMEOUT_MS,
-        circuitBreaker: {
-          failureThreshold: env.CB_FAILURE_THRESHOLD,
-          resetTimeoutMs: env.CB_RESET_TIMEOUT_MS,
-        },
-        logger,
-      });
-    }
-    return null;
-  }
-
-  // Primary adapter
-  const primaryAdapter = buildLlmAdapter(env.LLM_PROVIDER);
-
-  if (primaryAdapter) {
-    llmPort = primaryAdapter;
-
-    // Premium reasoning provider for synthesize() calls
-    if (env.LLM_REASONING_PROVIDER_PREMIUM !== "none") {
-      const reasoningAdapter = buildLlmAdapter(
-        env.LLM_REASONING_PROVIDER_PREMIUM as "anthropic" | "deepseek",
-      );
-      if (reasoningAdapter) {
-        llmPort = new RoutingLlmAdapter({ standard: llmPort, reasoning: reasoningAdapter });
-        logger.info("LLM: ✓ premium routing enabled", {
-          reasoning: env.LLM_REASONING_PROVIDER_PREMIUM,
-        });
-      }
-    }
-
-    // Shadow harness for A/B comparison (fire-and-forget)
-    if (env.LLM_SHADOW_PROVIDER !== "none") {
-      const shadowAdapter = buildLlmAdapter(
-        env.LLM_SHADOW_PROVIDER as "anthropic" | "deepseek",
-      );
-      if (shadowAdapter) {
-        llmPort = new ShadowLlmAdapter({ primary: llmPort, shadow: shadowAdapter, logger });
-        logger.info("LLM: ✓ shadow mode enabled", {
-          shadowProvider: env.LLM_SHADOW_PROVIDER,
-        });
-      }
-    }
-
-    logger.info("LLM: ✓ active", {
-      provider: env.LLM_PROVIDER,
-      classifier: env.LLM_PROVIDER === "deepseek" ? env.DEEPSEEK_CLASSIFIER_MODEL : env.LLM_CLASSIFIER_MODEL,
-      synthesis: env.LLM_PROVIDER === "deepseek" ? env.DEEPSEEK_SYNTHESIS_MODEL : env.LLM_SYNTHESIS_MODEL,
-    });
-  } else {
-    logger.warn("LLM: ✗ disabled", {
-      provider: env.LLM_PROVIDER,
-      reason: env.LLM_PROVIDER === "anthropic" ? "missing ANTHROPIC_API_KEY" : "missing DEEPSEEK_API_KEY",
-    });
-  }
 
   let calendarPort: CalendarPort | null = null;
   if (tokenProvider) {
@@ -521,7 +433,6 @@ export function createContainer(env: Env): AppContainer {
     hasGoogleCredentials: hasGoogleClientCreds,
     getEligibleUsers,
     createGoogleTokenProvider,
-    llmPort,
     modelGateway: modelWiring.gateway,
     modelRouting: modelWiring.routing,
     aiDataChoices: modelWiring.choices,
