@@ -18,4 +18,12 @@ describe("ApprovedModelCall", () => {
   it("ProviderError carries whether a retry may help", () => {
     expect(new ProviderError("rate limited", false).retryable).toBe(false);
   });
+
+  it("rejects object literals via nominal typing", () => {
+    const rejectLiteral = (call: ApprovedModelCall): void => {
+      void call;
+    };
+    // @ts-expect-error nominal branding prevents structural forgery: literals cannot be passed (spec §5.5)
+    rejectLiteral(fields);
+  });
 });

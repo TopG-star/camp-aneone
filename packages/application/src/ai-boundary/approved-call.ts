@@ -3,6 +3,7 @@ import type { ProviderId } from "./types.js";
 /**
  * A model call the gateway has decided on and assembled. Provider clients accept nothing else
  * (spec §5.5). Only `gateway.ts` may call `mint`: an architecture test enforces it.
+ * Nominal typing via private brand prevents structural forgery (spec §5.5).
  */
 export class ApprovedModelCall {
   readonly callId!: string;
@@ -14,7 +15,12 @@ export class ApprovedModelCall {
   readonly maxTokens!: number;
   readonly timeoutMs!: number;
 
-  private constructor() {}
+  private readonly __brand: true = true;
+
+  private constructor() {
+    // Ensure brand is accessed to prevent unused variable error
+    void this.__brand;
+  }
 
   static mint(fields: {
     callId: string;
@@ -26,7 +32,7 @@ export class ApprovedModelCall {
     maxTokens: number;
     timeoutMs: number;
   }): ApprovedModelCall {
-    return Object.freeze(Object.assign(new ApprovedModelCall(), fields));
+    return Object.freeze(Object.assign(new ApprovedModelCall(), fields)) as ApprovedModelCall;
   }
 }
 
