@@ -21,3 +21,5 @@ export {
   type WithheldReason,
 } from "./decide.js";
 export * from "./answer-check.js";
+export * from "./audit.js";
+export * from "./fingerprints.js";

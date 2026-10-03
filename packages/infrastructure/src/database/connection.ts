@@ -254,6 +254,7 @@ export function runMigrations(db: Database.Database): void {
     { version: 12, name: "inbound_items_user_scope", file: "012_inbound_items_user_scope.sql", transactional: false },
     { version: 13, name: "personal_memory", file: "013_personal_memory.sql" },
     { version: 14, name: "action_spec_framework", file: "014_action_spec_framework.sql" },
+    { version: 15, name: "ai_data_boundary", file: "015_ai_data_boundary.sql" },
   ];
 
   const migrationsDir = getMigrationsDir();
