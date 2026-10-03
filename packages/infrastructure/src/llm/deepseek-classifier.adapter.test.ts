@@ -42,6 +42,7 @@ const EMAIL_INPUT = {
   subject: "Deadline tomorrow",
   bodyPreview: "Please review the PR before EOD.",
   source: "gmail",
+  receivedAt: "2026-10-03T09:27:00.000Z",
 };
 
 const defaultConfig: DeepSeekClassifierConfig = {
@@ -85,6 +86,18 @@ describe("DeepSeekClassifierAdapter", () => {
       expect(result.category).toBe("work");
       expect(result.priority).toBe(2);
       expect(result.followUpNeeded).toBe(true);
+    });
+
+    it("anchors relative dates to when the email arrived", async () => {
+      chatCompletion.mockResolvedValueOnce(JSON.stringify(VALID_CLASSIFICATION));
+
+      await adapter.classify(EMAIL_INPUT);
+
+      const body = chatCompletion.mock.calls[0][0];
+      const system = body.messages.find((m: { role: string }) => m.role === "system").content as string;
+      const user = body.messages.find((m: { role: string }) => m.role === "user").content as string;
+      expect(user).toContain("Received: 2026-10-03T09:27:00.000Z");
+      expect(system).toContain("relative to the Received time");
     });
 
     it("sends response_format=json_object for structured output", async () => {

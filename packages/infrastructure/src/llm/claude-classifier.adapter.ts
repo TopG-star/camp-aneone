@@ -21,6 +21,8 @@ const CLASSIFICATION_SYSTEM_PROMPT = `You are an email classification assistant.
 - followUpNeeded: boolean indicating if a follow-up is needed
 - deadlines: array of {dueDate: ISO date string, description: string, confidence: number 0-1}
 
+Work out every deadline relative to the Received time: "today", "tomorrow", "Friday" and "within 30 minutes" all count from when the email arrived. Give dueDate as YYYY-MM-DD when no time is stated, otherwise as an ISO 8601 date-time with a timezone offset; when the email gives a time without a timezone, use the Received time's timezone. A deadline before the Received time is only right when the email clearly refers to the past.
+
 Return ONLY valid JSON. No markdown, no explanation, no wrapping.`;
 
 const INTENT_SYSTEM_PROMPT = `You are a personal assistant intent extractor. Given a user message and context, extract structured intents.
@@ -57,11 +59,13 @@ export class ClaudeClassifierAdapter implements LLMPort {
     subject: string;
     bodyPreview: string;
     source: string;
+    receivedAt: string;
   }): Promise<ClassificationResult> {
     const userPrompt = [
       `From: ${input.from}`,
       `Subject: ${input.subject}`,
       `Source: ${input.source}`,
+      `Received: ${input.receivedAt}`,
       `Body: ${input.bodyPreview}`,
     ].join("\n");
 

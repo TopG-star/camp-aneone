@@ -288,6 +288,7 @@ describe("ClaudeClassifierAdapter", () => {
       subject: "Urgent: Q4 Review",
       bodyPreview: "Please review the Q4 numbers by EOD.",
       source: "outlook",
+      receivedAt: "2026-10-03T09:27:00.000Z",
     };
 
     it("returns valid classification on first attempt", async () => {
@@ -363,6 +364,18 @@ describe("ClaudeClassifierAdapter", () => {
       await expect(adapter.classify(classifyInput)).rejects.toThrow(
         "No text content in Claude response"
       );
+    });
+
+    it("anchors relative dates to when the email arrived", async () => {
+      mockCreate.mockResolvedValueOnce(
+        mockAnthropicResponse(JSON.stringify(VALID_CLASSIFICATION))
+      );
+
+      await adapter.classify(classifyInput);
+
+      const request = mockCreate.mock.calls[0][0];
+      expect(request.messages[0].content).toContain("Received: 2026-10-03T09:27:00.000Z");
+      expect(request.system).toContain("relative to the Received time");
     });
 
     it("passes correct model and system prompt to Claude", async () => {
@@ -474,6 +487,7 @@ describe("ClaudeClassifierAdapter", () => {
           subject: "b",
           bodyPreview: "c",
           source: "outlook",
+          receivedAt: "2026-10-03T09:27:00.000Z",
         })
       ).rejects.toThrow("Unauthorized");
 
@@ -484,6 +498,7 @@ describe("ClaudeClassifierAdapter", () => {
           subject: "b",
           bodyPreview: "c",
           source: "outlook",
+          receivedAt: "2026-10-03T09:27:00.000Z",
         })
       ).rejects.toThrow(CircuitOpenError);
 

@@ -25,6 +25,7 @@ const EMAIL_INPUT = {
   subject: "Test",
   bodyPreview: "Hello",
   source: "gmail",
+  receivedAt: "2026-10-03T09:27:00.000Z",
 };
 
 const CLASSIFICATION_RESULT = {

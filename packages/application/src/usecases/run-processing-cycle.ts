@@ -211,6 +211,7 @@ export async function runProcessingCycle(
         subject: item.subject,
         bodyPreview: item.bodyPreview,
         source: item.source,
+        receivedAt: item.receivedAt,
       });
 
       // Increment daily counter after successful LLM call

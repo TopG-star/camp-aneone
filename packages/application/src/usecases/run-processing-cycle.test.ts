@@ -213,6 +213,17 @@ describe("runProcessingCycle", () => {
     expect(types).toContain("notify");
   });
 
+  it("tells the classifier when the email arrived, so relative deadlines resolve correctly", async () => {
+    const item1 = makeItem("item-1");
+    const deps = createDeps();
+    vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
+    vi.mocked(deps.llmPort.classify).mockRejectedValue(new Error("stop after the call"));
+
+    await runProcessingCycle(deps, defaultOptions());
+
+    expect(deps.llmPort.classify).toHaveBeenCalledWith(expect.objectContaining({ receivedAt: "2026-04-17T08:00:00Z" }));
+  });
+
   it("does NOT propose actions for items that failed classification", async () => {
     const item1 = makeItem("item-1");
 

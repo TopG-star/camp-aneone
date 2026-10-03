@@ -165,6 +165,7 @@ describe("classifyItem", () => {
       subject: "Project deadline",
       bodyPreview: "The report is due Friday.",
       source: "outlook",
+      receivedAt: "2026-04-10T09:00:00Z",
     });
   });
 
