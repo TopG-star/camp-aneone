@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Logger } from "@oneon/domain";
 import type { ToolRegistry } from "../tools/tool-registry.js";
-import type { ModelTurn } from "../ai-boundary/gateway.js";
+import type { GatewayResult, ModelTurn } from "../ai-boundary/gateway.js";
+import type { DenyReason } from "../ai-boundary/decide.js";
 import {
   buildIntentRequest,
   type ChatPersonaProfile,
@@ -61,6 +62,13 @@ export interface RunIntentLoopResult {
   toolCalls: ToolCallRecord[];
   rounds: number;
   stopped: StopReason;
+  /** Why the gateway denied the intent call; set only when `stopped` is "policy_denied". */
+  deniedReason?: DenyReason;
+}
+
+/** The error's name only: messages can echo prompt or tool data, so they never reach a log. */
+export function errorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
 }
 
 // ── Loop Implementation ──────────────────────────────────────
@@ -79,23 +87,31 @@ export async function runIntentLoop(
 
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     // One request per round; the gateway decides what the model may see.
-    const result = await modelTurn.call(
-      buildIntentRequest({
-        userMessage,
-        history,
-        toolDefinitions,
-        stats,
-        now,
-        timezone,
-        persona: persona ?? null,
-        toolCalls: allToolCalls,
-        registry: toolRegistry,
-      }),
-    );
+    let result: GatewayResult;
+    try {
+      result = await modelTurn.call(
+        buildIntentRequest({
+          userMessage,
+          history,
+          toolDefinitions,
+          stats,
+          now,
+          timezone,
+          persona: persona ?? null,
+          toolCalls: allToolCalls,
+          registry: toolRegistry,
+        }),
+      );
+    } catch (error) {
+      // e.g. an audit write failed: the turn ends here rather than rejecting to the route.
+      logger.error("Intent extraction threw", { round, errorName: errorName(error) });
+      stopped = "extraction_error";
+      return { toolCalls: allToolCalls, rounds: round, stopped };
+    }
     if (result.kind === "denied") {
       logger.info("Intent extraction denied by AI data policy", { round, reason: result.reason });
       stopped = "policy_denied";
-      return { toolCalls: allToolCalls, rounds: round, stopped };
+      return { toolCalls: allToolCalls, rounds: round, stopped, deniedReason: result.reason };
     }
     if (result.kind !== "answered") {
       logger.error("Intent extraction failed", { round, kind: result.kind });
@@ -209,7 +225,7 @@ export async function runIntentLoop(
         logger.warn("Tool execution failed", {
           tool: intent.tool,
           round,
-          error: errorMessage,
+          errorName: errorName(error),
         });
       }
     }

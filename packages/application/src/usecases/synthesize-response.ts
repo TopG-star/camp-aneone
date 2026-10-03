@@ -44,9 +44,11 @@ export async function synthesizeResponse(
   const result = await deps.modelTurn.call(buildChatReplyRequest(input));
   // History is context, not answer data: only tool data withheld from records earns the note.
   const dataWithheld = result.withheld.some((w) => w.part.startsWith("record:"));
+  // A denial earns the note only when the policy held data back, not when the AI was simply unreachable.
+  const deniedForData = result.kind === "denied" && (result.reason === "required_part_withheld" || result.reason === "secret_present");
   if (result.kind === "answered") {
     return { kind: "answered", response: result.json as SynthesisResponse, dataWithheld };
   }
   deps.logger.warn("Chat reply unavailable", { kind: result.kind });
-  return { kind: "unavailable", reason: result.kind, dataWithheld: dataWithheld || result.kind === "denied" };
+  return { kind: "unavailable", reason: result.kind, dataWithheld: dataWithheld || deniedForData };
 }

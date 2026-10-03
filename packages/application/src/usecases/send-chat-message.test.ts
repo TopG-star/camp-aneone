@@ -13,6 +13,7 @@ import { InMemoryChoices, InMemoryModelAudit } from "../ai-boundary/__tests__/in
 import { FakeProvider } from "../ai-boundary/__tests__/fake-provider.js";
 import { answered, denied, stubGateway } from "../ai-boundary/__tests__/stub-gateway.js";
 import { DATA_WITHHELD_NOTE } from "./synthesize-response.js";
+import { SECRET_DENIED_MESSAGE, PROVIDER_UNAVAILABLE_MESSAGE, POLICY_DENIED_MESSAGE } from "./send-chat-message.js";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -589,14 +590,19 @@ describe("sendChatMessage", () => {
   });
 
   it("still answers at the D1 default, leaving earlier assistant replies out (Review Focus 1)", async () => {
-    const provider = new FakeProvider("deepseek", [JSON.stringify([{ tool: "none", parameters: {} }])]);
+    const provider = new FakeProvider("deepseek", [
+      JSON.stringify([{ tool: "list_deadlines", parameters: {} }]),
+      JSON.stringify([{ tool: "none", parameters: {} }]),
+      JSON.stringify({ answer: "Here you go", usedTools: ["list_deadlines"] }),
+    ]);
+    const audit = new InMemoryModelAudit();
     const gateway = createModelGateway({
       providers: { deepseek: provider },
       overrides: new Map(),
       routing: { standard: "deepseek", reasoning: "deepseek" },
       models: { deepseek: { standard: "s", reasoning: "r" } },
       choices: new InMemoryChoices(),
-      audit: new InMemoryModelAudit(),
+      audit,
       fingerprinter: new Fingerprinter("k".repeat(32), 1),
       maxRetries: 0,
       timeouts: { standard: 1000, reasoning: 1000 },
@@ -607,15 +613,65 @@ describe("sendChatMessage", () => {
       { id: "h2", userId: "u1", conversationId: "user:u1", role: "assistant", content: "Ama owes you GHS 400", toolCalls: null, createdAt: "2026-04-16T08:00:01Z" },
     ];
     conversationRepo = createMockConversationRepo({ findRecentByConversation: vi.fn().mockReturnValue(seeded) });
+    const action = { id: "a1", actionType: "list_deadlines", label: "List", status: "done" };
 
     const result = await sendChatMessage(
-      { conversationRepo, logger, modelGateway: gateway, toolRegistry: createMockToolRegistry({}) },
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: registryWithTool("list_deadlines", { data: { action }, summary: "ok" }) },
       { message: "anything new?", now: NOW, userId: "u1" }
     );
 
-    expect(result.response.length).toBeGreaterThan(0);
-    expect(provider.calls[0].user).not.toContain("Ama owes you");
-    expect(provider.calls[0].user).toContain("anything new?");
+    expect(result.response.startsWith("Here you go")).toBe(true);
+    expect(provider.calls).toHaveLength(3);
+    expect(audit.decisions.map((d) => d.purpose)).toEqual(["intent_extraction", "intent_extraction", "chat_reply"]);
+    for (const call of provider.calls) {
+      expect(call.user).toContain("hi");
+      expect(call.user).not.toContain("Ama owes you");
+    }
+  });
+
+  it("explains a secret-triggered denial instead of the generic failure text", async () => {
+    const gateway = stubGateway({ respond: () => denied("secret_present") });
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: createMockToolRegistry({}) },
+      { message: "test", now: NOW, userId: "user-A" }
+    );
+    expect(result.response).toBe(SECRET_DENIED_MESSAGE);
+  });
+
+  it("says the AI is unavailable when the provider is", async () => {
+    const gateway = stubGateway({ respond: () => denied("provider_unavailable") });
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: createMockToolRegistry({}) },
+      { message: "test", now: NOW, userId: "user-A" }
+    );
+    expect(result.response).toBe(PROVIDER_UNAVAILABLE_MESSAGE);
+  });
+
+  it("points at the AI data settings for any other denial", async () => {
+    const gateway = stubGateway({ respond: () => denied("required_part_withheld") });
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: createMockToolRegistry({}) },
+      { message: "test", now: NOW, userId: "user-A" }
+    );
+    expect(result.response).toBe(POLICY_DENIED_MESSAGE);
+  });
+
+  it("logs only the error name when the reply path throws", async () => {
+    const turnGateway = {
+      beginTurn: () => ({
+        call: vi.fn().mockResolvedValueOnce(answered([{ tool: "list_deadlines", parameters: {} }])).mockResolvedValueOnce(answered([{ tool: "none", parameters: {} }])).mockRejectedValue(new TypeError("secret ama@x.com")),
+        restoreToolParams: (params: Record<string, unknown>) => ({ ok: true as const, params }),
+        effectiveLimit: () => "D1" as const,
+      }),
+    };
+    const registry = createMockToolRegistry({ list_deadlines: makeToolResult("list_deadlines", "Found 2") });
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: turnGateway, toolRegistry: registry },
+      { message: "test", now: NOW, userId: "user-A" }
+    );
+    expect(result.response).toBe("Found 2");
+    expect(logger.error).toHaveBeenCalledWith(expect.any(String), { errorName: "TypeError" });
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain("ama@x.com");
   });
 
   it("still lists the requested action when the chat reply is denied (Review Focus 7)", async () => {

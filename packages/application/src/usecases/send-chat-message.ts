@@ -6,7 +6,7 @@ import type {
 import type { ToolRegistry } from "../tools/tool-registry.js";
 import type { ChatActionRef } from "../actions/chat-action-tools.js";
 import { truncateHistory } from "./truncate-history.js";
-import { runIntentLoop } from "./run-intent-loop.js";
+import { runIntentLoop, errorName } from "./run-intent-loop.js";
 import { synthesizeResponse, DATA_WITHHELD_NOTE } from "./synthesize-response.js";
 import type { ModelGateway } from "../ai-boundary/gateway.js";
 import type {
@@ -45,6 +45,9 @@ export interface SendChatMessageResult {
 // ── Constants ────────────────────────────────────────────────
 
 const PLACEHOLDER_RESPONSE = "I'm not connected to tools yet. This will be upgraded once the tool registry and intent extraction loop are wired in.";
+export const SECRET_DENIED_MESSAGE = "A recent message looks like it contains a password or key, so it wasn't sent to the AI.";
+export const PROVIDER_UNAVAILABLE_MESSAGE = "The AI is unavailable right now.";
+export const POLICY_DENIED_MESSAGE = "Your AI data settings stopped this message from being sent to the AI.";
 const FALLBACK_RESPONSE = "I ran into trouble processing your request. Please try again.";
 const HISTORY_LIMIT = 20;
 const TRUNCATE_OPTIONS = {
@@ -141,13 +144,18 @@ export async function sendChatMessage(
         );
         const note = synthesis.dataWithheld ? `\n\n${DATA_WITHHELD_NOTE}` : "";
         response = (synthesis.kind === "answered" ? synthesis.response.answer : summaryFallback()) + note;
-      } catch {
+      } catch (error) {
         // Never log the error text: it may carry prompt or tool data.
-        logger.error("Chat reply failed unexpectedly, using tool summaries as fallback");
+        logger.error("Chat reply failed unexpectedly, using tool summaries as fallback", {
+          errorName: errorName(error),
+        });
         response = summaryFallback();
       }
     } else {
-      response = FALLBACK_RESPONSE;
+      response =
+        loopResult.stopped === "policy_denied"
+          ? deniedMessage(loopResult.deniedReason)
+          : FALLBACK_RESPONSE;
     }
   } else {
     response = PLACEHOLDER_RESPONSE;
@@ -180,6 +188,12 @@ export async function sendChatMessage(
 }
 
 // ── Helpers ──────────────────────────────────────────────────
+
+function deniedMessage(reason: string | undefined): string {
+  if (reason === "secret_present") return SECRET_DENIED_MESSAGE;
+  if (reason === "provider_unavailable") return PROVIDER_UNAVAILABLE_MESSAGE;
+  return POLICY_DENIED_MESSAGE;
+}
 
 function defaultStats(): ChatContextStats {
   return {

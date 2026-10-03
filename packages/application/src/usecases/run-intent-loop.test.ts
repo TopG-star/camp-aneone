@@ -435,8 +435,28 @@ describe("runIntentLoop", () => {
     const turn = stubGateway({ respond: () => denied("required_part_withheld") }).beginTurn(PERSONAL);
     const result = await runIntentLoop({ modelTurn: turn, toolRegistry: registryWith(), logger }, defaultInput());
     expect(result.stopped).toBe("policy_denied");
+    expect(result.deniedReason).toBe("required_part_withheld");
     expect(result.toolCalls).toHaveLength(0);
     expect(logger.info).toHaveBeenCalledWith("Intent extraction denied by AI data policy", { round: 1, reason: "required_part_withheld" });
+  });
+
+  it("ends the turn with extraction_error when the gateway call throws, logging only the error name", async () => {
+    const turn = {
+      call: vi.fn().mockRejectedValue(new TypeError("audit failed for ama@x.com")),
+      restoreToolParams: (p: Record<string, unknown>) => ({ ok: true as const, params: p }),
+      effectiveLimit: () => "D1" as const,
+    };
+    const result = await runIntentLoop({ modelTurn: turn, toolRegistry: registryWith(), logger }, defaultInput());
+    expect(result.stopped).toBe("extraction_error");
+    expect(logger.error).toHaveBeenCalledWith("Intent extraction threw", { round: 1, errorName: "TypeError" });
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain("ama@x.com");
+  });
+
+  it("logs only the error name when a tool fails", async () => {
+    const turn = createMockExtractor([[{ tool: "list_deadlines", parameters: {} }], [{ tool: "none", parameters: {} }]]);
+    const registry = createMockToolRegistry({ list_deadlines: new Error("bad address ama@x.com") });
+    await runIntentLoop({ modelTurn: turn, toolRegistry: registry, logger }, defaultInput());
+    expect(logger.warn).toHaveBeenCalledWith("Tool execution failed", { tool: "list_deadlines", round: 1, errorName: "Error" });
   });
 
   // ── Placeholders ─────────────────────────────────────────

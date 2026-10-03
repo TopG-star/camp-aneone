@@ -70,7 +70,9 @@ function toolParts(toolCalls: ToolCallRecord[], registry: ToolRegistry): PromptP
         {
           fields: [
             { name: "tool", class: "D0", value: call.tool },
-            { name: "error", class: "D1", value: call.error ?? "Tool unavailable" },
+            { name: "status", class: "D1", value: "failed" },
+            // Error text can echo real parameters (validation messages, adapter errors), so it is scanned free text.
+            { name: "error", class: "D2", freeText: true, value: call.error ?? "Tool unavailable" },
           ],
         },
       ],

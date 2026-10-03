@@ -1,4 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { createModelGateway } from "../gateway.js";
+import { Fingerprinter } from "../fingerprints.js";
+import { InMemoryChoices, InMemoryModelAudit } from "../__tests__/in-memory-audit.js";
+import { FakeProvider } from "../__tests__/fake-provider.js";
 import { z } from "zod";
 import { buildChatReplyRequest, buildIntentRequest, historyTurns } from "./chat.js";
 import { createToolRegistry } from "../../tools/tool-registry.js";
@@ -52,6 +56,35 @@ describe("chat requests", () => {
 
   it("turns a failed tool call into a tool_error record", () => {
     const req = buildChatReplyRequest({ userMessage: "x", history: [], persona: null, toolCalls: [{ ...call, result: null, error: "Calendar not configured" }], registry });
-    expect(req.parts.find((p) => p.kind === "record" && p.source === "tool_error")).toBeDefined();
+    const record = req.parts.find((p) => p.kind === "record" && p.source === "tool_error");
+    expect(record).toMatchObject({
+      rows: [{ fields: [
+        { name: "tool", class: "D0", value: "list_inbox" },
+        { name: "status", class: "D1", value: "failed" },
+        { name: "error", class: "D2", freeText: true, value: "Calendar not configured" },
+      ] }],
+    });
+  });
+
+  it("at the D1 default the tool error text is withheld while the status is sent", async () => {
+    const provider = new FakeProvider("deepseek", [JSON.stringify({ answer: "ok", usedTools: [] })]);
+    const gateway = createModelGateway({
+      providers: { deepseek: provider },
+      overrides: new Map(),
+      routing: { standard: "deepseek", reasoning: "deepseek" },
+      models: { deepseek: { standard: "s", reasoning: "r" } },
+      choices: new InMemoryChoices(),
+      audit: new InMemoryModelAudit(),
+      fingerprinter: new Fingerprinter("k".repeat(32), 1),
+      maxRetries: 0,
+      timeouts: { standard: 1000, reasoning: 1000 },
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    const req = buildChatReplyRequest({ userMessage: "x", history: [], persona: null, toolCalls: [{ ...call, result: null, error: "No calendar for zed@x.com" }], registry });
+    const result = await gateway.beginTurn({ kind: "personal", identityId: "u1" }).call(req);
+    expect(result.kind).toBe("answered");
+    expect(result.withheld).toContainEqual(expect.objectContaining({ part: "record:tool_error", field: "error", reason: "above_limit" }));
+    expect(provider.calls[0].user).not.toContain("zed@x.com");
+    expect(provider.calls[0].user).toContain("failed");
   });
 });
