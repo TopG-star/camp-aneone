@@ -35,12 +35,21 @@ export function createModelWiring(env: Env, deps: { db: Database.Database; logge
     reasoning: env.LLM_REASONING_PROVIDER_PREMIUM !== "none" ? (env.LLM_REASONING_PROVIDER_PREMIUM as ProviderId) : standard,
     ...(env.LLM_SHADOW_PROVIDER !== "none" ? { shadow: env.LLM_SHADOW_PROVIDER as ProviderId } : {}),
   };
+  const missing: Array<{ role: "reasoning" | "shadow"; provider: ProviderId }> = [];
+  if (!providers[routing.reasoning]) missing.push({ role: "reasoning", provider: routing.reasoning });
+  if (routing.shadow && !providers[routing.shadow]) missing.push({ role: "shadow", provider: routing.shadow });
+  for (const m of missing) deps.logger.warn("Model gateway: routed provider has no key; its calls will be denied", m);
+
+  const deepseekModels =
+    env.DEEPSEEK_API_KEY && env.DEEPSEEK_CLASSIFIER_MODEL && env.DEEPSEEK_SYNTHESIS_MODEL
+      ? { standard: env.DEEPSEEK_CLASSIFIER_MODEL, reasoning: env.DEEPSEEK_SYNTHESIS_MODEL }
+      : undefined;
   const gateway = createModelGateway({
     providers,
     overrides,
     routing,
     models: {
-      ...(env.DEEPSEEK_API_KEY ? { deepseek: { standard: env.DEEPSEEK_CLASSIFIER_MODEL!, reasoning: env.DEEPSEEK_SYNTHESIS_MODEL! } } : {}),
+      ...(deepseekModels ? { deepseek: deepseekModels } : {}),
       ...(env.ANTHROPIC_API_KEY ? { anthropic: { standard: env.LLM_CLASSIFIER_MODEL, reasoning: env.LLM_SYNTHESIS_MODEL } } : {}),
     },
     choices,
@@ -50,6 +59,6 @@ export function createModelWiring(env: Env, deps: { db: Database.Database; logge
     timeouts: { standard: env.LLM_CLASSIFIER_TIMEOUT_MS, reasoning: env.LLM_SYNTHESIS_TIMEOUT_MS },
     logger: deps.logger,
   });
-  deps.logger.info("Model gateway: ✓ active", { routing, overrides: Object.fromEntries(overrides) });
+  deps.logger.info(missing.length ? "Model gateway: active (degraded routing)" : "Model gateway: ✓ active", { routing, overrides: Object.fromEntries(overrides) });
   return { gateway, routing, choices, audit, configuredProviders };
 }

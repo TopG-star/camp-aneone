@@ -50,4 +50,37 @@ describe("createModelWiring", () => {
     vi.stubEnv("MODEL_PROVIDER_OVERRIDES", "deepsek:suspended");
     expect(() => createModelWiring(loadEnv(), { db: db(), logger })).toThrow(OverrideConfigError);
   });
+
+  function deepseekOnly() {
+    baseEnv();
+    vi.stubEnv("LLM_PROVIDER", "deepseek");
+    vi.stubEnv("DEEPSEEK_API_KEY", "k");
+    vi.stubEnv("DEEPSEEK_CLASSIFIER_MODEL", "flash");
+    vi.stubEnv("DEEPSEEK_SYNTHESIS_MODEL", "pro");
+    vi.stubEnv("MODEL_AUDIT_HMAC_KEY", "x".repeat(32));
+  }
+
+  it("warns when the reasoning provider has no key but still builds the gateway", () => {
+    deepseekOnly();
+    vi.stubEnv("LLM_REASONING_PROVIDER_PREMIUM", "anthropic");
+    logger.warn.mockClear();
+    const wiring = createModelWiring(loadEnv(), { db: db(), logger });
+    expect(wiring.gateway).not.toBeNull();
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Model gateway: routed provider has no key; its calls will be denied",
+      { role: "reasoning", provider: "anthropic" },
+    );
+  });
+
+  it("warns when the shadow provider has no key but still builds the gateway", () => {
+    deepseekOnly();
+    vi.stubEnv("LLM_SHADOW_PROVIDER", "anthropic");
+    logger.warn.mockClear();
+    const wiring = createModelWiring(loadEnv(), { db: db(), logger });
+    expect(wiring.gateway).not.toBeNull();
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Model gateway: routed provider has no key; its calls will be denied",
+      { role: "shadow", provider: "anthropic" },
+    );
+  });
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { personalActor } from "@oneon/domain";
+import { OverrideConfigError } from "@oneon/application";
 import { loadEnv } from "./config/env.js";
 import { createContainer } from "./container.js";
 
@@ -155,5 +156,15 @@ describe("createContainer", () => {
     } finally {
       container.shutdown();
     }
+  });
+
+  it("refuses to start on a bad MODEL_PROVIDER_OVERRIDES entry", () => {
+    stubEnv();
+    vi.stubEnv("LLM_PROVIDER", "deepseek");
+    vi.stubEnv("DEEPSEEK_API_KEY", "k");
+    vi.stubEnv("DEEPSEEK_CLASSIFIER_MODEL", "flash");
+    vi.stubEnv("DEEPSEEK_SYNTHESIS_MODEL", "pro");
+    vi.stubEnv("MODEL_PROVIDER_OVERRIDES", "deepsek:suspended");
+    expect(() => createContainer(loadEnv())).toThrow(OverrideConfigError);
   });
 });
