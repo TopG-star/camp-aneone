@@ -30,13 +30,15 @@ cp .env.test.local.template .env.test.local  # Test overrides
 
 ## Generating Secrets
 
-### NEXTAUTH_SECRET / API_TOKEN / OAUTH_TOKEN_ENCRYPTION_KEY
+### NEXTAUTH_SECRET / API_TOKEN / OAUTH_TOKEN_ENCRYPTION_KEY / MODEL_AUDIT_HMAC_KEY
 
 ```bash
 openssl rand -base64 32
 ```
 
 Each of these must be unique. Never reuse the same value.
+
+`MODEL_AUDIT_HMAC_KEY` (at least 32 characters, required whenever a model provider key is set) keys the fingerprints in the AI audit log. Bump `MODEL_AUDIT_HMAC_KEY_VERSION` when you rotate it.
 
 ### Webhook Secrets (GitHub, Outlook, Teams)
 
