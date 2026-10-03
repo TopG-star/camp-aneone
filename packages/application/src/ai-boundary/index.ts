@@ -20,3 +20,4 @@ export {
   type WithheldItem,
   type WithheldReason,
 } from "./decide.js";
+export * from "./answer-check.js";
