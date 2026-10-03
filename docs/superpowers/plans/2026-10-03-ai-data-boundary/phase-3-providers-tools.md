@@ -308,7 +308,7 @@ Spec §10.1, §12. Every chat tool declares the fields it returns, with their cl
 | `finance_spend_insights` | userId D1, period D1, summary D2, topCategories D2, anomalies D2 | D2 |
 | `finance_statement_status` | userId D1, counts D1, recent D2 | D1 |
 | `daily_briefing` | date D1, pendingActions D1, urgentItems D2, deadlines D2, calendar D2 | D2 |
-| `create_calendar_event`, `update_calendar_event` | action D1 | D2 |
+| `create_calendar_event`, `update_calendar_event` | action D1 (id, actionType, label, status); refused D1; issues D2 free (validation messages can quote input) | D2 (it carries the plain-language description, which names people; spec §7.6 AX3) |
 
 Before writing each schema, open the tool and confirm its real keys match the table. If a key differs, follow the code and note it in your report.
 

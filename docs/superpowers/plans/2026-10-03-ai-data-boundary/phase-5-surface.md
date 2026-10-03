@@ -475,6 +475,10 @@ ImpressoRx pharmacies (Step B) would add customer credit, supplier prices and co
 5. The audit trail records each decision and the shape of what was released, with keyed (HMAC) fingerprints — never
    prompts, answers or data values. The tables are append-only through the application; this does not stop direct
    database access.
+6. The boundary governs disclosure to AI providers, not Oneon's authorised internal use of data. Rules apply only
+   in the gateway. An approved action's executor receives the authoritative data it needs through `resolve`, even
+   when the model that proposed the action never saw that data. Placeholders are restored to real identifiers
+   before any tool or action receives them.
 
 ## Consequences
 
@@ -482,6 +486,8 @@ ImpressoRx pharmacies (Step B) would add customer credit, supplier prices and co
 - Chat keeps working at D1 without earlier assistant replies in context.
 - A scanner on free text is a backstop with false negatives. Prompt injection is mitigated, not prevented.
 - "Personal" is defined by source, not content; business data in a personal inbox leaves on the person's opt-in.
+- That an action's business facts come from `resolve`, not from the model's proposal, is a review convention until
+  Step C adds a mechanism.
 
 ## References
 

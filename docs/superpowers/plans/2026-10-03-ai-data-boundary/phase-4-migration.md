@@ -461,7 +461,7 @@ git commit -m "feat(ai-boundary): route email classification through the gateway
 
 ### Task 14: Chat through the gateway
 
-Spec §10.1, §10.2, §7.2. Covers intent extraction and the chat reply. Review Focus 1 and 4 live here.
+Spec §10.1, §10.2, §7.2, §7.6. Covers intent extraction and the chat reply. Review Focus 1, 4, 6 and 7 live here.
 
 **Files:**
 - Create: `packages/application/src/ai-boundary/requests/chat.ts`
@@ -570,6 +570,28 @@ it("stops with policy_denied when the gateway denies the intent call", async () 
 });
 ```
 
+Add Review Focus 6 (spec §7.6 AX1) in the same file. The turn's `restoreToolParams` is stubbed here; Task 9 already tests restoration from a real mapping. This test proves the loop hands the tool the restored parameters:
+
+```ts
+it("hands an action tool the real identifier, never the placeholder (Review Focus 6)", async () => {
+  const seen: unknown[] = [];
+  const registry = registryWith();
+  registry.register({
+    name: "create_calendar_event", version: "1", description: "Request an event", inputSchema: z.object({}).passthrough(),
+    output: { fields: { action: { class: "D1" } }, summaryClass: "D2" },
+    execute: (input: unknown) => { seen.push(input); return { data: null, summary: "ok" }; },
+  });
+  const turn = {
+    call: vi.fn().mockResolvedValueOnce(answered([{ tool: "create_calendar_event", parameters: { title: "Sync", attendees: ["PERSON_1"] } }])).mockResolvedValue(answered([{ tool: "none", parameters: {} }])),
+    restoreToolParams: (p: Record<string, unknown>) => ({ ok: true as const, params: JSON.parse(JSON.stringify(p).replaceAll("PERSON_1", "ama@x.com")) as Record<string, unknown> }),
+    effectiveLimit: () => "D1" as const,
+  };
+  await runIntentLoop({ modelTurn: turn, toolRegistry: registry, logger }, baseInput());
+  expect(seen).toEqual([expect.objectContaining({ attendees: ["ama@x.com"] })]);
+  expect(JSON.stringify(seen)).not.toContain("PERSON_1");
+});
+```
+
 `registryWith(...names)` and `baseInput()` are small helpers in the test file. `registryWith` registers tools that return `{ data: [], summary: "ok" }` with `output: { fields: {}, summaryClass: "D1" }`. `baseInput` returns the input object the existing tests already build.
 
 In `send-chat-message.test.ts`, add Review Focus 1 with the real gateway and no opt-in:
@@ -588,6 +610,30 @@ it("still answers at the D1 default, leaving earlier assistant replies out (Revi
 ```
 
 When writing the `createModelGateway` call, copy the full deps object from the Task 13 test, so the test file stays self-contained. `seedHistory` uses the file's existing conversation-repo fake.
+
+Add Review Focus 7 (spec §7.6 AX5) in `send-chat-message.test.ts`:
+
+```ts
+it("still lists the requested action when the chat reply is denied (Review Focus 7)", async () => {
+  const action = { id: "a1", actionType: "create_calendar_event", label: "Create calendar event", status: "awaiting_approval" };
+  let intentRounds = 0;
+  const gateway = stubGateway({
+    respond: (req) =>
+      req.purpose === "chat_reply"
+        ? denied("required_part_withheld")
+        : answered(intentRounds++ === 0 ? [{ tool: "create_calendar_event", parameters: { title: "Sync" } }] : [{ tool: "none", parameters: {} }]),
+  });
+  const deps = createDeps({
+    modelGateway: gateway,
+    toolRegistry: registryWithTool("create_calendar_event", { data: { action }, summary: "Waiting for your approval in Action Center." }),
+  });
+  const result = await sendChatMessage(deps, { userId: "u1", message: "book a sync" });
+  expect(result.actions).toEqual([action]);
+  expect(result.response).toContain("Waiting for your approval");
+});
+```
+
+`registryWithTool(name, result)` is a small helper in the test file. It registers one tool that returns `result`, with `output: { fields: { action: { class: "D1" } }, summaryClass: "D2" }`.
 
 - [ ] **Step 3: Run to verify they fail**
 

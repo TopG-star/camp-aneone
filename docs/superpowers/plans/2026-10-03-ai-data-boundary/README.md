@@ -44,7 +44,8 @@ Tasks run in order. Each ends with the full suite green and one commit. Phases 1
 - The scanner's D3 removal marker in assembled text, exactly: `[removed]`.
 - New env vars: `MODEL_PROVIDER_OVERRIDES` (optional), `MODEL_AUDIT_HMAC_KEY` (required, at least 32 characters, whenever `ANTHROPIC_API_KEY` or `DEEPSEEK_API_KEY` is set), `MODEL_AUDIT_HMAC_KEY_VERSION` (default `1`).
 - Tables (migration 015): `ai_data_choices`, `model_call_decisions`, `model_call_outcomes`. All three are append-only. Trigger messages, exactly: `ai_data_choices is append-only`, `model_call_decisions is append-only`, `model_call_outcomes is append-only`.
-- Never store prompts, answers, data values, matched scanner text, or the placeholder mapping, in any table or log.
+- Never store prompts, answers, data values, matched scanner text, or the placeholder mapping in the model audit tables, and never log them from the gateway or a model call site. Action tables and stored chat tool calls are Oneon's own records and are outside this rule (spec §7.6).
+- **The boundary applies only inside the gateway (spec §1.1).** Do not add class checks to tools, action `resolve` or executors, storage, or API responses to the signed-in person. Tools keep returning full data; the gateway decides what the model sees.
 - The recorded decision, verbatim (Task 17): provider `deepseek`, max class `D2`, decided on `2026-10-03`, note `Approved by Gerry in the 2026-10-03 design session for his personal email, pending confirmation after checking DeepSeek's current terms.`
 
 ## Review Focus
@@ -56,6 +57,8 @@ Inputs the spec implies but no other test pins. Each line's test is added in the
 3. **A tool starts returning an extra field after a refactor.** The field is withheld with a `boundary_alert`, and the chat still answers. Test: Task 11.
 4. **The model invents a placeholder in a tool request** (`CUSTOMER_9`, never issued). That intent is skipped with a warning, and the loop carries on with the others. Test: Task 14.
 5. **`MODEL_PROVIDER_OVERRIDES` written loosely** (`DeepSeek : Suspended , anthropic:d1`). Whitespace and case are tolerated for provider ids and values. A truly unknown id or value still stops startup. Test: Task 2.
+6. **The model proposes an action using a placeholder** (`create_calendar_event` with attendee `PERSON_1`, from an inbox result at D1). `requestAction` receives the real address, never the token (spec §7.6 AX1). Test: Task 14.
+7. **The chat reply is denied or fails after an action was requested.** The action keeps its status, and the chat response still lists it (spec §7.6 AX5). Test: Task 14.
 
 ## File map
 

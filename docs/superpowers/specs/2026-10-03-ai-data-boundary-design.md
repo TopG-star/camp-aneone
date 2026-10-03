@@ -29,6 +29,22 @@ And its corollary:
 
 > **No provider is trusted because it is approved. The gateway, not the provider, is the security boundary.**
 
+### 1.1 What the boundary governs
+
+In Gerry's words (2026-10-03):
+
+> **The AI Data Boundary controls information disclosed to external AI providers. It does not restrict Oneon's authorized internal use of business data or prevent Action Spec executors from receiving the authoritative data required to perform an approved business action.**
+
+> **An action may require sensitive business data for execution without requiring that data to be disclosed to the external model that proposed the action.**
+
+What follows from this:
+- **The rules apply only in the gateway, on the way to a provider.** Rules §6–§7 do not apply to tools, `resolve`, executors, Oneon's storage, or what an authorised person sees on screen. Those are governed by authorisation instead: the signed-in session, ImpressoRx's own permission checks in tenant context, and the Action Spec's policy. Tools keep returning full data; the gateway decides what the model sees.
+- **The boundary grants nothing.** It only restricts what leaves for a model. Oneon still reads data only as the person, or in tenant context as the staff member under ImpressoRx's checks.
+- **"External" is not an exemption.** Every model call passes the gateway (decision 1). A future self-hosted model would be a provider in the registry with its own limit, and D4 is still never sent to any model.
+- **Other recipients are outside this boundary.** Push notifications, email delivery and future messaging channels (WhatsApp is Meta) also receive data. This spec does not set their rules (§14.10).
+
+How actions get their data without disclosing it is in §7.6.
+
 ## 2. Decisions this spec records
 
 All made on 2026-10-03 unless noted.
@@ -48,6 +64,7 @@ All made on 2026-10-03 unless noted.
 10. **Oneon may know what the model may not.** In Gerry's words: *"Real customer data may be retrieved and processed by Oneon when authorized by the active tenant context and user permissions. Identifiable customer data must not be disclosed to an external model merely because Oneon has access to it. Before every model call, customer-related fields pass through the AI Data Boundary, which determines whether they may be sent, must be transformed, or must be withheld."* ImpressoRx knows the customer; Oneon reasons over the authorised business context; the external model sees only what policy allows.
 11. **Names typed by staff are resolved before the model sees them (phase 2).** In tenant context, Oneon asks that pharmacy's ImpressoRx, as the staff member, to find known customer and supplier names in the message, and replaces them with placeholders before the call (§7.4). Names it cannot match (misspellings, unknown names) still leave; that limit is in §14, and the pharmacy admin acknowledges it when enabling Oneon (Step B).
 12. **Gerry's personal DeepSeek opt-in.** On 2026-10-03 Gerry consciously approved DeepSeek receiving his personal email content (D2) until this gateway is built. This is recorded as his decision, not something this spec assumes. When the gateway ships, the opt-in becomes a dated, versioned policy entry that takes effect only after Gerry confirms it once in Settings → AI data, having checked DeepSeek's current terms (§10.3).
+13. **The boundary governs disclosure, not use.** It limits what reaches a model. It does not limit Oneon's authorised internal use of data, or the authoritative data an approved action's executor receives (§1.1, §7.6).
 
 ## 3. Scope
 
@@ -303,6 +320,43 @@ Matching is best effort: misspellings, nicknames and names not in ImpressoRx are
 
 For report-style purposes (future), figures shown to a person come from code, not from model text. The model interprets; it cannot create an authoritative value. None of the four day-one purposes produces authoritative figures.
 
+### 7.6 Actions: what the executor receives
+
+Under the Action Spec (ADR-011), **the model proposes a type and input; code resolves and executes.** No step after the proposal is a model call. None of them passes through the gateway, so the gateway does not limit them.
+
+| Step | Done by | Sees real data? |
+|---|---|---|
+| Proposal | the model, in `intent_extraction` | only what the gateway released; identifiers may be placeholders |
+| Parameter restore | the turn's placeholder mapping (§7.2) | turns placeholders back into real identifiers before the tool runs |
+| `requestAction`, validation, `resolve` | Oneon, as the person (in tenant context, as the staff member, re-authorised by ImpressoRx) | yes: `resolve` reads current state through reader ports |
+| Approval | an authorised person | yes: `describe(resolved)` shows real names and values |
+| Execution | the executor | yes: it receives the resolved input |
+| Report back | the model, in `chat_reply` | only what the gateway releases from the action tool's output |
+
+**Rules:**
+
+- **AX1. No placeholder reaches an action.**
+  - **Mechanism:** `restoreToolParams` runs before every tool, including the chat action tools. A token not issued in this turn makes the tool request invalid (§7.2). Stored action input, evidence and events therefore hold real identifiers. A stored token would mean nothing later, because the mapping is discarded at the end of the turn.
+  - **Test:** a calendar action proposed with attendee `PERSON_1` reaches `requestAction` with the real address.
+- **AX2. Facts come from `resolve`, not from the proposal.** This is the action form of §7.5.
+  - An action's input carries identifiers and what the person asked for: a title, a time, a quantity.
+  - Business facts the action depends on, such as a balance, a price, current stock or contact details, are read by `resolve`. The approval screen shows them from there.
+  - The model may never have seen these facts, so it must not be their source.
+  - **Mechanism: none yet.** This is a convention for writing action definitions, checked in review (§14.9). Today, the only definitions chat can propose, `create_calendar_event` and `update_calendar_event`, take only the person's intent and identifiers. Step C adds the first business action. It decides whether each input field declares where its value comes from.
+- **AX3. Reporting back to the model is a new disclosure.**
+  - What an action tool returns to the chat (status, label, plain-language description) is tool output with a declared schema (§10.1). Rules F1–F6 check it like any other tool output.
+  - The status is D1. The description names people, so it is D2. At D1, the model knows the action is awaiting approval, but not who it invites.
+  - The `chat_reply` instructions say that the status field is the truth. The chat chip shows the real status whatever the reply says.
+- **AX4. A model step inside an action is a gateway call.**
+  - If a future action needs a model, for example to write a draft reply, it calls the gateway with its own purpose.
+  - **Mechanism:** executors never receive a provider client. The architecture test in §5.5 enforces this.
+- **AX5. A model outcome never undoes an action.**
+  - If the chat reply is denied, blocked or fails after an action was requested, the action keeps its status, and the chat response still lists it.
+  - **Mechanism:** the chat response takes its actions from the tool calls, not from the reply.
+  - **Test:** a denied reply still returns the requested action.
+
+**Storage.** The action tables (`action_instances.resolved_json`, `action_events`) and stored chat tool calls hold real values. They are Oneon's authorised record of what it did. The Action Spec governs them, and for business data Step B's retention rules do too. The "never stored" rule in §8 covers the model audit tables and logs written by model call sites, not these.
+
 ## 8. Audit trail
 
 Oneon migration 015 adds two tables. Both are append-only and locked by triggers that reject `UPDATE` and `DELETE`. The triggers stop changes made through the application, not someone with direct access to the database file.
@@ -329,7 +383,7 @@ Oneon migration 015 adds two tables. Both are append-only and locked by triggers
 
 **Fingerprints** are HMAC-SHA256 with a key per context, derived from a master secret held outside the database (`MODEL_AUDIT_HMAC_KEY`, via HKDF with the tenant id, or `personal:` plus the identity id). A plain hash of small structured data could be reversed by guessing; a keyed one cannot, without the key. Oneon can still confirm that a given text was sent, by recomputing its HMAC. Rotating the key bumps `key_version`.
 
-**Never stored:** prompts, answers, data values, matched scanner text, or the placeholder mapping. This applies to shadow calls too.
+**Never stored, in these tables or in logs written by the gateway and model call sites:** prompts, answers, data values, matched scanner text, or the placeholder mapping. This applies to shadow calls too. Oneon's own records, such as action events, are outside this rule (§7.6).
 
 **Retention classes:**
 - Built now: `NONE`, the default for every call. Decision and outcome rows have no content to expire, so they are kept.
@@ -449,6 +503,9 @@ Under a D1 limit every briefing section loses its descriptive fields. A section 
 - **Golden files** of assembled prompts for each purpose, so changes show up in review.
 - **Architecture test.** Only the gateway imports provider clients, and nothing outside it casts to `ApprovedModelCall`.
 - **Audit.** Decision rows exist for denied calls; outcome rows exist only for sent calls; neither contains prompt, answer or data values.
+- **Actions (§7.6):**
+  - a model-proposed action with a placeholder reaches `requestAction` with the real identifier (AX1);
+  - a denied chat reply still returns the requested action (AX5).
 
 ## 13. Interfaces assumed from Step B
 
@@ -471,6 +528,8 @@ These are accepted, not solved:
 6. **Legal references are to be confirmed by counsel** (§4).
 7. **Typed names are matched on a best-effort basis.** In tenant context, names staff type are swapped for placeholders only when ImpressoRx recognises them (§7.4). Misspellings, nicknames and people not in ImpressoRx reach the provider as typed. The pharmacy admin acknowledges this when enabling Oneon (Step B).
 8. **Aggregates can be differenced.** A minimum group size of 5 stops aggregates over one person, but two overlapping aggregates (all customers in a district, then all except one segment), or an "other" bucket next to a known group, can still reveal an individual. Oneon does not track what earlier calls released, so it cannot prevent this.
+9. **"Facts come from `resolve`" is a convention.** Nothing stops an action definition from accepting a business fact, such as a balance, from the model's proposal. Review catches it until Step C decides on a mechanism (§7.6, AX2).
+10. **Other recipients are not governed here.** Push notifications, email delivery and future messaging channels receive data under their own rules, which this spec does not define (§1.1).
 
 ## Appendix A — ImpressoRx classification draft
 
