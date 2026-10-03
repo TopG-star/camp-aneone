@@ -91,6 +91,11 @@ describe("decide — stage 2 (fields)", () => {
     if (d.kind === "allow") expect(d.parts[1].rows![0].fields[1]).toEqual({ kind: "aggregate" });
     expect(d.withheld).toContainEqual({ part: "record:tool:receivables", row: 1, field: "total", reason: "group_too_small" });
   });
+  it("F5 never releases a free-text field as an aggregate, whatever its count", () => {
+    const d = chat([row([field("daysOverdue", "D1", 1), field("note", "D2", "call ABC", { freeText: true, aggregate: { count: 9, classIfSafe: "D1" } })])]);
+    expect(d.withheld).toContainEqual({ part: "record:tool:receivables", row: 0, field: "note", reason: "above_limit" });
+    if (d.kind === "allow") expect(d.parts[1].rows![0].fields[1]).toEqual({ kind: "withheld", reason: "above_limit" });
+  });
   it("F6 withholds a D2 field with no downgrade under a D1 limit", () => {
     const d = chat([row([field("daysOverdue", "D1", 1), field("balance", "D2", 10)])]);
     expect(d.withheld).toContainEqual({ part: "record:tool:receivables", row: 0, field: "balance", reason: "above_limit" });

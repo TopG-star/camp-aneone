@@ -7,7 +7,7 @@ import type { ModelRequest } from "./types.js";
 export interface ReleasedShapeEntry {
   part: string;
   field: string;
-  outcome: "sent" | "placeholder" | "aggregate" | `withheld:${WithheldReason}`;
+  outcome: "sent" | "placeholder" | `aggregate(${number})` | `withheld:${WithheldReason}`;
 }
 export interface AssembledPrompt {
   system: string;
@@ -17,7 +17,8 @@ export interface AssembledPrompt {
 }
 
 const render = (value: unknown): string => (typeof value === "string" ? value : JSON.stringify(value) ?? "null");
-const shape = (d: FieldDisposition): ReleasedShapeEntry["outcome"] => (d.kind === "withheld" ? `withheld:${d.reason}` : d.kind);
+const shape = (d: FieldDisposition, aggregateCount?: number): ReleasedShapeEntry["outcome"] =>
+  d.kind === "withheld" ? `withheld:${d.reason}` : d.kind === "aggregate" ? `aggregate(${aggregateCount ?? 0})` : d.kind;
 
 export function assemblePrompt(
   request: ModelRequest,
@@ -32,6 +33,11 @@ export function assemblePrompt(
   request.parts.forEach((part, p) => {
     const outcome = decision.parts[p];
     const disposition = outcome.disposition;
+    // A part decide withheld whole (e.g. part_not_allowed) carries no turns or rows.
+    if (disposition?.kind === "withheld") {
+      released.push({ part: outcome.key, field: "*", outcome: shape(disposition) });
+      return;
+    }
     if (part.kind === "instruction") {
       if (disposition?.kind === "sent") system.push(part.text);
       return;
@@ -66,7 +72,7 @@ export function assemblePrompt(
       const cells: string[] = [];
       r.fields.forEach((f, fi) => {
         const d = rowOutcome.fields[fi];
-        released.push({ part: outcome.key, field: f.name, outcome: shape(d) });
+        released.push({ part: outcome.key, field: f.name, outcome: shape(d, f.aggregate?.count) });
         if (d.kind === "placeholder") cells.push(`${f.name}: ${map.tokenFor(f.entity!, render(f.value))}`);
         else if (d.kind === "sent") cells.push(`${f.name}: ${typeof f.value === "string" ? removeSpans(f.value, d.d3Spans ?? []) : render(f.value)}`);
         else if (d.kind === "aggregate") cells.push(`${f.name}: ${render(f.value)}`);

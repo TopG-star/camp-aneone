@@ -3,7 +3,7 @@ import { assemblePrompt } from "./assemble.js";
 import { decide } from "./decide.js";
 import { PlaceholderMap } from "./placeholders.js";
 import { PURPOSES } from "./purposes/index.js";
-import { field, input, record, row, tenant, userMessage } from "./__tests__/builders.js";
+import { emailRecord, field, input, record, row, tenant, userMessage } from "./__tests__/builders.js";
 
 function allowed(d: ReturnType<typeof decide>) {
   if (d.kind !== "allow") throw new Error(`expected allow, got ${JSON.stringify(d)}`);
@@ -73,6 +73,46 @@ describe("assemblePrompt (golden)", () => {
     });
     const out = assemblePrompt(i.request, allowed(decide(i)), PURPOSES.chat_reply, new PlaceholderMap());
     expect(out.user).toBe(["=== HISTORY ===", "[user]: hello", "", "=== USER MESSAGE ===", "I was [removed]. Remind me tomorrow."].join("\n"));
+  });
+
+  it("assembles a part decide withheld as part_not_allowed without error (history in email classification)", () => {
+    const i = input({ request: { parts: [{ kind: "history", turns: [{ role: "user", text: "hello" }] }, emailRecord()] } });
+    const out = assemblePrompt(i.request, allowed(decide(i)), PURPOSES.email_classification, new PlaceholderMap());
+    expect(out.user).not.toContain("hello");
+    expect(out.user).not.toContain("HISTORY");
+    expect(out.released[0]).toEqual({ part: "history", field: "*", outcome: "withheld:part_not_allowed" });
+  });
+
+  it("assembles a disallowed record part without error and renders nothing for it", () => {
+    const def = {
+      ...PURPOSES.email_classification,
+      allowedParts: ["instruction", "user_message"] as typeof PURPOSES.email_classification.allowedParts,
+      required: { all: ["user_message"] },
+    };
+    const i = { ...input({ request: { parts: [userMessage("hi"), emailRecord()] } }), purposes: { email_classification: def } };
+    const out = assemblePrompt(i.request, allowed(decide(i)), def, new PlaceholderMap());
+    expect(out.user).toBe(["=== USER MESSAGE ===", "hi"].join("\n"));
+    expect(out.released).toEqual([
+      { part: "user_message", field: "*", outcome: "sent" },
+      { part: "record:email", field: "*", outcome: "withheld:part_not_allowed" },
+    ]);
+  });
+
+  it("renders an aggregate cell and records its group size in the released shape", () => {
+    const i = input({
+      context: tenant,
+      choiceLimit: "D1",
+      request: {
+        purpose: "chat_reply",
+        parts: [
+          record("tool:sales", [row([field("district", "D1", "Osu"), field("total", "D2", 900, { aggregate: { count: 5, classIfSafe: "D1" } })])]),
+          userMessage("totals?"),
+        ],
+      },
+    });
+    const out = assemblePrompt(i.request, allowed(decide(i)), PURPOSES.chat_reply, new PlaceholderMap());
+    expect(out.user).toBe(["=== TOOL:SALES ===", "- district: Osu | total: 900", "", "=== USER MESSAGE ===", "totals?"].join("\n"));
+    expect(out.released).toContainEqual({ part: "record:tool:sales", field: "total", outcome: "aggregate(5)" });
   });
 
   it("renders the tool catalog for intent extraction", () => {

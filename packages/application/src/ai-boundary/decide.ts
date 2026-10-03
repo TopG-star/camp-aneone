@@ -201,6 +201,7 @@ export function decide(input: DecideInput): Decision {
       if (f.freeText && typeof f.value !== "string") return hold("above_limit"); // D3 spans cannot be applied
       return f.freeText ? sentWith(scanKey) : { kind: "sent" };
     }
+    if (f.aggregate && f.freeText) return hold("above_limit"); // F5: free text cannot take D3 span removal, so it is never released as an aggregate
     if (f.aggregate) {
       // F5 (aggregate)
       if (!(f.aggregate.count >= minGroup)) return hold("group_too_small");
