@@ -1,3 +1,4 @@
+import { KNOWN_ENTITY_TYPES } from "./placeholders.js";
 import { PURPOSES, allowedFieldsFor, type PurposeDefinition } from "./purposes/index.js";
 import { providerLimit, type ProviderEntry, type ProviderOverride } from "./providers.js";
 import { REMOVED_MARKER, removeSpans, scanText } from "./scanner.js";
@@ -207,7 +208,11 @@ export function decide(input: DecideInput): Decision {
       if (!(f.aggregate.count >= minGroup)) return hold("group_too_small");
       return within(f.aggregate.classIfSafe, lim) ? { kind: "aggregate" } : hold("above_limit");
     }
-    if (f.entity && !f.freeText && within("D1", lim)) return { kind: "placeholder" }; // F5 (placeholder)
+    if (f.entity && !f.freeText && within("D1", lim)) {
+      // A placeholder needs a token prefix; an entity type the map cannot name is unclassified, not a crash in assembly.
+      if (!(KNOWN_ENTITY_TYPES as readonly string[]).includes(String(f.entity.type).toUpperCase())) return hold("unclassified");
+      return { kind: "placeholder" }; // F5 (placeholder)
+    }
     return hold("above_limit"); // F6
   }
 

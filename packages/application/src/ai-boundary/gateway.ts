@@ -193,6 +193,8 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
   return {
     beginTurn(context, options) {
       const map = new PlaceholderMap();
+      // Spec §6.8: the shadow provider may have a lower limit, so its placeholders live in a map of their own.
+      const shadowMap = new PlaceholderMap();
       const channel = options?.channel ?? null;
       return {
         async call(request) {
@@ -201,7 +203,7 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
           const shadow = deps.routing.shadow;
           if (shadow && shadow !== provider && deps.providers[shadow]) {
             // Spec §6.8: the shadow copy is its own call with its own decision; it never affects the result.
-            void runCall(context, "shadow", request, shadow, map).catch((error: unknown) =>
+            void runCall(context, "shadow", request, shadow, shadowMap).catch((error: unknown) =>
               deps.logger.warn("Shadow model call failed", { error: error instanceof Error ? error.message : String(error) }),
             );
           }

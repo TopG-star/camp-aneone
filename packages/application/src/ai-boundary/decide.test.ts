@@ -79,6 +79,19 @@ describe("decide — stage 2 (fields)", () => {
       expect(d.parts[1].rows![0].fields.map((f) => f.kind)).toEqual(["placeholder", "withheld", "sent"]);
     }
   });
+  it("F5 withholds an entity of a type the placeholder map cannot name, and raises the alert", () => {
+    const d = chat([row([field("name", "D2", "Corner Pharmacy", { entity: { type: "pharmacy", id: "p1" } }), field("daysOverdue", "D1", 73)])]);
+    expect(d.kind).toBe("allow");
+    if (d.kind === "allow") {
+      expect(d.parts[1].rows![0].fields.map((f) => f.kind)).toEqual(["withheld", "sent"]);
+      expect(d.withheld).toContainEqual({ part: "record:tool:receivables", row: 0, field: "name", reason: "unclassified" });
+      expect(d.alert).toBe(true);
+    }
+  });
+  it("F4 still sends an unknown-type entity field that is within the limit", () => {
+    const d = chat([row([field("name", "D1", "Corner Pharmacy", { entity: { type: "pharmacy", id: "p1" } })])]);
+    if (d.kind === "allow") expect(d.parts[1].rows![0].fields[0]).toEqual({ kind: "sent" });
+  });
   it("F5 never placeholders free text", () => {
     const d = chat([row([field("daysOverdue", "D1", 1), field("note", "D2", "call ABC", { freeText: true, entity: { type: "customer", id: "c1" } })])]);
     expect(d.withheld).toContainEqual({ part: "record:tool:receivables", row: 0, field: "note", reason: "above_limit" });

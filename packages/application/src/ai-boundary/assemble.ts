@@ -29,6 +29,7 @@ export function assemblePrompt(
   const system: string[] = [def.instructions];
   const blocks: string[] = [];
   const released: ReleasedShapeEntry[] = [];
+  const issued = new Set<string>();
 
   request.parts.forEach((part, p) => {
     const outcome = decision.parts[p];
@@ -73,7 +74,11 @@ export function assemblePrompt(
       r.fields.forEach((f, fi) => {
         const d = rowOutcome.fields[fi];
         released.push({ part: outcome.key, field: f.name, outcome: shape(d, f.aggregate?.count) });
-        if (d.kind === "placeholder") cells.push(`${f.name}: ${map.tokenFor(f.entity!, render(f.value))}`);
+        if (d.kind === "placeholder") {
+          const token = map.tokenFor(f.entity!, render(f.value));
+          issued.add(token);
+          cells.push(`${f.name}: ${token}`);
+        }
         else if (d.kind === "sent") cells.push(`${f.name}: ${typeof f.value === "string" ? removeSpans(f.value, d.d3Spans ?? []) : render(f.value)}`);
         else if (d.kind === "aggregate") cells.push(`${f.name}: ${render(f.value)}`);
       });
@@ -82,5 +87,7 @@ export function assemblePrompt(
     if (lines.length > 0) blocks.push([`=== ${part.source.toUpperCase()} ===`, ...lines].join("\n"));
   });
 
-  return { system: system.join("\n\n"), user: blocks.join("\n\n"), released, placeholderCount: map.size };
+  const text = { system: system.join("\n\n"), user: blocks.join("\n\n") };
+  // Per call, not per turn: the distinct tokens this call issued (the instruction text quotes example tokens, so the text is not counted).
+  return { ...text, released, placeholderCount: issued.size };
 }

@@ -144,4 +144,52 @@ describe("gateway", () => {
     });
     expect(result).toMatchObject({ kind: "blocked", reason: "masked_value_leaked" });
   });
+
+  it("keeps shadow placeholders out of the main turn's map (spec §6.8)", async () => {
+    const mainAnswer = JSON.stringify({ answer: "ABC Hospital owes the most.", usedTools: [] });
+    const shadowAnswer = JSON.stringify({ answer: "CUSTOMER_1 owes the most.", usedTools: [] });
+    const anthropic = new FakeProvider("anthropic", [shadowAnswer]);
+    const { gateway, choices } = setup({
+      providers: { deepseek: new FakeProvider("deepseek", [mainAnswer]), anthropic },
+      routing: { standard: "deepseek", reasoning: "deepseek", shadow: "anthropic" },
+    });
+    optIn(choices); // main at D2; the shadow provider stays at the D1 default
+    const turn = gateway.beginTurn(personal);
+    const request = () => ({
+      purpose: "chat_reply",
+      output: "json" as const,
+      parts: [userMessage("who owes?"), record("tool:receivables", [row([field("name", "D2", "ABC Hospital", { entity: { type: "customer", id: "c9" } })])])],
+    });
+    const first = await turn.call(request());
+    const second = await turn.call(request());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(first.kind).toBe("answered");
+    expect(second.kind).toBe("answered");
+    expect(anthropic.calls).toHaveLength(2);
+    expect(anthropic.calls[0].user).toContain("CUSTOMER_1");
+    expect(turn.restoreToolParams({ customerId: "CUSTOMER_1" })).toEqual({ ok: false, token: "CUSTOMER_1" });
+  });
+
+  it("answers with a result and a decision row for an entity type the placeholder map cannot name", async () => {
+    const { gateway, audit } = setup({}, [JSON.stringify({ answer: "ok", usedTools: [] })]);
+    const result = await gateway.beginTurn(tenant).call({
+      purpose: "chat_reply",
+      output: "json",
+      parts: [userMessage("who owes?"), record("tool:receivables", [row([field("name", "D2", "Corner Pharmacy", { entity: { type: "pharmacy", id: "p1" } })])])],
+    });
+    expect(result.kind).toBe("answered");
+    expect(result.withheld).toContainEqual({ part: "record:tool:receivables", row: 0, field: "name", reason: "unclassified" });
+    expect(audit.decisions).toHaveLength(1);
+    expect(audit.decisions[0]).toMatchObject({ decision: "allow", alert: true });
+    expect(JSON.stringify(audit.decisions)).not.toContain("Corner Pharmacy");
+  });
+
+  it("counts placeholders per call, not per turn", async () => {
+    const { gateway, audit } = setup({}, [JSON.stringify({ answer: "ok", usedTools: [] })]);
+    const turn = gateway.beginTurn(tenant);
+    const withName = record("tool:receivables", [row([field("name", "D2", "ABC Hospital", { entity: { type: "customer", id: "c9" } })])]);
+    await turn.call({ purpose: "chat_reply", output: "json", parts: [userMessage("who owes?"), withName] });
+    await turn.call({ purpose: "chat_reply", output: "json", parts: [userMessage("and now?")] });
+    expect(audit.decisions.map((d) => d.placeholderCount)).toEqual([1, 0]);
+  });
 });
