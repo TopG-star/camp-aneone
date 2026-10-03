@@ -53,5 +53,5 @@ function toProviderError(error: unknown): ProviderError {
   if (error instanceof DeepSeekEmptyResponseError) return new ProviderError("DeepSeek returned an empty response", true);
   if (error instanceof DeepSeekApiError) return new ProviderError(`DeepSeek API error ${error.status}`, error.status >= 500);
   if (error instanceof Error && error.name === "AbortError") return new ProviderError("DeepSeek request timed out", true);
-  return new ProviderError(error instanceof Error ? error.message : String(error), false);
+  return new ProviderError("DeepSeek request failed", false);
 }

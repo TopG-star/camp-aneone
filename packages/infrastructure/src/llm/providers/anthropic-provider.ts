@@ -25,7 +25,7 @@ export class AnthropicProvider implements ModelProvider {
   private readonly breaker: CircuitBreaker;
 
   constructor(config: AnthropicProviderConfig) {
-    this.client = config.client ?? (new Anthropic({ apiKey: config.apiKey }) as unknown as MessagesClient);
+    this.client = config.client ?? (new Anthropic({ apiKey: config.apiKey, maxRetries: 0 }) as unknown as MessagesClient);
     this.breaker = new CircuitBreaker({ ...config.circuitBreaker, logger: config.logger });
   }
 
@@ -50,8 +50,10 @@ export class AnthropicProvider implements ModelProvider {
       if (error instanceof ProviderError) throw error;
       const status = (error as { status?: number }).status;
       if (typeof status === "number") throw new ProviderError(`Anthropic API error ${status}`, status >= 500);
-      if (error instanceof Error && error.name === "AbortError") throw new ProviderError("Anthropic request timed out", true);
-      throw new ProviderError(error instanceof Error ? error.message : String(error), false);
+      if (error instanceof Anthropic.APIUserAbortError || (error instanceof Error && error.name === "AbortError")) {
+        throw new ProviderError("Anthropic request timed out", true);
+      }
+      throw new ProviderError("Anthropic request failed", false);
     }
   }
 }

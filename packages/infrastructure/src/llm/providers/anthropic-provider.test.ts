@@ -1,3 +1,4 @@
+import Anthropic from "@anthropic-ai/sdk";
 import { describe, it, expect, vi } from "vitest";
 import { ApprovedModelCall, ProviderError } from "@oneon/application";
 import { AnthropicProvider } from "./anthropic-provider.js";
@@ -25,5 +26,14 @@ describe("AnthropicProvider", () => {
   ])("maps HTTP %o to retryable=%s", async (shape, retryable) => {
     const failure = await make(vi.fn().mockRejectedValue(Object.assign(new Error("x"), shape))).complete(call).catch((e: unknown) => e);
     expect((failure as ProviderError).retryable).toBe(retryable);
+  });
+  it("treats the SDK's abort error as a retryable timeout", async () => {
+    const failure = await make(vi.fn().mockRejectedValue(new Anthropic.APIUserAbortError())).complete(call).catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(ProviderError);
+    expect(failure).toMatchObject({ message: "Anthropic request timed out", retryable: true });
+  });
+  it("replaces unknown error text with a fixed message", async () => {
+    const failure = await make(vi.fn().mockRejectedValue(new SyntaxError("Unexpected token in {\"secret\":\"abc\"}"))).complete(call).catch((e: unknown) => e);
+    expect(failure).toMatchObject({ message: "Anthropic request failed", retryable: false });
   });
 });

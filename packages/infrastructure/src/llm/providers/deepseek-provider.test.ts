@@ -40,4 +40,9 @@ describe("DeepSeekProvider", () => {
     expect(failure).toBeInstanceOf(ProviderError);
     expect((failure as ProviderError).retryable).toBe(retryable);
   });
+  it("replaces unknown error text with a fixed message", async () => {
+    const chatCompletion = vi.fn().mockRejectedValue(new SyntaxError("Unexpected token in {\"secret\":\"abc\"}"));
+    const failure = await make(chatCompletion).complete(call(true)).catch((e: unknown) => e);
+    expect(failure).toMatchObject({ message: "DeepSeek request failed", retryable: false });
+  });
 });
