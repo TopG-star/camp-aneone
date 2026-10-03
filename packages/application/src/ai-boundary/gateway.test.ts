@@ -1,0 +1,147 @@
+import { describe, it, expect, vi } from "vitest";
+import { createModelGateway, type ModelGatewayDeps } from "./gateway.js";
+import { Fingerprinter } from "./fingerprints.js";
+import { InMemoryChoices, InMemoryModelAudit } from "./__tests__/in-memory-audit.js";
+import { FakeProvider, providerDown } from "./__tests__/fake-provider.js";
+import { emailRecord, field, personal, record, row, tenant, userMessage } from "./__tests__/builders.js";
+
+const CLASSIFICATION = JSON.stringify({ category: "work", priority: 2, summary: "Invoice", actionItems: [], followUpNeeded: false, deadlines: [] });
+const silent = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+function setup(overrides: Partial<ModelGatewayDeps> = {}, answers: ConstructorParameters<typeof FakeProvider>[1] = [CLASSIFICATION]) {
+  const deepseek = new FakeProvider("deepseek", answers);
+  const audit = new InMemoryModelAudit();
+  const choices = new InMemoryChoices();
+  const gateway = createModelGateway({
+    providers: { deepseek },
+    overrides: new Map(),
+    routing: { standard: "deepseek", reasoning: "deepseek" },
+    models: { deepseek: { standard: "flash", reasoning: "pro" } },
+    choices,
+    audit,
+    fingerprinter: new Fingerprinter("k".repeat(32), 1),
+    maxRetries: 2,
+    timeouts: { standard: 15000, reasoning: 30000 },
+    logger: silent,
+    clock: () => new Date("2026-10-03T10:00:00.000Z"),
+    ...overrides,
+  });
+  return { gateway, deepseek, audit, choices };
+}
+
+const optIn = (choices: InMemoryChoices) =>
+  choices.record({ identityId: "u1", provider: "deepseek", maxClass: "D2", decidedOn: "2026-10-03", note: null, confirmedAt: "2026-10-03T10:00:00.000Z" });
+
+describe("gateway", () => {
+  it("denies personal email classification before opt-in, records the decision, and never calls the provider", async () => {
+    const { gateway, deepseek, audit } = setup();
+    const result = await gateway.beginTurn(personal).call({ purpose: "email_classification", output: "json", parts: [emailRecord()] });
+    expect(result).toMatchObject({ kind: "denied", reason: "required_part_withheld" });
+    expect(deepseek.calls).toHaveLength(0);
+    expect(audit.decisions).toHaveLength(1);
+    expect(audit.decisions[0]).toMatchObject({ decision: "deny", effectiveLimit: "D1", inputFingerprint: null });
+    expect(audit.outcomes).toHaveLength(0);
+  });
+
+  it("answers after opt-in, validates JSON and writes decision and outcome rows without content", async () => {
+    const { gateway, deepseek, audit, choices } = setup();
+    optIn(choices);
+    const result = await gateway.beginTurn(personal).call({ purpose: "email_classification", output: "json", parts: [emailRecord()] });
+    expect(result).toMatchObject({ kind: "answered", json: { category: "work" } });
+    expect(deepseek.calls[0]).toMatchObject({ provider: "deepseek", model: "flash", json: true, timeoutMs: 15000 });
+    expect(audit.outcomes[0]).toMatchObject({ status: "answered", attempts: 1, checks: { O4: "pass" } });
+    const stored = JSON.stringify([audit.decisions, audit.outcomes]);
+    expect(stored).not.toContain("Please pay by Friday");
+    expect(stored).not.toContain("ama@example.com");
+  });
+
+  it("retries an invalid JSON answer with the same approved call, then blocks", async () => {
+    const { gateway, deepseek, audit, choices } = setup({}, ["nope", "still nope", "never json"]);
+    optIn(choices);
+    const result = await gateway.beginTurn(personal).call({ purpose: "email_classification", output: "json", parts: [emailRecord()] });
+    expect(result).toMatchObject({ kind: "blocked", reason: "invalid_output" });
+    expect(deepseek.calls).toHaveLength(3);
+    expect(new Set(deepseek.calls.map((c) => c.callId)).size).toBe(1);
+    expect(audit.outcomes[0]).toMatchObject({ status: "blocked", blockReason: "invalid_output", attempts: 3 });
+  });
+
+  it("reports a provider failure as failed", async () => {
+    const { gateway, choices, audit } = setup({}, [providerDown()]);
+    optIn(choices);
+    const result = await gateway.beginTurn(personal).call({ purpose: "email_classification", output: "json", parts: [emailRecord()] });
+    expect(result).toMatchObject({ kind: "failed" });
+    expect(audit.outcomes[0]).toMatchObject({ status: "failed" });
+  });
+
+  it("uses one placeholder map per turn and restores tool parameters from it (spec §7.2)", async () => {
+    const answer = JSON.stringify([{ tool: "get_customer", parameters: { customerId: "CUSTOMER_1" } }]);
+    const { gateway, deepseek } = setup({}, [answer]);
+    const turn = gateway.beginTurn(tenant);
+    const result = await turn.call({
+      purpose: "intent_extraction",
+      output: "json",
+      parts: [userMessage("who owes?"), record("tool:receivables", [row([field("name", "D2", "ABC Hospital", { entity: { type: "customer", id: "c9" } })])])],
+    });
+    expect(deepseek.calls[0].user).toContain("CUSTOMER_1");
+    expect(deepseek.calls[0].user).not.toContain("ABC Hospital");
+    expect(result).toMatchObject({ kind: "answered", json: [{ tool: "get_customer", parameters: { customerId: "CUSTOMER_1" } }] });
+    expect(turn.restoreToolParams({ customerId: "CUSTOMER_1" })).toEqual({ ok: true, params: { customerId: "c9" } });
+    expect(gateway.beginTurn(tenant).restoreToolParams({ customerId: "CUSTOMER_1" })).toEqual({ ok: false, token: "CUSTOMER_1" });
+  });
+
+  it("caps tenant calls at D1 regardless of personal opt-ins", async () => {
+    const { gateway, choices } = setup();
+    optIn(choices);
+    expect(gateway.beginTurn(tenant).effectiveLimit("chat_reply")).toBe("D1");
+    expect(gateway.beginTurn(personal).effectiveLimit("chat_reply")).toBe("D2");
+    expect(gateway.beginTurn(personal).effectiveLimit("unknown")).toBeNull();
+  });
+
+  it("runs the shadow copy as its own decision, and skips it when denied without affecting the main call", async () => {
+    const anthropic = new FakeProvider("anthropic", [CLASSIFICATION]);
+    const { gateway, choices, audit } = setup({ providers: { deepseek: new FakeProvider("deepseek", [CLASSIFICATION]), anthropic }, routing: { standard: "deepseek", reasoning: "deepseek", shadow: "anthropic" } });
+    optIn(choices); // DeepSeek only: Anthropic stays at the D1 default, so its shadow copy is denied
+    const result = await gateway.beginTurn(personal).call({ purpose: "email_classification", output: "json", parts: [emailRecord()] });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(result.kind).toBe("answered");
+    expect(anthropic.calls).toHaveLength(0);
+    expect(audit.decisions.map((d) => [d.provider, d.channel, d.decision])).toEqual([
+      ["deepseek", null, "allow"],
+      ["anthropic", "shadow", "deny"],
+    ]);
+  });
+
+  it("denies a suspended provider via the override", async () => {
+    const { gateway, choices } = setup({ overrides: new Map([["deepseek", { kind: "suspended" }]]) });
+    optIn(choices);
+    expect(await gateway.beginTurn(personal).call({ purpose: "email_classification", output: "json", parts: [emailRecord()] })).toMatchObject({
+      kind: "denied",
+      reason: "provider_unavailable",
+    });
+  });
+
+  // Controller ruling P2: a value the person typed themselves is not an O1 leak; the same value from a tool record is.
+  const echoAnswer = JSON.stringify([{ tool: "find_email", parameters: { from: "ama@x.com" } }]);
+  const toolRecord = () => record("tool:mail", [row([field("from", "D2", "ama@x.com", { entity: { type: "person", id: "p1" } })])]);
+
+  it("does not block an echo of an address the person typed in this request (P2)", async () => {
+    const { gateway, deepseek } = setup({}, [echoAnswer]);
+    const result = await gateway.beginTurn(personal).call({
+      purpose: "intent_extraction",
+      output: "json",
+      parts: [userMessage("did ama@x.com email me?"), toolRecord()],
+    });
+    expect(deepseek.calls[0].user).toContain("PERSON_1");
+    expect(result).toMatchObject({ kind: "answered", json: [{ tool: "find_email", parameters: { from: "ama@x.com" } }] });
+  });
+
+  it("blocks an echo of a replaced value the person did not type (spec ruling 4)", async () => {
+    const { gateway } = setup({}, [echoAnswer]);
+    const result = await gateway.beginTurn(personal).call({
+      purpose: "intent_extraction",
+      output: "json",
+      parts: [userMessage("who emailed me?"), toolRecord()],
+    });
+    expect(result).toMatchObject({ kind: "blocked", reason: "masked_value_leaked" });
+  });
+});

@@ -23,3 +23,4 @@ export {
 export * from "./answer-check.js";
 export * from "./audit.js";
 export * from "./fingerprints.js";
+export * from "./gateway.js";
