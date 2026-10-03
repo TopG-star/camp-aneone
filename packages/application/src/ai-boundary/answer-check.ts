@@ -42,6 +42,25 @@ function deepMap(value: unknown, fn: (s: string) => string): unknown {
   return value;
 }
 
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Case-insensitive match of a name on Unicode word boundaries, so "Esi" does not match inside "design". */
+const containsName = (text: string, name: string): boolean =>
+  new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, "iu").test(text);
+
+/** Every string in a parsed value, object keys included, as JSON.parse decoded them. */
+function collectStrings(value: unknown, out: string[]): string[] {
+  if (typeof value === "string") out.push(value);
+  else if (Array.isArray(value)) for (const v of value) collectStrings(v, out);
+  else if (value && typeof value === "object") {
+    for (const [k, v] of Object.entries(value)) {
+      out.push(k);
+      collectStrings(v, out);
+    }
+  }
+  return out;
+}
+
 export function checkAnswer(input: {
   raw: string;
   output: "json" | "text";
@@ -53,32 +72,46 @@ export function checkAnswer(input: {
 }): CheckResult {
   const checks: CheckLog = { O1: "skipped", O2: "skipped", O3: "skipped", O4: "skipped" };
   const restore = (s: string) => (input.restoreNames === false ? s : restoreString(s, input.map));
-  const lower = input.raw.toLowerCase();
-  const userLower = (input.userText ?? "").toLowerCase();
+  const userText = input.userText ?? "";
+  // JSON escapes (\uXXXX) decode only on parse, so O1-O3 must also see the decoded strings.
+  let parsed: unknown;
+  let parseOk = false;
+  if (input.output === "json") {
+    try {
+      parsed = parseJsonLoose(input.raw);
+      parseOk = true;
+    } catch {
+      // O4 reports the failure after O1-O3 have run over the raw text
+    }
+  }
+  const texts = parseOk ? [input.raw, ...collectStrings(parsed, [])] : [input.raw];
   // O1: a real value this turn replaced must not come back. Possible only via another route, so it signals a bug.
   // The person's own words are a sanctioned route, so a value they typed is exempt.
   checks.O1 = input.map
     .displays()
-    .some((d) => d.length >= MIN_LEAK_LENGTH && lower.includes(d.toLowerCase()) && !userLower.includes(d.toLowerCase()))
+    .some((d) => d.length >= MIN_LEAK_LENGTH && texts.some((t) => containsName(t, d)) && !containsName(userText, d))
     ? "fail"
     : "pass";
   if (checks.O1 === "fail") return { ok: false, reason: "masked_value_leaked", checks };
-  checks.O2 = tokensIn(input.raw).some((t) => input.map.lookup(t) === null) ? "fail" : "pass";
+  checks.O2 = texts.some((t) => tokensIn(t).some((tok) => input.map.lookup(tok) === null)) ? "fail" : "pass";
   if (checks.O2 === "fail") return { ok: false, reason: "unknown_token", checks };
-  checks.O3 = scanText(input.raw).d4.length > 0 ? "fail" : "pass";
+  checks.O3 = texts.some((t) => scanText(t).d4.length > 0) ? "fail" : "pass";
   if (checks.O3 === "fail") return { ok: false, reason: "secret_in_output", checks };
   if (input.output === "json") {
-    let parsed: unknown;
-    try {
-      parsed = parseJsonLoose(input.raw);
-    } catch {
+    const result = !parseOk ? null : input.schema ? input.schema.safeParse(parsed) : { success: true as const, data: parsed };
+    if (!result || !result.success) {
       checks.O4 = "fail";
       return { ok: false, reason: "invalid_output", checks };
     }
-    const result = input.schema ? input.schema.safeParse(parsed) : { success: true as const, data: parsed };
-    checks.O4 = result.success ? "pass" : "fail";
-    if (!result.success) return { ok: false, reason: "invalid_output", checks };
-    return { ok: true, text: restore(input.raw), json: deepMap(result.data, restore), checks };
+    // Restoring a name can lengthen a string past a schema limit, so validate again after restoring.
+    const restored = deepMap(result.data, restore);
+    const again = input.schema ? input.schema.safeParse(restored) : { success: true as const, data: restored };
+    if (!again.success) {
+      checks.O4 = "fail";
+      return { ok: false, reason: "invalid_output", checks };
+    }
+    checks.O4 = "pass";
+    return { ok: true, text: restore(input.raw), json: again.data, checks };
   }
   return { ok: true, text: restore(input.raw), checks };
 }
@@ -89,9 +122,18 @@ export function restoreToolParams(
   map: PlaceholderMap,
 ): { ok: true; params: Record<string, unknown> } | { ok: false; token: string } {
   let unknown: string | null = null;
+  const scanKeys = (v: unknown): void => {
+    if (Array.isArray(v)) v.forEach(scanKeys);
+    else if (v && typeof v === "object")
+      for (const [k, x] of Object.entries(v)) {
+        for (const t of tokensIn(k)) if (map.lookup(t) === null && unknown === null) unknown = t;
+        scanKeys(x);
+      }
+  };
+  scanKeys(params);
   const restored = deepMap(params, (s) => {
     for (const t of tokensIn(s)) if (map.lookup(t) === null && unknown === null) unknown = t;
-    const exact = map.lookup(s);
+    const exact = map.lookup(s.trim());
     if (exact) return exact.entity.id;
     return restoreString(s, map);
   }) as Record<string, unknown>;

@@ -47,6 +47,36 @@ describe("checkAnswer", () => {
   });
 });
 
+describe("checkAnswer review fixes", () => {
+  const schema = z.object({ answer: z.string() });
+  it("O1 sees a masked value hidden behind JSON unicode escapes", () => {
+    expect(checkAnswer({ raw: '{"answer":"\\u0041BC Hospital owes"}', output: "json", schema, map: mapWithAbc() })).toMatchObject({ ok: false, reason: "masked_value_leaked" });
+  });
+  it("O2 sees an unissued token hidden behind JSON unicode escapes", () => {
+    expect(checkAnswer({ raw: '{"answer":"\\u0043USTOMER_2"}', output: "json", schema, map: mapWithAbc() })).toMatchObject({ ok: false, reason: "unknown_token" });
+  });
+  it("O3 sees a secret hidden behind JSON unicode escapes", () => {
+    expect(checkAnswer({ raw: '{"answer":"\\u0070assword: hunter2!"}', output: "json", schema, map: new PlaceholderMap() })).toMatchObject({ ok: false, reason: "secret_in_output" });
+  });
+  it("O4 re-validates after restoring, since a restored name can break a length limit", () => {
+    const map = new PlaceholderMap();
+    map.tokenFor({ type: "person", id: "p1" }, "Bartholomew Featherstonehaugh-Smythe");
+    const short = z.object({ summary: z.string().max(40) });
+    const raw = JSON.stringify({ summary: "Call PERSON_1 now" });
+    expect(checkAnswer({ raw, output: "json", schema: short, map })).toMatchObject({ ok: false, reason: "invalid_output", checks: { O4: "fail" } });
+    expect(checkAnswer({ raw, output: "json", schema: short, map, restoreNames: false })).toMatchObject({ ok: true });
+  });
+  it("O1 matches on word boundaries", () => {
+    const map = new PlaceholderMap();
+    map.tokenFor({ type: "person", id: "p2" }, "Esi");
+    expect(checkAnswer({ raw: "The new design is ready.", output: "text", map })).toMatchObject({ ok: true });
+    expect(checkAnswer({ raw: "Esi called", output: "text", map })).toMatchObject({ ok: false, reason: "masked_value_leaked" });
+    const ama = new PlaceholderMap();
+    ama.tokenFor({ type: "person", id: "p3" }, "Ama");
+    expect(checkAnswer({ raw: "Ama called", output: "text", map: ama, userText: "Amazon" })).toMatchObject({ ok: false, reason: "masked_value_leaked" });
+  });
+});
+
 describe("checkAnswer without name restoration (intent extraction)", () => {
   it("keeps tokens in place but still runs the checks", () => {
     const map = mapWithAbc();
@@ -67,6 +97,12 @@ describe("restoreToolParams", () => {
   });
   it("rejects a placeholder not issued this turn (Review Focus 4)", () => {
     expect(restoreToolParams({ customerId: "CUSTOMER_9" }, mapWithAbc())).toEqual({ ok: false, token: "CUSTOMER_9" });
+  });
+  it("rejects an unissued token in an object key", () => {
+    expect(restoreToolParams({ CUSTOMER_9: "x" }, mapWithAbc())).toEqual({ ok: false, token: "CUSTOMER_9" });
+  });
+  it("treats a padded exact token as the exact token", () => {
+    expect(restoreToolParams({ customerId: "CUSTOMER_1 " }, mapWithAbc())).toEqual({ ok: true, params: { customerId: "c9" } });
   });
   it("walks nested objects and arrays", () => {
     expect(restoreToolParams({ filter: { ids: ["CUSTOMER_1"] } }, mapWithAbc())).toEqual({ ok: true, params: { filter: { ids: ["c9"] } } });
