@@ -9,6 +9,9 @@ import { createListInboxTool } from "../tools/list-inbox.js";
 import { createSearchEmailsTool } from "../tools/search-emails.js";
 import { runIntentLoop } from "./run-intent-loop.js";
 import { synthesizeResponse } from "./synthesize-response.js";
+import { createChatActionTools } from "../actions/chat-action-tools.js";
+import type { ActionRegistry } from "../actions/registry.js";
+import type { ActionRequest } from "../actions/orchestrator/types.js";
 
 // Real gateway, real intent loop, real tools: the boundary is checked end to end at the personal D1 default.
 
@@ -103,5 +106,38 @@ describe("chat turn at the personal D1 default", () => {
       expect(`${call.system}\n${call.user}`).not.toContain(ADDRESS);
       expect(`${call.system}\n${call.user}`).not.toContain("Ama Mensah");
     }
+  });
+
+  it("hands a calendar action the sender's bare address when the model invites PERSON_1 (AX1, final review I1)", async () => {
+    const sender = { ...item, from: "Ama Mensah <ama@x.com>" };
+    const inboundItemRepo = { findAll: vi.fn(() => [sender]) } as unknown as InboundItemRepository;
+    const classificationRepo = { findByInboundItemId: vi.fn(() => null) } as unknown as ClassificationRepository;
+    const requests: ActionRequest[] = [];
+    const registry = createToolRegistry();
+    registry.register(createListInboxTool({ inboundItemRepo, classificationRepo }));
+    for (const tool of createChatActionTools({
+      requestAction: async (req) => {
+        requests.push(req);
+        return { kind: "refused", reason: "invalid_input", issues: [] };
+      },
+      registry: {} as ActionRegistry,
+      aiModel: "flash",
+      clock: () => new Date("2026-10-04T08:00:00Z"),
+    })) registry.register(tool);
+    const { gateway, deepseek } = gatewayWith([
+      JSON.stringify([{ tool: "list_inbox", parameters: {} }]),
+      JSON.stringify([
+        { tool: "create_calendar_event", parameters: { title: "Catch up", start: "2026-10-05T10:00:00+00:00", end: "2026-10-05T10:30:00+00:00", attendees: ["PERSON_1"] } },
+      ]),
+      JSON.stringify([{ tool: "none", parameters: {} }]),
+    ]);
+    const turn = gateway.beginTurn({ kind: "personal", identityId: "u1" }, { channel: "web" });
+
+    await runIntentLoop({ modelTurn: turn, toolRegistry: registry, logger: silent }, loopInput("Invite the person who emailed me to a catch-up tomorrow at 10"));
+
+    expect(deepseek.calls[1].user).toContain("from: PERSON_1");
+    expect(requests).toHaveLength(1);
+    expect(requests[0].input).toMatchObject({ attendees: ["ama@x.com"] });
+    expect(JSON.stringify(requests[0].input)).not.toContain("PERSON_1");
   });
 });

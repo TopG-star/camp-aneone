@@ -1,3 +1,4 @@
+import { personEntityId } from "../ai-boundary/placeholders.js";
 import type { ClassifiedField, ClassifiedRow, DataClass, PromptPart } from "../ai-boundary/types.js";
 
 export interface ToolFieldSpec {
@@ -39,7 +40,7 @@ function toRow(item: unknown, schema: ToolOutputSchema): ClassifiedRow {
       class: spec.class,
       value,
       ...(spec.freeText ? { freeText: true } : {}),
-      ...(spec.entity && typeof value === "string" ? { entity: { type: spec.entity, id: value } } : {}),
+      ...(spec.entity && typeof value === "string" ? { entity: { type: spec.entity, id: spec.entity === "person" ? personEntityId(value) : value } } : {}),
     };
   });
   const rowClass = schema.rowClass?.(obj);

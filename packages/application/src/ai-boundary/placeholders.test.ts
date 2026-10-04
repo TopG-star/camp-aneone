@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { PlaceholderMap, TOKEN_PATTERN } from "./placeholders.js";
+import { PlaceholderMap, TOKEN_PATTERN, personEntityId } from "./placeholders.js";
 
 describe("PlaceholderMap", () => {
   it("numbers each entity type from 1 and reuses a token for the same entity", () => {
@@ -20,5 +20,20 @@ describe("PlaceholderMap", () => {
   });
   it("matches only known token shapes", () => {
     expect("CUSTOMER_1 owes; COVID_19 is not a token; PERSON_12 is".match(TOKEN_PATTERN)).toEqual(["CUSTOMER_1", "PERSON_12"]);
+  });
+});
+
+describe("personEntityId (final review I1)", () => {
+  it("takes the bare address, lowercased, from a Name <addr> header", () => {
+    expect(personEntityId("Ama Mensah <Ama@X.com>")).toBe("ama@x.com");
+    expect(personEntityId('"Mensah, Ama" <ama@x.com>')).toBe("ama@x.com");
+    expect(personEntityId("<ama@x.com>")).toBe("ama@x.com");
+  });
+  it("uses a bare address as it is", () => {
+    expect(personEntityId("ama@x.com")).toBe("ama@x.com");
+  });
+  it("leaves a value that holds no bracketed address unchanged", () => {
+    expect(personEntityId("Ama Mensah")).toBe("Ama Mensah");
+    expect(personEntityId("octocat")).toBe("octocat");
   });
 });

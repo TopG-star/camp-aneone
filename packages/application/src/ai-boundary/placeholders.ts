@@ -3,6 +3,15 @@ import type { EntityRef } from "./types.js";
 export const KNOWN_ENTITY_TYPES = ["PERSON", "CUSTOMER", "SUPPLIER"] as const;
 export const TOKEN_PATTERN = new RegExp(`\\b(?:${KNOWN_ENTITY_TYPES.join("|")})_\\d+\\b`, "g");
 
+/**
+ * A person entity's id: the bare address, lowercased, parsed from a "Name <addr>" header; any other value
+ * (a bare address included) as it is. Restoring a placeholder yields this id, and actions need bare addresses (AX1).
+ */
+export function personEntityId(value: string): string {
+  const match = /<\s*([^<>\s]+@[^<>\s]+)\s*>\s*$/.exec(value);
+  return match ? match[1].toLowerCase() : value;
+}
+
 /** One turn's mapping between real entities and placeholders. In memory only; never logged (spec §7.1). */
 export class PlaceholderMap {
   private readonly byEntity = new Map<string, string>();

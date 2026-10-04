@@ -1,4 +1,5 @@
 import type { BriefingData } from "../../usecases/generate-daily-briefing.js";
+import { personEntityId } from "../placeholders.js";
 import type { ClassifiedField, ModelRequest, PromptPart } from "../types.js";
 
 const rec = (source: string, rows: ClassifiedField[][]): PromptPart => ({ kind: "record", source, rows: rows.map((fields) => ({ fields })) });
@@ -15,7 +16,7 @@ export function buildBriefingRequest(data: BriefingData): ModelRequest {
       rec("urgent_items", data.urgentItems.map((i) => [
         { name: "id", class: "D1", value: i.id },
         { name: "subject", class: "D2", value: i.subject, freeText: true },
-        { name: "from", class: "D2", value: i.from, entity: { type: "person", id: i.from } },
+        { name: "from", class: "D2", value: i.from, entity: { type: "person", id: personEntityId(i.from) } },
         { name: "source", class: "D1", value: i.source },
         { name: "category", class: "D1", value: i.category },
         { name: "priority", class: "D1", value: i.priority },
