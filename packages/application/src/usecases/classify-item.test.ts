@@ -165,15 +165,37 @@ describe("classifyItem", () => {
     expect(requests).toEqual([emailClassificationRequest(item)]);
   });
 
-  it("throws ClassificationPausedError without counting an attempt when the gateway denies the call", async () => {
-    deps = createDeps({ modelGateway: createGateway(() => denied("required_part_withheld")) });
+  it.each(["provider_unavailable", "invalid_context", "unknown_purpose"] as const)(
+    "throws ClassificationPausedError carrying %s without counting an attempt",
+    async (reason) => {
+      deps = createDeps({ modelGateway: createGateway(() => denied(reason)) });
 
-    await expect(classifyItem(deps, item)).rejects.toBeInstanceOf(ClassificationPausedError);
+      const error = await classifyItem(deps, item).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ClassificationPausedError);
+      expect(error).toMatchObject({ reason });
 
-    expect(deps.inboundItemRepo.incrementClassifyAttempts).not.toHaveBeenCalled();
-    expect(deps.classificationRepo.create).not.toHaveBeenCalled();
-    expect(deps.inboundItemRepo.markClassified).not.toHaveBeenCalled();
-  });
+      expect(deps.inboundItemRepo.incrementClassifyAttempts).not.toHaveBeenCalled();
+      expect(deps.classificationRepo.create).not.toHaveBeenCalled();
+      expect(deps.inboundItemRepo.markClassified).not.toHaveBeenCalled();
+    },
+  );
+
+  // Final review I3: a denial tied to the item's own content counts an attempt, so maxAttempts ends the retries.
+  it.each(["secret_present", "required_part_withheld", "masked_value_present"] as const)(
+    "throws ClassificationPausedError carrying %s and counts an attempt",
+    async (reason) => {
+      deps = createDeps({ modelGateway: createGateway(() => denied(reason)) });
+
+      const error = await classifyItem(deps, item).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ClassificationPausedError);
+      expect(error).toMatchObject({ reason });
+
+      expect(deps.inboundItemRepo.incrementClassifyAttempts).toHaveBeenCalledOnce();
+      expect(deps.inboundItemRepo.incrementClassifyAttempts).toHaveBeenCalledWith("item-001");
+      expect(deps.classificationRepo.create).not.toHaveBeenCalled();
+      expect(deps.inboundItemRepo.markClassified).not.toHaveBeenCalled();
+    },
+  );
 
   // ── Transaction wrapping ────────────────────────────────
 

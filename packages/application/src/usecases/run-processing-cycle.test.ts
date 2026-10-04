@@ -488,14 +488,30 @@ describe("runProcessingCycle", () => {
     expect((deps.modelGateway as ReturnType<typeof stubGateway>).requests).toHaveLength(0);
   });
 
-  it("counts a denied call as paused, not as a failed attempt", async () => {
-    const item1 = makeItem("item-1");
-    const deps = createDeps({ modelGateway: stubGateway({ respond: () => denied("secret_present") }) });
-    vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
-    const result = await runProcessingCycle(deps, defaultOptions());
-    expect(result.classification).toMatchObject({ pausedByPolicy: 1, failed: 0 });
-    expect(deps.inboundItemRepo.incrementClassifyAttempts).not.toHaveBeenCalled();
-  });
+  // Final review I3: a denial tied to the item's own content counts an attempt, so maxAttempts ends the retries.
+  it.each(["secret_present", "required_part_withheld", "masked_value_present"] as const)(
+    "counts a %s denial as paused and as an attempt, not as a failure",
+    async (reason) => {
+      const item1 = makeItem("item-1");
+      const deps = createDeps({ modelGateway: stubGateway({ respond: () => denied(reason) }) });
+      vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
+      const result = await runProcessingCycle(deps, defaultOptions());
+      expect(result.classification).toMatchObject({ pausedByPolicy: 1, failed: 0 });
+      expect(deps.inboundItemRepo.incrementClassifyAttempts).toHaveBeenCalledWith("item-1");
+    },
+  );
+
+  it.each(["provider_unavailable", "invalid_context", "unknown_purpose"] as const)(
+    "counts a %s denial as paused without counting an attempt",
+    async (reason) => {
+      const item1 = makeItem("item-1");
+      const deps = createDeps({ modelGateway: stubGateway({ respond: () => denied(reason) }) });
+      vi.mocked(deps.inboundItemRepo.findUnclassified).mockReturnValue([item1]);
+      const result = await runProcessingCycle(deps, defaultOptions());
+      expect(result.classification).toMatchObject({ pausedByPolicy: 1, failed: 0 });
+      expect(deps.inboundItemRepo.incrementClassifyAttempts).not.toHaveBeenCalled();
+    },
+  );
 
   it("counts a blocked answer as a failed attempt", async () => {
     const item1 = makeItem("item-1");

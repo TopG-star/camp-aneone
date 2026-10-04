@@ -409,7 +409,8 @@ describe("processUnclassifiedItems", () => {
 
   it("counts denied items as paused, leaves them unclassified, and continues", async () => {
     const items = [makeFakeItem({ id: "item-paused" }), makeFakeItem({ id: "item-2" })];
-    deps = createDeps({ modelGateway: stubGateway({ respond: () => denied("required_part_withheld") }) });
+    // A global reason: no attempt is counted (an item-specific denial counts one; see classify-item tests).
+    deps = createDeps({ modelGateway: stubGateway({ respond: () => denied("provider_unavailable") }) });
     (deps.inboundItemRepo.findUnclassified as ReturnType<typeof vi.fn>).mockReturnValue(items);
 
     const summary = await processUnclassifiedItems(deps, 10);

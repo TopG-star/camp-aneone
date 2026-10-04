@@ -26,7 +26,17 @@ export interface ClassifyItemDeps {
   promptVersion: string;
 }
 
-/** The AI data policy does not allow this call. The item stays unclassified and no attempt is counted (spec §10.3). */
+/**
+ * Deny reasons tied to the item's own content. Retrying cannot change them, so each counts a classify attempt and
+ * maxAttempts eventually skips the item. Other reasons (provider_unavailable, invalid_context, unknown_purpose) are
+ * global and count none.
+ */
+export const ITEM_SPECIFIC_DENY_REASONS: readonly DenyReason[] = ["secret_present", "required_part_withheld", "masked_value_present"];
+
+/**
+ * The AI data policy does not allow this call (spec §10.3). The item stays unclassified; `reason` tells the caller
+ * why, and an attempt was counted only for an item-specific reason.
+ */
 export class ClassificationPausedError extends Error {
   constructor(readonly reason: DenyReason) {
     super(`Email classification paused by AI data policy: ${reason}`);
@@ -43,8 +53,8 @@ export interface ClassifyItemResult {
  * Classifies a single InboundItem via the model gateway and persists the results
  * (classification + deadlines + markClassified) in a single transaction.
  *
- * Throws ClassificationPausedError, without counting an attempt, when the
- * gateway denies the call. On LLM or persistence failure, increments classifyAttempts so the item
+ * Throws ClassificationPausedError when the gateway denies the call, counting an attempt only for an
+ * item-specific reason. On LLM or persistence failure, increments classifyAttempts so the item
  * can be retried later up to a configured maximum.
  */
 export async function classifyItem(
@@ -69,6 +79,7 @@ export async function classifyItem(
       .call(emailClassificationRequest(item));
     if (result.kind === "denied") {
       logger.info("Email classification denied by AI data policy", { itemId: item.id, reason: result.reason });
+      if (ITEM_SPECIFIC_DENY_REASONS.includes(result.reason)) inboundItemRepo.incrementClassifyAttempts(item.id);
       throw new ClassificationPausedError(result.reason);
     }
     if (result.kind !== "answered") throw new Error(`Classification ${result.kind}: ${result.kind === "blocked" ? result.reason : result.message}`);

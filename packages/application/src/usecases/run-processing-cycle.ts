@@ -9,6 +9,7 @@ import type {
 } from "@oneon/domain";
 import { personalActor } from "@oneon/domain";
 import { type SkipRule } from "./process-unclassified-items.js";
+import { ITEM_SPECIFIC_DENY_REASONS } from "./classify-item.js";
 import { checkApproachingDeadlines } from "./check-approaching-deadlines.js";
 import { deriveInboxActionRequests } from "../actions/inbox-rules.js";
 import type { ActionRequest, RequestOutcome } from "../actions/orchestrator/types.js";
@@ -224,6 +225,8 @@ export async function runProcessingCycle(
       if (result.kind === "denied") {
         summary.classification.pausedByPolicy++;
         logger.info("Email classification denied by AI data policy", { itemId: item.id, reason: result.reason });
+        // An item-specific denial would repeat every cycle, so it counts an attempt and maxAttempts ends it.
+        if (ITEM_SPECIFIC_DENY_REASONS.includes(result.reason)) deps.inboundItemRepo.incrementClassifyAttempts(item.id);
         continue;
       }
       if (result.kind !== "answered") throw new Error(`Classification ${result.kind}: ${result.kind === "blocked" ? result.reason : result.message}`);
