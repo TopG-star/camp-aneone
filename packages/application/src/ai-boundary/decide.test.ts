@@ -70,6 +70,7 @@ describe("decide — stage 2 (fields)", () => {
   });
   it("F4 sends a field at or below the limit", () => {
     const d = chat([row([field("daysOverdue", "D1", 12)])]);
+    expect(d.kind).toBe("allow");
     if (d.kind === "allow") expect(d.parts[1].rows![0].fields[0]).toEqual({ kind: "sent" });
   });
   it("F5 downgrades a declared entity to a placeholder while a sibling D2 field is withheld (spec Appendix B)", () => {
@@ -90,6 +91,7 @@ describe("decide — stage 2 (fields)", () => {
   });
   it("F4 still sends an unknown-type entity field that is within the limit", () => {
     const d = chat([row([field("name", "D1", "Corner Pharmacy", { entity: { type: "pharmacy", id: "p1" } })])]);
+    expect(d.kind).toBe("allow");
     if (d.kind === "allow") expect(d.parts[1].rows![0].fields[0]).toEqual({ kind: "sent" });
   });
   it("F5 never placeholders free text", () => {
@@ -101,12 +103,14 @@ describe("decide — stage 2 (fields)", () => {
       row([field("district", "D1", "Osu"), field("total", "D2", 900, { aggregate: { count: 5, classIfSafe: "D1" } })]),
       row([field("district", "D1", "Tema"), field("total", "D2", 400, { aggregate: { count: 2, classIfSafe: "D1" } })]),
     ]);
+    expect(d.kind).toBe("allow");
     if (d.kind === "allow") expect(d.parts[1].rows![0].fields[1]).toEqual({ kind: "aggregate" });
     expect(d.withheld).toContainEqual({ part: "record:tool:receivables", row: 1, field: "total", reason: "group_too_small" });
   });
   it("F5 never releases a free-text field as an aggregate, whatever its count", () => {
     const d = chat([row([field("daysOverdue", "D1", 1), field("note", "D2", "call ABC", { freeText: true, aggregate: { count: 9, classIfSafe: "D1" } })])]);
     expect(d.withheld).toContainEqual({ part: "record:tool:receivables", row: 0, field: "note", reason: "above_limit" });
+    expect(d.kind).toBe("allow");
     if (d.kind === "allow") expect(d.parts[1].rows![0].fields[1]).toEqual({ kind: "withheld", reason: "above_limit" });
   });
   it("F6 withholds a D2 field with no downgrade under a D1 limit", () => {
