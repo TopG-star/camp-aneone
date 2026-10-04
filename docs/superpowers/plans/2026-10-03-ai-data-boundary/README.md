@@ -34,7 +34,7 @@ Tasks run in order. Each ends with the full suite green and one commit. Phases 1
 - **Spec extension (ruled):** `GatewayResult` has a fourth kind, `failed` (the provider errored or timed out), besides `answered`, `denied` and `blocked`.
 - Data classes, exactly: `D0`, `D1`, `D2`, `D3`, `D4` (rank order). The effective limit is the lowest of all layers.
 - Purposes, exactly: `email_classification`, `intent_extraction`, `chat_reply`, `daily_briefing`. Any other purpose string is denied `unknown_purpose`.
-- Deny reasons, exactly: `unknown_purpose`, `provider_unavailable`, `invalid_context`, `secret_present`, `required_part_withheld`.
+- Deny reasons, exactly: `unknown_purpose`, `provider_unavailable`, `invalid_context`, `secret_present`, `required_part_withheld`, `masked_value_present` (the gateway's input check, added in the final review).
 - Withheld reasons, exactly: `not_allowed_for_purpose`, `unclassified`, `d3_never_sent`, `row_d3`, `above_limit`, `group_too_small`, `part_not_allowed`.
 - Answer-check block reasons, exactly: `masked_value_leaked`, `unknown_token`, `secret_in_output`, `invalid_output`.
 - Day-one provider limits: `deepseek` and `anthropic` both `{ personal: "D2", tenant: "D1" }`, review status `unreviewed`.

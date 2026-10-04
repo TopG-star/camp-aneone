@@ -28,15 +28,31 @@ ImpressoRx pharmacies (Step B) would add customer credit, supplier prices and co
    in the gateway. An approved action's executor receives the authoritative data it needs through `resolve`, even
    when the model that proposed the action never saw that data. Placeholders are restored to real identifiers
    before any tool or action receives them.
+7. A shadow call is its own gateway call with its own placeholder map, so shadow tokens never resolve in the main turn.
+8. The decision fails closed on invalid declarations: an unknown class is never within a limit, an invalid row class
+   is treated as D3, and an entity type the placeholder map cannot name is withheld as unclassified.
+9. The answer check's leak rule (O1) exempts a replaced value the person typed in the request.
+10. An input check in the gateway, below D2, denies the call (`masked_value_present`) when the assembled prompt holds
+    a value this turn replaced with a placeholder and the person did not type it, e.g. a tool echoing a restored
+    parameter. It matches the placeholder's display value; tools that echo parameters declare that output D2.
 
 ## Consequences
 
-- Email classification and the daily briefing pause until the person opts in to D2 for their email provider.
-- Chat keeps working at D1 without earlier assistant replies in context.
+- Email classification pauses, cycle by cycle, until the person opts in to D2, or while the provider is suspended,
+  unavailable or capped below D2. An item denied for its own content (a secret, a required field left empty, a masked
+  value) counts a classify attempt, so it is skipped after the maximum.
+- The daily briefing falls back to its structured summary without AI wording. On an empty day no model call is made.
+- Chat keeps working at D1 without earlier assistant replies. A secret pasted into recent history blocks the AI for
+  that conversation until it leaves the 20-message window (an open spec question).
 - A scanner on free text is a backstop with false negatives. Prompt injection is mitigated, not prevented.
 - "Personal" is defined by source, not content; business data in a personal inbox leaves on the person's opt-in.
 - That an action's business facts come from `resolve`, not from the model's proposal, is a review convention until
   Step C adds a mechanism.
+
+## Deploy
+
+Set `MODEL_AUDIT_HMAC_KEY` (at least 32 characters) before upgrading: while a model provider key is set, the server
+will not start without it.
 
 ## References
 

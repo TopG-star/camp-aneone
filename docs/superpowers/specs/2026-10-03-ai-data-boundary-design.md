@@ -231,6 +231,8 @@ Day-one purposes: `email_classification`, `intent_extraction`, `chat_reply`, `da
 | C3 | Context incomplete (e.g. a tenant context with no membership) | deny `invalid_context` |
 | C4 | A declared D4 field, a row with `rowClass` D4, or a scanner D4 hit in any free text | deny `secret_present`. A D4 field means minimisation failed upstream |
 
+**Input check (added during implementation, 2026-10-04).** It runs in the gateway after the prompt is assembled and before anything is sent, so it follows Stage 3 rather than sitting in this table. When the effective limit is below D2 and the assembled prompt contains a value this turn replaced with a placeholder (its display value, matched case-insensitively on word boundaries) that the person did not type in this request, the call is denied `masked_value_present`, with an alert. Nothing is sent. It catches a restored parameter (§7.2) that a tool echoes back; tools whose output echoes a parameter also declare that output D2.
+
 ### 6.4 Stage 2: each structured field (exactly one row applies)
 
 Rows are checked first: **F0: a row whose `rowClass` is D3 is withheld whole**, and recorded once as a withheld row. The remaining rows' fields are then checked one by one, using each field's effective class (the higher of its own class and its row's class).
