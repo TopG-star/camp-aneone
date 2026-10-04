@@ -131,4 +131,27 @@ describe("CircuitBreaker", () => {
     await expect(breaker.execute(async () => { throw error; })).rejects.toThrow();
     expect(breaker.getState()).toBe("closed");
   });
+
+  // Final review I4: a request the provider rejects (e.g. an oversized prompt) says nothing about its health.
+  const withStatus = (status: number) => Object.assign(new Error(`HTTP ${status}`), { status });
+  const failWith = (error: Error) => expect(breaker.execute(async () => { throw error; })).rejects.toThrow(error.message);
+
+  it.each([400, 404, 413, 422])("does not count a %i toward the failure threshold", async (status) => {
+    for (let i = 0; i < 5; i++) await failWith(withStatus(status));
+    expect(breaker.getState()).toBe("closed");
+  });
+
+  it.each([429, 500, 503])("still counts a %i toward the failure threshold", async (status) => {
+    for (let i = 0; i < 3; i++) await failWith(withStatus(status));
+    expect(breaker.getState()).toBe("open");
+  });
+
+  it("neither counts nor resets on an uncounted 4xx between counted failures", async () => {
+    await failWith(withStatus(500));
+    await failWith(withStatus(500));
+    await failWith(withStatus(400));
+    expect(breaker.getState()).toBe("closed");
+    await failWith(withStatus(500));
+    expect(breaker.getState()).toBe("open");
+  });
 });

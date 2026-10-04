@@ -4,7 +4,7 @@ import { Fingerprinter } from "../fingerprints.js";
 import { InMemoryChoices, InMemoryModelAudit } from "../__tests__/in-memory-audit.js";
 import { FakeProvider } from "../__tests__/fake-provider.js";
 import { z } from "zod";
-import { buildChatReplyRequest, buildIntentRequest, historyTurns } from "./chat.js";
+import { TOOL_RECORD_ROW_CAP, TOOL_STRING_CHAR_CAP, buildChatReplyRequest, buildIntentRequest, historyTurns } from "./chat.js";
 import { createToolRegistry } from "../../tools/tool-registry.js";
 import { EMAIL_ENTRY_FIELDS } from "../../tools/output-schema.js";
 
@@ -86,5 +86,54 @@ describe("chat requests", () => {
     expect(result.withheld).toContainEqual(expect.objectContaining({ part: "record:tool_error", field: "error", reason: "above_limit" }));
     expect(provider.calls[0].user).not.toContain("zed@x.com");
     expect(provider.calls[0].user).toContain("failed");
+  });
+
+  // Final review I4: intent rounds re-send every tool result, so each record is bounded.
+  describe("tool record caps", () => {
+    const entry = (n: number) => ({ id: `i${n}`, subject: "Invoice", from: "ama@x.com", source: "gmail", receivedAt: "t", category: "work", priority: 2, summary: "s" });
+    const withRows = (n: number, summary = "Found many.") => ({ ...call, result: { data: Array.from({ length: n }, (_, i) => entry(i)), summary } });
+    const toolRecord = (req: ReturnType<typeof buildChatReplyRequest>) => {
+      const part = req.parts.find((p) => p.kind === "record" && p.source === "tool:list_inbox");
+      if (part?.kind !== "record") throw new Error("no tool record");
+      return part;
+    };
+
+    it("exports the limits", () => {
+      expect(TOOL_RECORD_ROW_CAP).toBe(25);
+      expect(TOOL_STRING_CHAR_CAP).toBe(1000);
+    });
+
+    it("keeps 25 data rows, then a D1 truncated row, with the summary last", () => {
+      for (const build of [buildChatReplyRequest, buildIntentRequest]) {
+        const req = build({
+          userMessage: "inbox?", history: [], toolDefinitions: [], stats, now: new Date(), timezone: "UTC", persona: null, toolCalls: [withRows(30)], registry,
+        });
+        const rows = toolRecord(req).rows;
+        expect(rows).toHaveLength(TOOL_RECORD_ROW_CAP + 2);
+        expect(rows[TOOL_RECORD_ROW_CAP - 1].fields.find((f) => f.name === "id")?.value).toBe("i24");
+        expect(rows[TOOL_RECORD_ROW_CAP].fields).toEqual([{ name: "truncated", class: "D1", value: "5 more rows not shown" }]);
+        expect(rows[TOOL_RECORD_ROW_CAP + 1].fields[0]).toMatchObject({ name: "summary", value: "Found many." });
+      }
+    });
+
+    it("adds no truncated row at or under the cap", () => {
+      const rows = toolRecord(buildChatReplyRequest({ userMessage: "inbox?", history: [], persona: null, toolCalls: [withRows(25)], registry })).rows;
+      expect(rows).toHaveLength(26);
+      expect(rows.some((r) => r.fields.some((f) => f.name === "truncated"))).toBe(false);
+    });
+
+    it("cuts every string value, nested ones and the summary included, to 1,000 characters before the gateway classifies it", () => {
+      const long = "x".repeat(1500);
+      const cut = "x".repeat(1000);
+      const big = { ...call, result: { data: [{ ...entry(0), subject: long, extra: { note: long } }], summary: long } };
+      const failed = { ...call, id: "c2", result: null, error: long };
+      const req = buildChatReplyRequest({ userMessage: "inbox?", history: [], persona: null, toolCalls: [big, failed], registry });
+      const rows = toolRecord(req).rows;
+      expect(rows[0].fields.find((f) => f.name === "subject")?.value).toBe(cut);
+      expect(rows[0].fields.find((f) => f.name === "extra")?.value).toEqual({ note: cut });
+      expect(rows[1].fields[0].value).toBe(cut);
+      const error = req.parts.find((p) => p.kind === "record" && p.source === "tool_error");
+      expect(error?.kind === "record" && error.rows[0].fields.find((f) => f.name === "error")?.value).toBe(cut);
+    });
   });
 });

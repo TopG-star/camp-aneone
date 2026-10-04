@@ -59,11 +59,39 @@ function personaPart(persona: ChatPersonaProfile | null): PromptPart[] {
   ];
 }
 
+/** Data rows kept per tool record; the rest are counted in a D1 "truncated" row. Intent rounds re-send every result. */
+export const TOOL_RECORD_ROW_CAP = 25;
+/** Every string in a tool record is cut to this length before the gateway classifies and scans it. */
+export const TOOL_STRING_CHAR_CAP = 1_000;
+
+type RecordPart = Extract<PromptPart, { kind: "record" }>;
+
+function capStrings(value: unknown): unknown {
+  if (typeof value === "string") return value.length > TOOL_STRING_CHAR_CAP ? value.slice(0, TOOL_STRING_CHAR_CAP) : value;
+  if (Array.isArray(value)) return value.map(capStrings);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, capStrings(v)]));
+  return value;
+}
+
+const capRecordStrings = (part: RecordPart): RecordPart => ({
+  ...part,
+  rows: part.rows.map((r) => ({ ...r, fields: r.fields.map((f) => ({ ...f, value: capStrings(f.value) })) })),
+});
+
+/** toolResultToRecord puts the summary row last; it stays last, after any "truncated" row. */
+function capRecordRows(part: RecordPart): RecordPart {
+  const data = part.rows.slice(0, -1);
+  const dropped = data.length - TOOL_RECORD_ROW_CAP;
+  if (dropped <= 0) return part;
+  const truncated = { fields: [{ name: "truncated", class: "D1" as const, value: `${dropped} more rows not shown` }] };
+  return { ...part, rows: [...data.slice(0, TOOL_RECORD_ROW_CAP), truncated, part.rows[part.rows.length - 1]] };
+}
+
 function toolParts(toolCalls: ToolCallRecord[], registry: ToolRegistry): PromptPart[] {
   return toolCalls.map((call): PromptPart => {
     const tool = registry.get(call.tool);
-    if (call.result && tool) return toolResultToRecord(call.tool, tool.output, call.result);
-    return {
+    if (call.result && tool) return capRecordStrings(capRecordRows(toolResultToRecord(call.tool, tool.output, call.result)));
+    return capRecordStrings({
       kind: "record",
       source: "tool_error",
       rows: [
@@ -76,7 +104,7 @@ function toolParts(toolCalls: ToolCallRecord[], registry: ToolRegistry): PromptP
           ],
         },
       ],
-    };
+    });
   });
 }
 
