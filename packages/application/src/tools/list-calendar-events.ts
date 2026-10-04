@@ -33,7 +33,7 @@ export function createListCalendarEventsTool(
     inputSchema: listCalendarEventsSchema,
     output: {
       fields: CALENDAR_EVENT_FIELDS,
-      summaryClass: "D1",
+      summaryClass: "D2",
     },
     async execute(validatedInput: unknown): Promise<ToolResult> {
       const input = validatedInput as ListCalendarEventsInput;

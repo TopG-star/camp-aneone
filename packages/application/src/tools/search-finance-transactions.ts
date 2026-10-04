@@ -50,7 +50,7 @@ export function createSearchFinanceTransactionsTool(
     inputSchema: searchFinanceTransactionsSchema,
     output: {
       fields: TRANSACTION_FIELDS,
-      summaryClass: "D1",
+      summaryClass: "D2",
     },
     execute(validatedInput: unknown): ToolResult {
       const input = validatedInput as SearchFinanceTransactionsInput;

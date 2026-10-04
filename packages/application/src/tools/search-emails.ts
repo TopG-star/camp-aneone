@@ -63,7 +63,7 @@ export function createSearchEmailsTool(
     inputSchema: searchEmailsSchema,
     output: {
       fields: EMAIL_ENTRY_FIELDS,
-      summaryClass: "D1",
+      summaryClass: "D2",
     },
     execute(validatedInput: unknown): ToolResult {
       const input = validatedInput as SearchEmailsInput;

@@ -48,6 +48,14 @@ const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\
 const containsName = (text: string, name: string): boolean =>
   new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, "iu").test(text);
 
+/**
+ * True when a text holds a real value this turn replaced with a placeholder, other than one the person typed (in `userText`).
+ * Shared by answer check O1 and the gateway's input check, so both match the same way.
+ */
+export function replacedValueIn(texts: string[], map: PlaceholderMap, userText: string): boolean {
+  return map.displays().some((d) => d.length >= MIN_LEAK_LENGTH && texts.some((t) => containsName(t, d)) && !containsName(userText, d));
+}
+
 /** Every string in a parsed value, object keys included, as JSON.parse decoded them. */
 function collectStrings(value: unknown, out: string[]): string[] {
   if (typeof value === "string") out.push(value);
@@ -87,11 +95,7 @@ export function checkAnswer(input: {
   const texts = parseOk ? [input.raw, ...collectStrings(parsed, [])] : [input.raw];
   // O1: a real value this turn replaced must not come back. Possible only via another route, so it signals a bug.
   // The person's own words are a sanctioned route, so a value they typed is exempt.
-  checks.O1 = input.map
-    .displays()
-    .some((d) => d.length >= MIN_LEAK_LENGTH && texts.some((t) => containsName(t, d)) && !containsName(userText, d))
-    ? "fail"
-    : "pass";
+  checks.O1 = replacedValueIn(texts, input.map, userText) ? "fail" : "pass";
   if (checks.O1 === "fail") return { ok: false, reason: "masked_value_leaked", checks };
   checks.O2 = texts.some((t) => tokensIn(t).some((tok) => input.map.lookup(tok) === null)) ? "fail" : "pass";
   if (checks.O2 === "fail") return { ok: false, reason: "unknown_token", checks };

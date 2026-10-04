@@ -4,7 +4,14 @@ import { providerLimit, type ProviderEntry, type ProviderOverride } from "./prov
 import { REMOVED_MARKER, removeSpans, scanText } from "./scanner.js";
 import { classRank, higherClass, lowerClass, partKey, type ClassifiedField, isDataClass, type DataClass, type ModelContext, type ModelRequest } from "./types.js";
 
-export type DenyReason = "unknown_purpose" | "provider_unavailable" | "invalid_context" | "secret_present" | "required_part_withheld";
+export type DenyReason =
+  | "unknown_purpose"
+  | "provider_unavailable"
+  | "invalid_context"
+  | "secret_present"
+  | "required_part_withheld"
+  /** Set by the gateway, not decide(): a below-D2 prompt holds a value this turn replaced with a placeholder. */
+  | "masked_value_present";
 export type WithheldReason =
   | "not_allowed_for_purpose"
   | "unclassified"

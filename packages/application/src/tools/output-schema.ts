@@ -8,6 +8,7 @@ export interface ToolFieldSpec {
 
 export interface ToolOutputSchema {
   fields: Record<string, ToolFieldSpec>;
+  /** D2 whenever the summary echoes a model-supplied parameter: a restored placeholder would come back as the real value. */
   summaryClass: DataClass;
   /** When data is an object holding the list, the key of that list; the other top-level keys form one extra row. */
   rowsFrom?: string;
@@ -61,6 +62,7 @@ export function toolResultToRecord(
       if (Object.keys(rest).length > 0) rows.push(toRow(rest, schema));
     } else rows.push(toRow(obj, schema));
   }
-  rows.push({ fields: [{ name: "summary", class: schema.summaryClass, value: result.summary }] });
+  // A summary is prose that can quote parameters, subjects or titles, so it is always scanned free text; its class is declared per tool.
+  rows.push({ fields: [{ name: "summary", class: schema.summaryClass, value: result.summary, freeText: true }] });
   return { kind: "record", source: `tool:${tool}`, rows };
 }

@@ -42,7 +42,7 @@ export function createSearchCalendarTool(
     inputSchema: searchCalendarSchema,
     output: {
       fields: CALENDAR_EVENT_FIELDS,
-      summaryClass: "D1",
+      summaryClass: "D2",
     },
     async execute(validatedInput: unknown): Promise<ToolResult> {
       const input = validatedInput as SearchCalendarInput;

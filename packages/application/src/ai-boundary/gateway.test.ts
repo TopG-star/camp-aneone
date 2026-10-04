@@ -145,6 +145,53 @@ describe("gateway", () => {
     expect(result).toMatchObject({ kind: "blocked", reason: "masked_value_leaked" });
   });
 
+  // Final review C1: the input-side check. A value the turn replaced with a placeholder must not reach a below-D2 prompt another way.
+  const NONE = JSON.stringify([{ tool: "none", parameters: {} }]);
+  const inbox = () => record("tool:mail", [row([field("from", "D2", "ama@x.com", { entity: { type: "person", id: "ama@x.com" } })])]);
+  const echo = () => record("tool:search", [row([field("summary", "D1", 'Found 1 result for "AMA@X.COM".', { freeText: true })])]);
+
+  it("denies masked_value_present when a replaced value reaches a D1 prompt another way, and sends nothing", async () => {
+    const { gateway, deepseek, audit } = setup({}, [NONE]);
+    const turn = gateway.beginTurn(personal);
+    expect(await turn.call({ purpose: "intent_extraction", output: "json", parts: [userMessage("who emailed me?"), inbox()] })).toMatchObject({ kind: "answered" });
+    const result = await turn.call({ purpose: "intent_extraction", output: "json", parts: [userMessage("who emailed me?"), inbox(), echo()] });
+    expect(result).toMatchObject({ kind: "denied", reason: "masked_value_present" });
+    expect(deepseek.calls).toHaveLength(1);
+    expect(audit.decisions[1]).toMatchObject({
+      decision: "deny",
+      denyReason: "masked_value_present",
+      alert: true,
+      effectiveLimit: "D1",
+      released: [],
+      placeholderCount: 0,
+      inputFingerprint: null,
+    });
+    expect(audit.outcomes).toHaveLength(1);
+    expect(JSON.stringify([audit.decisions, audit.outcomes]).toLowerCase()).not.toContain("ama@x.com");
+    expect(silent.warn).toHaveBeenCalledWith("boundary_alert", expect.objectContaining({ purpose: "intent_extraction", reason: "masked_value_present" }));
+  });
+
+  it("does not deny a replaced value the person typed in this request", async () => {
+    const { gateway, deepseek } = setup({}, [NONE]);
+    const turn = gateway.beginTurn(personal);
+    await turn.call({ purpose: "intent_extraction", output: "json", parts: [userMessage("who emailed me?"), inbox()] });
+    const result = await turn.call({ purpose: "intent_extraction", output: "json", parts: [userMessage("did ama@x.com email me?"), inbox(), echo()] });
+    expect(result).toMatchObject({ kind: "answered" });
+    expect(deepseek.calls).toHaveLength(2);
+  });
+
+  it("does not apply the input check to a call whose limit is D2", async () => {
+    const anthropic = new FakeProvider("anthropic", [JSON.stringify({ answer: "PERSON_1 emailed you.", usedTools: [] })]);
+    const { gateway, choices, deepseek } = setup({ providers: { deepseek: new FakeProvider("deepseek", [NONE]), anthropic }, routing: { standard: "deepseek", reasoning: "anthropic" } });
+    choices.record({ identityId: "u1", provider: "anthropic", maxClass: "D2", decidedOn: "2026-10-04", note: null, confirmedAt: "2026-10-04T10:00:00.000Z" });
+    const turn = gateway.beginTurn(personal);
+    await turn.call({ purpose: "intent_extraction", output: "json", parts: [userMessage("who emailed me?"), inbox()] }); // D1 at DeepSeek: issues PERSON_1
+    const result = await turn.call({ purpose: "chat_reply", output: "json", parts: [userMessage("who emailed me?"), inbox(), echo()] }); // D2 at Anthropic
+    expect(deepseek.calls).toHaveLength(0);
+    expect(result).toMatchObject({ kind: "answered" });
+    expect(anthropic.calls[0].user).toContain("AMA@X.COM");
+  });
+
   it("keeps shadow placeholders out of the main turn's map (spec §6.8)", async () => {
     const mainAnswer = JSON.stringify({ answer: "ABC Hospital owes the most.", usedTools: [] });
     const shadowAnswer = JSON.stringify({ answer: "CUSTOMER_1 owes the most.", usedTools: [] });

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Logger } from "@oneon/domain";
 import { ApprovedModelCall, ProviderError, type ModelProvider } from "./approved-call.js";
-import { checkAnswer, restoreToolParams, type OutputBlockReason } from "./answer-check.js";
+import { checkAnswer, replacedValueIn, restoreToolParams, type OutputBlockReason } from "./answer-check.js";
 import { assemblePrompt } from "./assemble.js";
 import type { AiDataChoiceRepository, ModelAuditRepository } from "./audit.js";
 import { decide, type Decision, type DenyReason, type WithheldItem } from "./decide.js";
@@ -10,7 +10,7 @@ import { PlaceholderMap } from "./placeholders.js";
 import { PROVIDER_REGISTRY, providerLimit, type ProviderEntry, type ProviderOverride } from "./providers.js";
 import { PURPOSES, type PurposeDefinition } from "./purposes/index.js";
 import { removeSpans } from "./scanner.js";
-import { lowerClass, type DataClass, type ModelContext, type ModelRequest, type ProviderId } from "./types.js";
+import { classRank, lowerClass, type DataClass, type ModelContext, type ModelRequest, type ProviderId } from "./types.js";
 
 export const TENANT_CHOICE_LIMIT: DataClass = "D1";
 
@@ -128,6 +128,16 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
     // decide() denies unknown purposes, so an allow always has a definition.
     const definition = def!;
     const assembled = assemblePrompt(request, decision, definition, map);
+    const userText = sentUserText(request, decision);
+
+    // Input check (final review C1): below D2, a value this turn replaced with a placeholder must not reach the
+    // prompt another way, e.g. echoed by a tool after its placeholder was restored. Values the person typed are exempt.
+    if (classRank(decision.effectiveLimit) < classRank("D2") && replacedValueIn([assembled.system, assembled.user], map, userText)) {
+      deps.logger.warn("boundary_alert", { purpose: request.purpose, callId, reason: "masked_value_present" });
+      deps.audit.recordDecision({ ...base, alert: true, decision: "deny", denyReason: "masked_value_present", released: [], placeholderCount: 0, inputFingerprint: null });
+      return { kind: "denied", reason: "masked_value_present", withheld: decision.withheld, decisionId };
+    }
+
     deps.audit.recordDecision({
       ...base,
       decision: "allow",
@@ -148,7 +158,6 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
       timeoutMs: deps.timeouts[tier],
     });
 
-    const userText = sentUserText(request, decision);
     const started = clock().getTime();
     let attempts = 0;
     let last: ReturnType<typeof checkAnswer> | null = null;
