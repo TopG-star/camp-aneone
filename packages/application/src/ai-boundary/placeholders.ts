@@ -36,8 +36,8 @@ export class PlaceholderMap {
     return this.byToken.get(token) ?? null;
   }
 
-  displays(): string[] {
-    return [...this.byToken.values()].map((v) => v.display);
+  entries(): Array<{ token: string; entity: EntityRef; display: string }> {
+    return [...this.byToken].map(([token, v]) => ({ token, ...v }));
   }
 
   get size(): number {

@@ -1,5 +1,6 @@
 import type { ZodTypeAny } from "zod";
 import { TOKEN_PATTERN, type PlaceholderMap } from "./placeholders.js";
+import { findRestoredValue } from "./restored-values.js";
 import { scanText } from "./scanner.js";
 
 export type OutputBlockReason = "masked_value_leaked" | "unknown_token" | "secret_in_output" | "invalid_output";
@@ -7,8 +8,6 @@ export type CheckLog = Record<"O1" | "O2" | "O3" | "O4", "pass" | "fail" | "skip
 export type CheckResult =
   | { ok: true; text: string; json?: unknown; checks: CheckLog }
   | { ok: false; reason: OutputBlockReason; checks: CheckLog };
-
-const MIN_LEAK_LENGTH = 3;
 
 export function parseJsonLoose(raw: string): unknown {
   const trimmed = raw.trim();
@@ -40,20 +39,6 @@ function deepMap(value: unknown, fn: (s: string) => string): unknown {
   if (Array.isArray(value)) return value.map((v) => deepMap(v, fn));
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, deepMap(v, fn)]));
   return value;
-}
-
-const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-/** Case-insensitive match of a name on Unicode word boundaries, so "Esi" does not match inside "design". */
-const containsName = (text: string, name: string): boolean =>
-  new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, "iu").test(text);
-
-/**
- * True when a text holds a real value this turn replaced with a placeholder, other than one the person typed (in `userText`).
- * Shared by answer check O1 and the gateway's input check, so both match the same way.
- */
-export function replacedValueIn(texts: string[], map: PlaceholderMap, userText: string): boolean {
-  return map.displays().some((d) => d.length >= MIN_LEAK_LENGTH && texts.some((t) => containsName(t, d)) && !containsName(userText, d));
 }
 
 /** Every string in a parsed value, object keys included, as JSON.parse decoded them. */
@@ -95,7 +80,7 @@ export function checkAnswer(input: {
   const texts = parseOk ? [input.raw, ...collectStrings(parsed, [])] : [input.raw];
   // O1: a real value this turn replaced must not come back. Possible only via another route, so it signals a bug.
   // The person's own words are a sanctioned route, so a value they typed is exempt.
-  checks.O1 = replacedValueIn(texts, input.map, userText) ? "fail" : "pass";
+  checks.O1 = findRestoredValue(texts.join("\n"), input.map, userText) ? "fail" : "pass";
   if (checks.O1 === "fail") return { ok: false, reason: "masked_value_leaked", checks };
   checks.O2 = texts.some((t) => tokensIn(t).some((tok) => input.map.lookup(tok) === null)) ? "fail" : "pass";
   if (checks.O2 === "fail") return { ok: false, reason: "unknown_token", checks };

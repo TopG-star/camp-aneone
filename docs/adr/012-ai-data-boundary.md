@@ -34,7 +34,13 @@ ImpressoRx pharmacies (Step B) would add customer credit, supplier prices and co
 9. The answer check's leak rule (O1) exempts a replaced value the person typed in the request.
 10. An input check in the gateway, below D2, denies the call (`masked_value_present`) when the assembled prompt holds
     a value this turn replaced with a placeholder and the person did not type it, e.g. a tool echoing a restored
-    parameter. It matches the placeholder's display value; tools that echo parameters declare that output D2.
+    parameter. One shared matcher (`restored-values.ts`) serves this check and answer check O1. For every entry in the
+    placeholder map it matches, case-insensitively on Unicode word boundaries (each form at least 3 characters): the
+    display string; a person's entity id (the bare address; customer and supplier ids are opaque and are not matched);
+    the name part of a `Name <addr>` display (not purely numeric); and email addresses compared in normalised form
+    (lowercased, `+tag` dropped), so `Ama+news@X.com` matches `ama@x.com`. A form the person typed is exempt, form by
+    form. Limit: a value transformed beyond these forms, such as a translated or reformatted name, is not detected;
+    the per-tool declarations (tools that echo parameters declare that output D2) remain the first line.
 
 ## Consequences
 

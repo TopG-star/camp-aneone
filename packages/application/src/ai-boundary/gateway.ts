@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { Logger } from "@oneon/domain";
 import { ApprovedModelCall, ProviderError, type ModelProvider } from "./approved-call.js";
-import { checkAnswer, replacedValueIn, restoreToolParams, type OutputBlockReason } from "./answer-check.js";
+import { checkAnswer, restoreToolParams, type OutputBlockReason } from "./answer-check.js";
 import { assemblePrompt } from "./assemble.js";
 import type { AiDataChoiceRepository, ModelAuditRepository } from "./audit.js";
 import { decide, type Decision, type DenyReason, type WithheldItem } from "./decide.js";
 import type { Fingerprinter } from "./fingerprints.js";
 import { PlaceholderMap } from "./placeholders.js";
+import { findRestoredValue } from "./restored-values.js";
 import { PROVIDER_REGISTRY, providerLimit, type ProviderEntry, type ProviderOverride } from "./providers.js";
 import { PURPOSES, type PurposeDefinition } from "./purposes/index.js";
 import { removeSpans } from "./scanner.js";
@@ -132,7 +133,7 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
 
     // Input check (final review C1): below D2, a value this turn replaced with a placeholder must not reach the
     // prompt another way, e.g. echoed by a tool after its placeholder was restored. Values the person typed are exempt.
-    if (classRank(decision.effectiveLimit) < classRank("D2") && replacedValueIn([assembled.system, assembled.user], map, userText)) {
+    if (classRank(decision.effectiveLimit) < classRank("D2") && findRestoredValue(`${assembled.system}\n${assembled.user}`, map, userText)) {
       deps.logger.warn("boundary_alert", { purpose: request.purpose, callId, reason: "masked_value_present" });
       deps.audit.recordDecision({ ...base, alert: true, decision: "deny", denyReason: "masked_value_present", released: [], placeholderCount: 0, inputFingerprint: null });
       return { kind: "denied", reason: "masked_value_present", withheld: decision.withheld, decisionId };

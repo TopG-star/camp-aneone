@@ -66,6 +66,12 @@ describe("checkAnswer review fixes", () => {
     expect(checkAnswer({ raw, output: "json", schema: short, map })).toMatchObject({ ok: false, reason: "invalid_output", checks: { O4: "fail" } });
     expect(checkAnswer({ raw, output: "json", schema: short, map, restoreNames: false })).toMatchObject({ ok: true });
   });
+  it("O1 blocks the bare address of a header-form sender", () => {
+    const map = new PlaceholderMap();
+    map.tokenFor({ type: "person", id: "ama@x.com" }, "Ama Mensah <ama@x.com>");
+    expect(checkAnswer({ raw: "Write to ama@x.com", output: "text", map })).toMatchObject({ ok: false, reason: "masked_value_leaked", checks: { O1: "fail" } });
+    expect(checkAnswer({ raw: "Write to ama@x.com", output: "text", map, userText: "mail ama@x.com" })).toMatchObject({ ok: true });
+  });
   it("O1 matches on word boundaries", () => {
     const map = new PlaceholderMap();
     map.tokenFor({ type: "person", id: "p2" }, "Esi");

@@ -171,6 +171,21 @@ describe("gateway", () => {
     expect(silent.warn).toHaveBeenCalledWith("boundary_alert", expect.objectContaining({ purpose: "intent_extraction", reason: "masked_value_present" }));
   });
 
+  it.each([
+    ["the bare address of a header-form sender", "Found ama@x.com in 3 results."],
+    ["a plus-addressed variant", "Found Ama+news@x.com in 3 results."],
+    ["the name part", "Found mail from Ama Mensah yesterday."],
+  ])("denies masked_value_present for %s", async (_label, summary) => {
+    const headerInbox = () => record("tool:mail", [row([field("from", "D2", "Ama Mensah <ama@x.com>", { entity: { type: "person", id: "ama@x.com" } })])]);
+    const echoed = () => record("tool:search", [row([field("summary", "D1", summary, { freeText: true })])]);
+    const { gateway, deepseek } = setup({}, [NONE]);
+    const turn = gateway.beginTurn(personal);
+    await turn.call({ purpose: "intent_extraction", output: "json", parts: [userMessage("who emailed me?"), headerInbox()] });
+    const result = await turn.call({ purpose: "intent_extraction", output: "json", parts: [userMessage("who emailed me?"), headerInbox(), echoed()] });
+    expect(result).toMatchObject({ kind: "denied", reason: "masked_value_present" });
+    expect(deepseek.calls).toHaveLength(1);
+  });
+
   it("does not deny a replaced value the person typed in this request", async () => {
     const { gateway, deepseek } = setup({}, [NONE]);
     const turn = gateway.beginTurn(personal);
