@@ -17,9 +17,35 @@ describe("findRestoredValue", () => {
   it("matches the header form", () => {
     expect(findRestoredValue(`From: ${HEADER}`, sender())).toEqual({ token: "PERSON_1" });
   });
-  it("matches in a different case", () => {
-    expect(findRestoredValue("AMA@X.COM and AMA MENSAH", sender())).toEqual({ token: "PERSON_1" });
+  it("matches an address in a different case", () => {
+    expect(findRestoredValue("AMA@X.COM", sender())).toEqual({ token: "PERSON_1" });
+  });
+  it("matches a name in a different case", () => {
     expect(findRestoredValue("AMA MENSAH wrote", sender())).toEqual({ token: "PERSON_1" });
+  });
+  it("matches an address behind leading or trailing punctuation", () => {
+    for (const text of ["Reply to _ama@x.com_", "-ama@x.com", "...ama@x.com", "(ama@x.com)", "ama@x.com."]) {
+      expect(findRestoredValue(text, sender())).toEqual({ token: "PERSON_1" });
+    }
+  });
+  it("matches a name across double spaces, no-break spaces and newlines", () => {
+    for (const text of ["Ama  Mensah wrote", "Ama Mensah wrote", "Ama\nMensah wrote"]) {
+      expect(findRestoredValue(text, sender())).toEqual({ token: "PERSON_1" });
+    }
+  });
+  it("matches a person's entity id alone, with a display that is a plain name", () => {
+    const map = mapWith("person", "ama@x.com", "Ama Mensah");
+    expect(findRestoredValue("write to ama@x.com", map)).toEqual({ token: "PERSON_1" });
+    expect(findRestoredValue("write to Ama+x@x.com", map)).toEqual({ token: "PERSON_1" });
+  });
+  it("matches a non-email person id as text", () => {
+    expect(findRestoredValue("user octocat pushed", mapWith("person", "octocat", "The Octocat"))).toEqual({ token: "PERSON_1" });
+  });
+  it("exempts a non-address form that appears in Oneon-authored text, but never an address", () => {
+    const github = mapWith("person", "notifications@github.com", "GitHub <notifications@github.com>");
+    expect(findRestoredValue("You have 3 GitHub notifications", github)).toEqual({ token: "PERSON_1" });
+    expect(findRestoredValue("You have 3 GitHub notifications", github, "", "- list_github_prs: List GitHub pull requests")).toBeNull();
+    expect(findRestoredValue("write notifications@github.com", github, "", "GitHub notifications@github.com")).toEqual({ token: "PERSON_1" });
   });
   it("matches a plus-addressed variant", () => {
     expect(findRestoredValue("Ama+news@X.com wrote", sender())).toEqual({ token: "PERSON_1" });
@@ -47,7 +73,7 @@ describe("findRestoredValue", () => {
     expect(findRestoredValue("ama@x.com wrote", sender(), "what did Ama Mensah say?")).toEqual({ token: "PERSON_1" });
   });
   it("does not match a customer or supplier id", () => {
-    expect(findRestoredValue("c9 and s12 and the id c9", mapWith("customer", "c9", "ABC Hospital"))).toBeNull();
+    expect(findRestoredValue("c123 and s456 and the id c123", mapWith("customer", "c123","ABC Hospital"))).toBeNull();
     expect(findRestoredValue("abc hospital owes", mapWith("customer", "c9", "ABC Hospital"))).toEqual({ token: "CUSTOMER_1" });
   });
   it("ignores forms under 3 characters and a purely numeric name part", () => {

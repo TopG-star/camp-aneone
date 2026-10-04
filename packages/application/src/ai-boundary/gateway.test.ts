@@ -3,6 +3,7 @@ import { createModelGateway, type ModelGatewayDeps } from "./gateway.js";
 import { Fingerprinter } from "./fingerprints.js";
 import { InMemoryChoices, InMemoryModelAudit } from "./__tests__/in-memory-audit.js";
 import { FakeProvider, providerDown } from "./__tests__/fake-provider.js";
+import type { PromptPart } from "./types.js";
 import { emailRecord, field, personal, record, row, tenant, userMessage } from "./__tests__/builders.js";
 
 const CLASSIFICATION = JSON.stringify({ category: "work", priority: 2, summary: "Invoice", actionItems: [], followUpNeeded: false, deadlines: [] });
@@ -184,6 +185,31 @@ describe("gateway", () => {
     const result = await turn.call({ purpose: "intent_extraction", output: "json", parts: [userMessage("who emailed me?"), headerInbox(), echoed()] });
     expect(result).toMatchObject({ kind: "denied", reason: "masked_value_present" });
     expect(deepseek.calls).toHaveLength(1);
+  });
+
+  it("does not deny a sender whose name appears in the tool catalog (Oneon-authored text), but still denies its bare address", async () => {
+    const github = () => record("tool:mail", [row([field("from", "D2", "GitHub <notifications@github.com>", { entity: { type: "person", id: "notifications@github.com" } })])]);
+    const catalog: PromptPart = {
+      kind: "tool_catalog",
+      tools: [
+        { name: "list_github_prs", description: "List open pull requests on GitHub" },
+        { name: "search_calendar", description: "Search Google Calendar events" },
+      ],
+    };
+    const { gateway, deepseek } = setup({}, [NONE, NONE]);
+    const turn = gateway.beginTurn(personal);
+    expect(await turn.call({ purpose: "intent_extraction", output: "json", parts: [catalog, userMessage("who emailed me?"), github()] })).toMatchObject({ kind: "answered" });
+    const echoedAddress = record("tool:search", [row([field("summary", "D1", "Found mail from notifications@github.com", { freeText: true })])]);
+    const denied = await turn.call({ purpose: "intent_extraction", output: "json", parts: [catalog, userMessage("who emailed me?"), github(), echoedAddress] });
+    expect(denied).toMatchObject({ kind: "denied", reason: "masked_value_present" });
+    expect(deepseek.calls).toHaveLength(1);
+  });
+
+  it("does not scan record headers: a restored name in a tool name is not a leak", async () => {
+    const github = () => record("tool:list_github_prs", [row([field("from", "D2", "GitHub <notifications@github.com>", { entity: { type: "person", id: "notifications@github.com" } })])]);
+    const { gateway } = setup({}, [NONE]);
+    const result = await gateway.beginTurn(personal).call({ purpose: "intent_extraction", output: "json", parts: [userMessage("who emailed me?"), github()] });
+    expect(result).toMatchObject({ kind: "answered" });
   });
 
   it("does not deny a replaced value the person typed in this request", async () => {

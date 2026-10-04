@@ -62,6 +62,8 @@ export function checkAnswer(input: {
   restoreNames?: boolean;
   /** The user-written text actually sent in this request; a replaced value the person typed themselves is not an O1 leak. */
   userText?: string;
+  /** Oneon-authored text (instructions, tool catalog, salutation); a name that also appears there is not an O1 leak. */
+  authoredText?: string;
 }): CheckResult {
   const checks: CheckLog = { O1: "skipped", O2: "skipped", O3: "skipped", O4: "skipped" };
   const restore = (s: string) => (input.restoreNames === false ? s : restoreString(s, input.map));
@@ -80,7 +82,7 @@ export function checkAnswer(input: {
   const texts = parseOk ? [input.raw, ...collectStrings(parsed, [])] : [input.raw];
   // O1: a real value this turn replaced must not come back. Possible only via another route, so it signals a bug.
   // The person's own words are a sanctioned route, so a value they typed is exempt.
-  checks.O1 = findRestoredValue(texts.join("\n"), input.map, userText) ? "fail" : "pass";
+  checks.O1 = findRestoredValue(texts.join("\n"), input.map, userText, input.authoredText) ? "fail" : "pass";
   if (checks.O1 === "fail") return { ok: false, reason: "masked_value_leaked", checks };
   checks.O2 = texts.some((t) => tokensIn(t).some((tok) => input.map.lookup(tok) === null)) ? "fail" : "pass";
   if (checks.O2 === "fail") return { ok: false, reason: "unknown_token", checks };

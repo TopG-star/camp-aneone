@@ -34,13 +34,20 @@ ImpressoRx pharmacies (Step B) would add customer credit, supplier prices and co
 9. The answer check's leak rule (O1) exempts a replaced value the person typed in the request.
 10. An input check in the gateway, below D2, denies the call (`masked_value_present`) when the assembled prompt holds
     a value this turn replaced with a placeholder and the person did not type it, e.g. a tool echoing a restored
-    parameter. One shared matcher (`restored-values.ts`) serves this check and answer check O1. For every entry in the
-    placeholder map it matches, case-insensitively on Unicode word boundaries (each form at least 3 characters): the
-    display string; a person's entity id (the bare address; customer and supplier ids are opaque and are not matched);
-    the name part of a `Name <addr>` display (not purely numeric); and email addresses compared in normalised form
-    (lowercased, `+tag` dropped), so `Ama+news@X.com` matches `ama@x.com`. A form the person typed is exempt, form by
-    form. Limit: a value transformed beyond these forms, such as a translated or reformatted name, is not detected;
-    the per-tool declarations (tools that echo parameters declare that output D2) remain the first line.
+    parameter. The check scans only data that could carry a restored value, as actually sent: sent and aggregate record field values (not
+    the persona record), sent history turns, and tool-error values; never instructions, the tool catalog, record headers or
+    field names. One shared matcher (`restored-values.ts`) serves this check and answer check O1. For every entry in the
+    placeholder map it matches: the display string and the name part of a `Name <addr>` display (not purely numeric), as
+    case-insensitive text on Unicode word boundaries with whitespace runs matching any whitespace, each at least 3
+    characters; a person's entity id (a login or name is matched as text like a display; customer and supplier ids are
+    opaque and are not matched); and email addresses, which are matched as whole email-like tokens in normalised form
+    (lowercased, leading punctuation and a `+tag` dropped), not on word boundaries, so `Ama+news@X.com` and `_ama@x.com_`
+    match `ama@x.com` while `bob.ama@x.com` does not. A form the person typed is exempt, form by form. A name form that
+    also appears in Oneon-authored text (the purpose's instructions, the tool catalog, the persona salutation) is exempt
+    too, so a sender called "GitHub" does not trip on a tool named `list_github_prs`; an address is exempt only if the
+    person typed it. Limits: a value transformed beyond these forms, such as a translated or reformatted name, is not
+    detected, and an address outside the email pattern (an apostrophe, a punycode TLD) is matched only exactly as a
+    text form; the per-tool declarations (tools that echo parameters declare that output D2) remain the first line.
 
 ## Consequences
 

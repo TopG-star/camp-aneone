@@ -72,6 +72,14 @@ describe("checkAnswer review fixes", () => {
     expect(checkAnswer({ raw: "Write to ama@x.com", output: "text", map })).toMatchObject({ ok: false, reason: "masked_value_leaked", checks: { O1: "fail" } });
     expect(checkAnswer({ raw: "Write to ama@x.com", output: "text", map, userText: "mail ama@x.com" })).toMatchObject({ ok: true });
   });
+  it("O1 passes a name that also appears in Oneon-authored text, but still blocks an address", () => {
+    const map = new PlaceholderMap();
+    map.tokenFor({ type: "person", id: "notifications@github.com" }, "GitHub <notifications@github.com>");
+    const authoredText = "- list_github_prs: List open pull requests on GitHub";
+    expect(checkAnswer({ raw: "You have 3 GitHub notifications", output: "text", map, authoredText })).toMatchObject({ ok: true, checks: { O1: "pass" } });
+    expect(checkAnswer({ raw: "You have 3 GitHub notifications", output: "text", map })).toMatchObject({ ok: false, reason: "masked_value_leaked" });
+    expect(checkAnswer({ raw: "Write to notifications@github.com", output: "text", map, authoredText })).toMatchObject({ ok: false, reason: "masked_value_leaked" });
+  });
   it("O1 matches on word boundaries", () => {
     const map = new PlaceholderMap();
     map.tokenFor({ type: "person", id: "p2" }, "Esi");

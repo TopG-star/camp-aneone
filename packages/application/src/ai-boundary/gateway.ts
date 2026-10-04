@@ -4,14 +4,14 @@ import { ApprovedModelCall, ProviderError, type ModelProvider } from "./approved
 import { checkAnswer, restoreToolParams, type OutputBlockReason } from "./answer-check.js";
 import { assemblePrompt } from "./assemble.js";
 import type { AiDataChoiceRepository, ModelAuditRepository } from "./audit.js";
-import { decide, type Decision, type DenyReason, type WithheldItem } from "./decide.js";
+import { decide, type Decision, type DenyReason, type FieldDisposition, type WithheldItem } from "./decide.js";
 import type { Fingerprinter } from "./fingerprints.js";
 import { PlaceholderMap } from "./placeholders.js";
 import { findRestoredValue } from "./restored-values.js";
 import { PROVIDER_REGISTRY, providerLimit, type ProviderEntry, type ProviderOverride } from "./providers.js";
 import { PURPOSES, type PurposeDefinition } from "./purposes/index.js";
 import { removeSpans } from "./scanner.js";
-import { classRank, lowerClass, type DataClass, type ModelContext, type ModelRequest, type ProviderId } from "./types.js";
+import { classRank, lowerClass, type ClassifiedField, type DataClass, type ModelContext, type ModelRequest, type ProviderId } from "./types.js";
 
 export const TENANT_CHOICE_LIMIT: DataClass = "D1";
 
@@ -67,6 +67,53 @@ function sentUserText(request: ModelRequest, decision: Extract<Decision, { kind:
         if (turn.role === "user" && d?.kind === "sent") texts.push(removeSpans(turn.text, d.d3Spans ?? []));
       });
     }
+  });
+  return texts.join("\n");
+}
+
+/** Strings of a sent field, as the prompt shows them (D3 spans removed). A placeholder carries no value. */
+function sentFieldText(f: ClassifiedField, d: FieldDisposition): string | null {
+  if (d.kind === "sent") return typeof f.value === "string" ? removeSpans(f.value, d.d3Spans ?? []) : JSON.stringify(f.value) ?? "null";
+  if (d.kind === "aggregate") return typeof f.value === "string" ? f.value : JSON.stringify(f.value) ?? "null";
+  return null;
+}
+
+/**
+ * The data in this request that could carry a restored value, as actually sent: sent and aggregate record field values
+ * (the persona record excepted) and sent history turns. Not instructions, the tool catalog, record headers or field names.
+ */
+function sentDataText(request: ModelRequest, decision: Extract<Decision, { kind: "allow" }>): string {
+  const texts: string[] = [];
+  request.parts.forEach((part, p) => {
+    const outcome = decision.parts[p];
+    if (outcome?.disposition?.kind === "withheld") return;
+    if (part.kind === "history") {
+      part.turns.forEach((turn, t) => {
+        const d = outcome?.turns?.[t];
+        if (d?.kind === "sent") texts.push(removeSpans(turn.text, d.d3Spans ?? []));
+      });
+    } else if (part.kind === "record" && part.source !== "persona") {
+      part.rows.forEach((r, ri) => {
+        const rowOutcome = outcome?.rows?.[ri];
+        if (!rowOutcome || rowOutcome.withheld) return;
+        r.fields.forEach((f, fi) => {
+          const text = sentFieldText(f, rowOutcome.fields[fi]);
+          if (text !== null) texts.push(text);
+        });
+      });
+    }
+  });
+  return texts.join("\n");
+}
+
+/** Oneon-authored text sent in this request: the purpose's instructions, instruction parts, tool catalog, and the persona salutation. */
+function authoredText(request: ModelRequest, decision: Extract<Decision, { kind: "allow" }>, def: PurposeDefinition): string {
+  const texts: string[] = [def.instructions];
+  request.parts.forEach((part, p) => {
+    if (decision.parts[p]?.disposition?.kind !== "sent") return;
+    if (part.kind === "instruction") texts.push(part.text);
+    else if (part.kind === "tool_catalog") for (const t of part.tools) texts.push(t.name, t.description);
+    else if (part.kind === "record" && part.source === "persona") for (const r of part.rows) for (const f of r.fields) if (typeof f.value === "string") texts.push(f.value);
   });
   return texts.join("\n");
 }
@@ -130,10 +177,11 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
     const definition = def!;
     const assembled = assemblePrompt(request, decision, definition, map);
     const userText = sentUserText(request, decision);
+    const authored = authoredText(request, decision, definition);
 
     // Input check (final review C1): below D2, a value this turn replaced with a placeholder must not reach the
     // prompt another way, e.g. echoed by a tool after its placeholder was restored. Values the person typed are exempt.
-    if (classRank(decision.effectiveLimit) < classRank("D2") && findRestoredValue(`${assembled.system}\n${assembled.user}`, map, userText)) {
+    if (classRank(decision.effectiveLimit) < classRank("D2") && findRestoredValue(sentDataText(request, decision), map, userText, authored)) {
       deps.logger.warn("boundary_alert", { purpose: request.purpose, callId, reason: "masked_value_present" });
       deps.audit.recordDecision({ ...base, alert: true, decision: "deny", denyReason: "masked_value_present", released: [], placeholderCount: 0, inputFingerprint: null });
       return { kind: "denied", reason: "masked_value_present", withheld: decision.withheld, decisionId };
@@ -169,7 +217,7 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
       try {
         const completion = await deps.providers[provider]!.complete(approved);
         tokens = { input: completion.inputTokens ?? null, output: completion.outputTokens ?? null };
-        last = checkAnswer({ raw: completion.text, output: request.output, schema: definition.outputSchema, map, restoreNames: definition.restoreNames, userText });
+        last = checkAnswer({ raw: completion.text, output: request.output, schema: definition.outputSchema, map, restoreNames: definition.restoreNames, userText, authoredText: authored });
         failure = null;
         if (last.ok || last.reason !== "invalid_output") break;
       } catch (error) {
