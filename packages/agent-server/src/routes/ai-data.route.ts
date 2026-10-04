@@ -51,13 +51,17 @@ export function createAiDataRouter(deps: AiDataRouteDeps): Router {
     const active = limit !== null && classRank(limit) >= classRank("D2");
     const standardUnavailable =
       deps.routing !== null && (deps.overrides.get(deps.routing.standard)?.kind === "suspended" || !deps.configuredProviders.includes(deps.routing.standard));
+    const standardOverride = deps.routing ? deps.overrides.get(deps.routing.standard) : undefined;
+    const standardCapped = standardOverride?.kind === "limit" && classRank(standardOverride.max) < classRank("D2");
     const reason = !deps.gateway
       ? "No AI provider is configured."
       : active
         ? null
         : standardUnavailable
           ? `Email classification is paused: ${standardLabel} is currently unavailable.`
-          : `Email classification needs your approval to send email content (D2) to ${standardLabel}. Choose D2 for ${standardLabel} in Settings → AI data to resume.`;
+          : standardCapped
+            ? `Email classification is paused: the platform currently limits what can be sent to ${standardLabel}.`
+            : `Email classification needs your approval to send email content (D2) to ${standardLabel}. Choose D2 for ${standardLabel} in Settings → AI data to resume.`;
     const recent = deps.audit.listRecentForIdentity(userId, 20).map(({ decision, outcome }) => ({
       callId: decision.callId,
       at: decision.createdAt,

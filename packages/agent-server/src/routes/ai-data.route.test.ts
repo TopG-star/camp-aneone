@@ -96,4 +96,14 @@ describe("AI data API", () => {
     const res = await request(suspended).get("/api/ai-data").set("x-test-user", "user-A").expect(200);
     expect(res.body.emailClassification).toEqual({ active: false, reason: "Email classification is paused: DeepSeek is currently unavailable." });
   });
+
+  it("says the platform limits what can be sent, not 'choose D2', when an override caps the provider below D2", async () => {
+    const capped = mount(new Map<ProviderId, ProviderOverride>([["deepseek", { kind: "limit", max: "D1" }]]), dbRef);
+    choices.record({ identityId: "user-A", provider: "deepseek", maxClass: "D2", decidedOn: null, note: null, confirmedAt: "2026-10-04T10:00:00.000Z" });
+    const res = await request(capped).get("/api/ai-data").set("x-test-user", "user-A").expect(200);
+    expect(res.body.emailClassification).toEqual({
+      active: false,
+      reason: "Email classification is paused: the platform currently limits what can be sent to DeepSeek.",
+    });
+  });
 });
