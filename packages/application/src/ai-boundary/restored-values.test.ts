@@ -73,7 +73,7 @@ describe("findRestoredValue", () => {
     expect(findRestoredValue("ama@x.com wrote", sender(), "what did Ama Mensah say?")).toEqual({ token: "PERSON_1" });
   });
   it("does not match a customer or supplier id", () => {
-    expect(findRestoredValue("c123 and s456 and the id c123", mapWith("customer", "c123","ABC Hospital"))).toBeNull();
+    expect(findRestoredValue("c123 and s456 and the id c123", mapWith("customer", "c123", "ABC Hospital"))).toBeNull();
     expect(findRestoredValue("abc hospital owes", mapWith("customer", "c9", "ABC Hospital"))).toEqual({ token: "CUSTOMER_1" });
   });
   it("ignores forms under 3 characters and a purely numeric name part", () => {

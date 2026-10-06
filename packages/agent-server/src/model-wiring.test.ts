@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@oneon/infrastructure";
-import { OverrideConfigError } from "@oneon/application";
+import { OverrideConfigError, createToolRegistry, createListGitHubPRsTool } from "@oneon/application";
 import { loadEnv } from "./config/env.js";
 import { createModelWiring } from "./model-wiring.js";
 
@@ -38,6 +38,16 @@ describe("createModelWiring", () => {
     expect(wiring.gateway).not.toBeNull();
     expect(wiring.routing).toEqual({ standard: "deepseek", reasoning: "deepseek" });
     expect(wiring.configuredProviders).toEqual(["deepseek"]);
+  });
+
+  it("builds the gateway's authored vocabulary from the real tool registry", () => {
+    deepseekOnly();
+    const wiring = createModelWiring(loadEnv(), { db: db(), logger });
+    expect(wiring.toolVocabulary()).toBe("");
+    const registry = createToolRegistry();
+    registry.register(createListGitHubPRsTool({}));
+    wiring.setToolVocabulary(registry.list());
+    expect(wiring.toolVocabulary()).toContain("list_github_prs: List GitHub pull requests.");
   });
 
   it("refuses to start on a bad override", () => {

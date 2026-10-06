@@ -98,6 +98,8 @@ export interface AppContainer {
 
   // ── External Ports ────────────────────────────────────────
   modelGateway: ModelGateway | null;
+  /** Gives the model gateway the registered tools' names and descriptions, so Oneon's own words are not mistaken for restored values. */
+  setModelToolVocabulary: (tools: Array<{ name: string; description: string }>) => void;
   modelRouting: ModelRouting | null;
   aiDataChoices: AiDataChoiceRepository;
   modelAudit: ModelAuditRepository;
@@ -436,6 +438,7 @@ export function createContainer(env: Env): AppContainer {
     getEligibleUsers,
     createGoogleTokenProvider,
     modelGateway: modelWiring.gateway,
+    setModelToolVocabulary: modelWiring.setToolVocabulary,
     modelRouting: modelWiring.routing,
     aiDataChoices: modelWiring.choices,
     modelAudit: modelWiring.audit,

@@ -4,6 +4,9 @@ import { Fingerprinter } from "./fingerprints.js";
 import { InMemoryChoices, InMemoryModelAudit } from "./__tests__/in-memory-audit.js";
 import { FakeProvider, providerDown } from "./__tests__/fake-provider.js";
 import type { PromptPart } from "./types.js";
+import { createToolRegistry } from "../tools/tool-registry.js";
+import { createListGitHubNotificationsTool } from "../tools/list-github-notifications.js";
+import { createListGitHubPRsTool } from "../tools/list-github-prs.js";
 import { emailRecord, field, personal, record, row, tenant, userMessage } from "./__tests__/builders.js";
 
 const CLASSIFICATION = JSON.stringify({ category: "work", priority: 2, summary: "Invoice", actionItems: [], followUpNeeded: false, deadlines: [] });
@@ -203,6 +206,48 @@ describe("gateway", () => {
     const denied = await turn.call({ purpose: "intent_extraction", output: "json", parts: [catalog, userMessage("who emailed me?"), github(), echoedAddress] });
     expect(denied).toMatchObject({ kind: "denied", reason: "masked_value_present" });
     expect(deepseek.calls).toHaveLength(1);
+  });
+
+  describe("chat_reply with Oneon's own tool vocabulary (no tool catalog part is sent)", () => {
+    const registry = createToolRegistry();
+    registry.register(createListGitHubNotificationsTool({}));
+    registry.register(createListGitHubPRsTool({}));
+    const authoredVocabulary = () => registry.list().map((t) => `${t.name}: ${t.description}`).join("\n");
+    const github = () => record("tool:list_github_notifications", [
+      row([field("from", "D2", "GitHub <notifications@github.com>", { entity: { type: "person", id: "notifications@github.com" } })]),
+      row([field("summary", "D1", "Found 1 GitHub notification.", { freeText: true })]),
+    ]);
+    const toolError = () => record("tool_error", [row([field("tool", "D0", "list_github_prs"), field("status", "D1", "failed")])]);
+    const reply = (answer: string, usedTools: string[] = []) => JSON.stringify({ answer, usedTools });
+    const request = (extra: PromptPart[] = []) => ({ purpose: "chat_reply", output: "json" as const, parts: [userMessage("any news?"), github(), toolError(), ...extra] });
+
+    it("answers, and passes O1, when only Oneon's own words match a GitHub sender", async () => {
+      const { gateway, deepseek } = setup({ authoredVocabulary }, [reply("You have 3 GitHub notifications.", ["list_github_notifications"])]);
+      const result = await gateway.beginTurn(personal).call(request());
+      expect(deepseek.calls).toHaveLength(1);
+      expect(result).toMatchObject({ kind: "answered" });
+    });
+
+    it("still denies a restored bare address in the same call", async () => {
+      const echoed = record("tool:search", [row([field("summary", "D1", "Found mail from notifications@github.com", { freeText: true })])]);
+      const { gateway, deepseek } = setup({ authoredVocabulary }, [reply("ok")]);
+      const result = await gateway.beginTurn(personal).call(request([echoed]));
+      expect(result).toMatchObject({ kind: "denied", reason: "masked_value_present" });
+      expect(deepseek.calls).toHaveLength(0);
+    });
+
+    it("blocks an answer holding the bare address", async () => {
+      const { gateway } = setup({ authoredVocabulary }, [reply("Write to notifications@github.com")]);
+      expect(await gateway.beginTurn(personal).call(request())).toMatchObject({ kind: "blocked", reason: "masked_value_leaked" });
+    });
+
+    it("exempts a tool name from the registry vocabulary, which no sent part carries", async () => {
+      const mail = record("tool:mail", [row([field("from", "D2", "GitHub <notifications@github.com>", { entity: { type: "person", id: "notifications@github.com" } })])]);
+      const parts = [userMessage("any news?"), mail, toolError()];
+      const call = (deps: Partial<ModelGatewayDeps>) => setup(deps, [reply("ok")]).gateway.beginTurn(personal).call({ purpose: "chat_reply", output: "json", parts });
+      expect(await call({})).toMatchObject({ kind: "denied", reason: "masked_value_present" });
+      expect(await call({ authoredVocabulary })).toMatchObject({ kind: "answered" });
+    });
   });
 
   it("does not scan record headers: a restored name in a tool name is not a leak", async () => {

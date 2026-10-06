@@ -326,6 +326,8 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       }));
     }
 
+    container.setModelToolVocabulary(toolRegistry.list());
+
     const chatLimiter = rateLimit({
       windowMs: 60_000,
       max: 20,

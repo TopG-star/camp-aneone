@@ -42,6 +42,8 @@ export interface ModelGatewayDeps {
   clock?: () => Date;
   newId?: () => string;
   purposes?: Record<string, PurposeDefinition>;
+  /** The registered tools' names and descriptions, read on each call (the tool registry is built after the gateway). Exempts Oneon's own words from the restored-value checks. */
+  authoredVocabulary?: () => string;
 }
 
 export interface ModelTurn {
@@ -106,15 +108,21 @@ function sentDataText(request: ModelRequest, decision: Extract<Decision, { kind:
   return texts.join("\n");
 }
 
-/** Oneon-authored text sent in this request: the purpose's instructions, instruction parts, tool catalog, and the persona salutation. */
-function authoredText(request: ModelRequest, decision: Extract<Decision, { kind: "allow" }>, def: PurposeDefinition): string {
-  const texts: string[] = [def.instructions];
-  request.parts.forEach((part, p) => {
-    if (decision.parts[p]?.disposition?.kind !== "sent") return;
+/**
+ * Oneon's code-authored vocabulary, whatever this call sent: the registered tools' names and descriptions (`vocabulary`),
+ * every purpose's instructions, this request's instruction parts, tool catalog, record source names, and persona values.
+ * A non-address form that also appears here is Oneon's own word, not a restored value.
+ */
+function authoredText(request: ModelRequest, purposes: Record<string, PurposeDefinition>, vocabulary: string): string {
+  const texts: string[] = [vocabulary, ...Object.values(purposes).map((p) => p.instructions)];
+  for (const part of request.parts) {
     if (part.kind === "instruction") texts.push(part.text);
     else if (part.kind === "tool_catalog") for (const t of part.tools) texts.push(t.name, t.description);
-    else if (part.kind === "record" && part.source === "persona") for (const r of part.rows) for (const f of r.fields) if (typeof f.value === "string") texts.push(f.value);
-  });
+    else if (part.kind === "record") {
+      texts.push(part.source);
+      if (part.source === "persona") for (const r of part.rows) for (const f of r.fields) if (typeof f.value === "string") texts.push(f.value);
+    }
+  }
   return texts.join("\n");
 }
 
@@ -177,7 +185,7 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
     const definition = def!;
     const assembled = assemblePrompt(request, decision, definition, map);
     const userText = sentUserText(request, decision);
-    const authored = authoredText(request, decision, definition);
+    const authored = authoredText(request, purposes, deps.authoredVocabulary?.() ?? "");
 
     // Input check (final review C1): below D2, a value this turn replaced with a placeholder must not reach the
     // prompt another way, e.g. echoed by a tool after its placeholder was restored. Values the person typed are exempt.

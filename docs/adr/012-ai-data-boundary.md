@@ -32,7 +32,7 @@ ImpressoRx pharmacies (Step B) would add customer credit, supplier prices and co
 8. The decision fails closed on invalid declarations: an unknown class is never within a limit, an invalid row class
    is treated as D3, and an entity type the placeholder map cannot name is withheld as unclassified.
 9. The answer check's leak rule (O1) exempts a replaced value the person typed in the request.
-10. An input check in the gateway, below D2, denies the call (`masked_value_present`) when the assembled prompt holds
+10. An input check in the gateway, below D2, denies the call (`masked_value_present`) when the data sent in the prompt holds
     a value this turn replaced with a placeholder and the person did not type it, e.g. a tool echoing a restored
     parameter. The check scans only data that could carry a restored value, as actually sent: sent and aggregate record field values (not
     the persona record), sent history turns, and tool-error values; never instructions, the tool catalog, record headers or
@@ -42,12 +42,14 @@ ImpressoRx pharmacies (Step B) would add customer credit, supplier prices and co
     characters; a person's entity id (a login or name is matched as text like a display; customer and supplier ids are
     opaque and are not matched); and email addresses, which are matched as whole email-like tokens in normalised form
     (lowercased, leading punctuation and a `+tag` dropped), not on word boundaries, so `Ama+news@X.com` and `_ama@x.com_`
-    match `ama@x.com` while `bob.ama@x.com` does not. A form the person typed is exempt, form by form. A name form that
-    also appears in Oneon-authored text (the purpose's instructions, the tool catalog, the persona salutation) is exempt
-    too, so a sender called "GitHub" does not trip on a tool named `list_github_prs`; an address is exempt only if the
-    person typed it. Limits: a value transformed beyond these forms, such as a translated or reformatted name, is not
-    detected, and an address outside the email pattern (an apostrophe, a punycode TLD) is matched only exactly as a
-    text form; the per-tool declarations (tools that echo parameters declare that output D2) remain the first line.
+    match `ama@x.com` while `bob.ama@x.com` does not. A form the person typed is exempt, form by form. Any non-address form (a display, a name part or a login) that also
+    appears in Oneon's own vocabulary is exempt too, whatever this call sent: every registered tool's name and
+    description, every purpose's instructions, the record source names, and the persona values. So a sender called
+    "GitHub" does not trip on a tool named `list_github_prs`, nor on an answer that says "3 GitHub notifications". An
+    address is exempt only if the person typed it. Limits: a value transformed beyond these forms, such as a translated or
+    reformatted name, is not detected; an address outside the email pattern (an apostrophe, a punycode TLD) is matched as
+    text, case-insensitively on word boundaries, and like other text forms is exempt only via the person's own text or
+    Oneon's vocabulary; the per-tool declarations (tools that echo parameters declare that output D2) remain the first line.
 
 ## Consequences
 
