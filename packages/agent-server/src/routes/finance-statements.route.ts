@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from "express";
+import { buildFinanceSpendInsightsData } from "@oneon/application";
 import type {
   BankStatement,
   BankStatementIntakeStatus,
@@ -150,6 +151,65 @@ export function createFinanceStatementsRouter(
       });
     } catch (error) {
       logger.error("Failed to query finance transactions", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  router.get("/insights", (req: Request, res: Response) => {
+    try {
+      const userId = req.userId!;
+
+      const parsedFrom = parseDateQuery(req.query.from, "from");
+      if (!parsedFrom.ok) {
+        res.status(400).json({ error: parsedFrom.error });
+        return;
+      }
+
+      const parsedTo = parseDateQuery(req.query.to, "to");
+      if (!parsedTo.ok) {
+        res.status(400).json({ error: parsedTo.error });
+        return;
+      }
+
+      const parsedLimit = parseTransactionsLimitQuery(req.query.limit);
+      if (!parsedLimit.ok) {
+        res.status(400).json({ error: parsedLimit.error });
+        return;
+      }
+
+      const transactions = bankStatementParseRepo.findTransactions({
+        userId,
+        postedAtFrom: parsedFrom.value ?? undefined,
+        postedAtTo: parsedTo.value ?? undefined,
+        limit: parsedLimit.value,
+      });
+
+      const insights = buildFinanceSpendInsightsData(
+        userId,
+        transactions,
+        new Date().toISOString(),
+      );
+
+      res.status(200).json({
+        filter: {
+          from: parsedFrom.value,
+          to: parsedTo.value,
+          limit: parsedLimit.value,
+        },
+        counts: {
+          discovered: bankStatementRepo.count({ status: "discovered", userId }),
+          metadataParsed: bankStatementRepo.count({ status: "metadata_parsed", userId }),
+          errorMetadata: bankStatementRepo.count({ status: "error_metadata", userId }),
+          transactionsParsed: bankStatementRepo.count({ status: "transactions_parsed", userId }),
+          errorTransactions: bankStatementRepo.count({ status: "error_transactions", userId }),
+          total: bankStatementRepo.count({ userId }),
+        },
+        ...insights,
+      });
+    } catch (error) {
+      logger.error("Failed to build finance insights", {
         error: error instanceof Error ? error.message : String(error),
       });
       res.status(500).json({ error: "Internal server error" });

@@ -185,6 +185,25 @@ describe("Session Auth Middleware", () => {
       expect(res.body.userId).toBeNull();
     });
 
+    it("reads secure session cookie when x-forwarded-proto contains https in a list", async () => {
+      const jwe = await createSessionJWE(
+        { email: "secure-list@test.com" },
+        TEST_SECRET,
+        "__Secure-authjs.session-token",
+      );
+      const findUser = vi.fn().mockReturnValue({ id: "u-secure" });
+      const app = createApp(findUser);
+
+      const res = await request(app)
+        .get("/test")
+        .set("x-forwarded-proto", "https,http")
+        .set("Cookie", `__Secure-authjs.session-token=${jwe}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.userId).toBe("u-secure");
+      expect(res.body.userEmail).toBe("secure-list@test.com");
+    });
+
     it("auto-creates user via upsertUser when user not found", async () => {
       const jwe = await createSessionJWE({ email: "new-user@test.com" });
       const findUser = vi.fn().mockReturnValue(null);

@@ -89,16 +89,31 @@ describe("list_github_prs tool", () => {
       repo: "octocat/hello-world",
     });
 
-    expect(deps.githubPort.listPullRequests).toHaveBeenCalledWith({
+    expect(deps.githubPort!.listPullRequests).toHaveBeenCalledWith({
       state: "open",
       author: "octocat",
       repo: "octocat/hello-world",
     });
   });
 
+  it("uses resolveGitHubPort when userId is provided", async () => {
+    const resolvedPort = {
+      listNotifications: vi.fn().mockResolvedValue([]),
+      listPullRequests: vi.fn().mockResolvedValue([makePR()]),
+    };
+
+    const tool = createListGitHubPRsTool({
+      resolveGitHubPort: vi.fn().mockReturnValue(resolvedPort),
+    });
+
+    await tool.execute({ state: "open", userId: "user-A" });
+
+    expect(resolvedPort.listPullRequests).toHaveBeenCalledOnce();
+  });
+
   it("returns pull requests in data field", async () => {
     const deps = makeDeps();
-    (deps.githubPort.listPullRequests as ReturnType<typeof vi.fn>).mockResolvedValue([
+    (deps.githubPort!.listPullRequests as ReturnType<typeof vi.fn>).mockResolvedValue([
       makePR(),
       makePR({ id: 1002, number: 43, title: "Add tests" }),
     ]);
@@ -122,7 +137,7 @@ describe("list_github_prs tool", () => {
 
   it("uses singular form for exactly 1 PR", async () => {
     const deps = makeDeps();
-    (deps.githubPort.listPullRequests as ReturnType<typeof vi.fn>).mockResolvedValue([
+    (deps.githubPort!.listPullRequests as ReturnType<typeof vi.fn>).mockResolvedValue([
       makePR(),
     ]);
     const tool = createListGitHubPRsTool(deps);
@@ -138,14 +153,14 @@ describe("list_github_prs tool", () => {
 
     await tool.execute({ state: "open" });
 
-    expect(deps.githubPort.listPullRequests).toHaveBeenCalledWith(
+    expect(deps.githubPort!.listPullRequests).toHaveBeenCalledWith(
       expect.objectContaining({ state: "open" }),
     );
   });
 
   it("integrates with tool registry", async () => {
     const deps = makeDeps();
-    (deps.githubPort.listPullRequests as ReturnType<typeof vi.fn>).mockResolvedValue([
+    (deps.githubPort!.listPullRequests as ReturnType<typeof vi.fn>).mockResolvedValue([
       makePR(),
     ]);
 
