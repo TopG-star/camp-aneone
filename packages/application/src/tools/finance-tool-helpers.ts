@@ -25,15 +25,10 @@ export function resolveFinanceUserId(
   repo: Pick<BankStatementRepository, "findByStatus">,
   explicitUserId?: string,
 ): string | null {
+  void repo;
+
   if (explicitUserId && explicitUserId.trim().length > 0) {
     return explicitUserId.trim();
-  }
-
-  for (const status of FINANCE_STATUSES) {
-    const items = repo.findByStatus(status, 1);
-    if (items.length > 0) {
-      return items[0].userId;
-    }
   }
 
   return null;
