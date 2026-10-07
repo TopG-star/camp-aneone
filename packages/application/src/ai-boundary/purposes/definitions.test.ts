@@ -12,6 +12,14 @@ describe("purposes", () => {
     for (const def of Object.values(PURPOSES)) expect(def.minGroupSize).toBeGreaterThanOrEqual(MIN_GROUP_SIZE);
   });
 
+  it("tells intent extraction and synthesis that a truncated field means a partial list", () => {
+    for (const p of ["intent_extraction", "chat_reply"] as const) {
+      expect(PURPOSES[p].instructions).toContain(
+        "A record field named truncated means the list is partial: conclusions about the whole list must say so.",
+      );
+    }
+  });
+
   it("allows exactly the five email fields for classification, and requires the body preview released", () => {
     expect(allowedFieldsFor(PURPOSES.email_classification, "email")).toEqual(["from", "subject", "bodyPreview", "receivedAt", "source"]);
     expect(PURPOSES.email_classification.required).toEqual({ all: ["record:email#bodyPreview"] });

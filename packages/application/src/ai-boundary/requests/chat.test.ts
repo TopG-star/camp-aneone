@@ -4,9 +4,10 @@ import { Fingerprinter } from "../fingerprints.js";
 import { InMemoryChoices, InMemoryModelAudit } from "../__tests__/in-memory-audit.js";
 import { FakeProvider } from "../__tests__/fake-provider.js";
 import { z } from "zod";
-import { TOOL_RECORD_ROW_CAP, TOOL_STRING_CHAR_CAP, buildChatReplyRequest, buildIntentRequest, historyTurns } from "./chat.js";
+import { buildChatReplyRequest, buildIntentRequest, historyTurns } from "./chat.js";
 import { createToolRegistry } from "../../tools/tool-registry.js";
 import { EMAIL_ENTRY_FIELDS } from "../../tools/output-schema.js";
+import { PURPOSES } from "../purposes/index.js";
 
 const registry = createToolRegistry();
 registry.register({
@@ -16,6 +17,14 @@ registry.register({
   inputSchema: z.object({}),
   output: { fields: EMAIL_ENTRY_FIELDS, summaryClass: "D1" },
   execute: () => ({ data: [], summary: "" }),
+});
+registry.register({
+  name: "list_counted",
+  version: "1",
+  description: "List with a count",
+  inputSchema: z.object({}),
+  output: { fields: { ...EMAIL_ENTRY_FIELDS, unreadCount: { class: "D1" } }, summaryClass: "D1", rowsFrom: "items" },
+  execute: () => ({ data: {}, summary: "" }),
 });
 const stats = { totalInboxItems: 3, unreadUrgentCount: 1, pendingActionsCount: 0, upcomingDeadlinesCount: 2, followUpCount: 0 };
 const history = [
@@ -98,33 +107,50 @@ describe("chat requests", () => {
       return part;
     };
 
-    it("exports the limits", () => {
-      expect(TOOL_RECORD_ROW_CAP).toBe(25);
-      expect(TOOL_STRING_CHAR_CAP).toBe(1000);
+    it("declares per-purpose tool-data limits", () => {
+      expect(PURPOSES.intent_extraction.toolData).toEqual({ maxRows: 20, maxChars: 500 });
+      expect(PURPOSES.chat_reply.toolData).toEqual({ maxRows: 40, maxChars: 1000 });
+      expect(PURPOSES.email_classification.toolData).toEqual({ maxRows: 40, maxChars: 1000 });
+      expect(PURPOSES.daily_briefing.toolData).toEqual({ maxRows: 40, maxChars: 1000 });
     });
 
-    it("keeps 25 data rows, then a D1 truncated row, with the summary last", () => {
-      for (const build of [buildChatReplyRequest, buildIntentRequest]) {
+    it("keeps each purpose's rows, then a D1 truncated row with the exact marker, with the summary last", () => {
+      const cases = [
+        [buildChatReplyRequest, 40, 45],
+        [buildIntentRequest, 20, 25],
+      ] as const;
+      for (const [build, cap, total] of cases) {
         const req = build({
-          userMessage: "inbox?", history: [], toolDefinitions: [], stats, now: new Date(), timezone: "UTC", persona: null, toolCalls: [withRows(30)], registry,
+          userMessage: "inbox?", history: [], toolDefinitions: [], stats, now: new Date(), timezone: "UTC", persona: null, toolCalls: [withRows(total)], registry,
         });
         const rows = toolRecord(req).rows;
-        expect(rows).toHaveLength(TOOL_RECORD_ROW_CAP + 2);
-        expect(rows[TOOL_RECORD_ROW_CAP - 1].fields.find((f) => f.name === "id")?.value).toBe("i24");
-        expect(rows[TOOL_RECORD_ROW_CAP].fields).toEqual([{ name: "truncated", class: "D1", value: "5 more rows not shown" }]);
-        expect(rows[TOOL_RECORD_ROW_CAP + 1].fields[0]).toMatchObject({ name: "summary", value: "Found many." });
+        expect(rows).toHaveLength(cap + 2);
+        expect(rows[cap - 1].fields.find((f) => f.name === "id")?.value).toBe(`i${cap - 1}`);
+        expect(rows[cap].fields).toEqual([{ name: "truncated", class: "D1", value: `showing ${cap} of ${total} rows` }]);
+        expect(rows[cap + 1].fields[0]).toMatchObject({ name: "summary", value: "Found many." });
       }
     });
 
     it("adds no truncated row at or under the cap", () => {
-      const rows = toolRecord(buildChatReplyRequest({ userMessage: "inbox?", history: [], persona: null, toolCalls: [withRows(25)], registry })).rows;
-      expect(rows).toHaveLength(26);
+      const rows = toolRecord(buildChatReplyRequest({ userMessage: "inbox?", history: [], persona: null, toolCalls: [withRows(40)], registry })).rows;
+      expect(rows).toHaveLength(41);
       expect(rows.some((r) => r.fields.some((f) => f.name === "truncated"))).toBe(false);
     });
 
-    it("cuts every string value, nested ones and the summary included, to 1,000 characters before the gateway classifies it", () => {
+    it("caps only the list rows of a rowsFrom tool and always keeps its extra row", () => {
+      const counted = { ...call, tool: "list_counted", result: { data: { items: Array.from({ length: 30 }, (_, i) => entry(i)), unreadCount: 7 }, summary: "s" } };
+      const req = buildIntentRequest({ userMessage: "x", history: [], toolDefinitions: [], stats, now: new Date(), timezone: "UTC", persona: null, toolCalls: [counted], registry });
+      const part = req.parts.find((p) => p.kind === "record" && p.source === "tool:list_counted");
+      if (part?.kind !== "record") throw new Error("no tool record");
+      expect(part.rows).toHaveLength(20 + 3);
+      expect(part.rows[20].fields).toEqual([{ name: "truncated", class: "D1", value: "showing 20 of 30 rows" }]);
+      expect(part.rows[21].fields).toEqual([{ name: "unreadCount", class: "D1", value: 7 }]);
+      expect(part.rows[22].fields[0]).toMatchObject({ name: "summary" });
+    });
+
+    it("cuts every string value, nested ones and the summary included, to the purpose's limit with a visible suffix", () => {
       const long = "x".repeat(1500);
-      const cut = "x".repeat(1000);
+      const cut = `${"x".repeat(1000)} … [truncated]`;
       const big = { ...call, result: { data: [{ ...entry(0), subject: long, extra: { note: long } }], summary: long } };
       const failed = { ...call, id: "c2", result: null, error: long };
       const req = buildChatReplyRequest({ userMessage: "inbox?", history: [], persona: null, toolCalls: [big, failed], registry });
@@ -134,6 +160,35 @@ describe("chat requests", () => {
       expect(rows[1].fields[0].value).toBe(cut);
       const error = req.parts.find((p) => p.kind === "record" && p.source === "tool_error");
       expect(error?.kind === "record" && error.rows[0].fields.find((f) => f.name === "error")?.value).toBe(cut);
+    });
+
+    it("cuts intent-round strings at 500 characters", () => {
+      const big = { ...call, result: { data: [{ ...entry(0), subject: "y".repeat(800) }], summary: "s" } };
+      const req = buildIntentRequest({ userMessage: "x", history: [], toolDefinitions: [], stats, now: new Date(), timezone: "UTC", persona: null, toolCalls: [big], registry });
+      expect(toolRecord(req as never).rows[0].fields.find((f) => f.name === "subject")?.value).toBe(`${"y".repeat(500)} … [truncated]`);
+    });
+
+    it("never cuts a string with a D4 hit, so the gateway sees the whole secret and denies the call", async () => {
+      const secret = `${"z".repeat(990)} sk-${"A".repeat(40)}`;
+      const leaky = { ...call, result: { data: [{ ...entry(0), subject: secret }], summary: "s" } };
+      const req = buildChatReplyRequest({ userMessage: "inbox?", history: [], persona: null, toolCalls: [leaky], registry });
+      expect(toolRecord(req).rows[0].fields.find((f) => f.name === "subject")?.value).toBe(secret);
+      const provider = new FakeProvider("deepseek", [JSON.stringify({ answer: "ok", usedTools: [] })]);
+      const gateway = createModelGateway({
+        providers: { deepseek: provider },
+        overrides: new Map(),
+        routing: { standard: "deepseek", reasoning: "deepseek" },
+        models: { deepseek: { standard: "s", reasoning: "r" } },
+        choices: new InMemoryChoices(),
+        audit: new InMemoryModelAudit(),
+        fingerprinter: new Fingerprinter("k".repeat(32), 1),
+        maxRetries: 0,
+        timeouts: { standard: 1000, reasoning: 1000 },
+        logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      });
+      const result = await gateway.beginTurn({ kind: "personal", identityId: "u1" }).call(req);
+      expect(result).toMatchObject({ kind: "denied", reason: "secret_present", secretIn: "data" });
+      expect(provider.calls).toHaveLength(0);
     });
   });
 });

@@ -1,6 +1,8 @@
 import type { CommunicationStyle, ConversationMessage, SalutationMode } from "@oneon/domain";
 import type { ToolRegistry } from "../../tools/tool-registry.js";
 import { toolResultToRecord } from "../../tools/output-schema.js";
+import { scanText } from "../scanner.js";
+import { PURPOSES } from "../purposes/index.js";
 import type { HistoryTurn, ModelRequest, PromptPart, ToolDescriptor } from "../types.js";
 
 export interface ChatContextStats {
@@ -59,38 +61,47 @@ function personaPart(persona: ChatPersonaProfile | null): PromptPart[] {
   ];
 }
 
-/** Data rows kept per tool record; the rest are counted in a D1 "truncated" row. Intent rounds re-send every result. */
-export const TOOL_RECORD_ROW_CAP = 25;
-/** Every string in a tool record is cut to this length before the gateway classifies and scans it. */
-export const TOOL_STRING_CHAR_CAP = 1_000;
-
 type RecordPart = Extract<PromptPart, { kind: "record" }>;
+type ToolDataLimits = { maxRows: number; maxChars: number };
 
-function capStrings(value: unknown): unknown {
-  if (typeof value === "string") return value.length > TOOL_STRING_CHAR_CAP ? value.slice(0, TOOL_STRING_CHAR_CAP) : value;
-  if (Array.isArray(value)) return value.map(capStrings);
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, capStrings(v)]));
+/** A cut string says so. A string with a D4 hit is never cut: the gateway must see the whole secret to deny the call. */
+function capStrings(value: unknown, maxChars: number): unknown {
+  if (typeof value === "string") {
+    return value.length > maxChars && scanText(value).d4.length === 0 ? `${value.slice(0, maxChars)} … [truncated]` : value;
+  }
+  if (Array.isArray(value)) return value.map((v) => capStrings(v, maxChars));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, capStrings(v, maxChars)]));
   return value;
 }
 
-const capRecordStrings = (part: RecordPart): RecordPart => ({
+const capRecordStrings = (part: RecordPart, maxChars: number): RecordPart => ({
   ...part,
-  rows: part.rows.map((r) => ({ ...r, fields: r.fields.map((f) => ({ ...f, value: capStrings(f.value) })) })),
+  rows: part.rows.map((r) => ({ ...r, fields: r.fields.map((f) => ({ ...f, value: capStrings(f.value, maxChars) })) })),
 });
 
-/** toolResultToRecord puts the summary row last; it stays last, after any "truncated" row. */
-function capRecordRows(part: RecordPart): RecordPart {
-  const data = part.rows.slice(0, -1);
-  const dropped = data.length - TOOL_RECORD_ROW_CAP;
-  if (dropped <= 0) return part;
-  const truncated = { fields: [{ name: "truncated", class: "D1" as const, value: `${dropped} more rows not shown` }] };
-  return { ...part, rows: [...data.slice(0, TOOL_RECORD_ROW_CAP), truncated, part.rows[part.rows.length - 1]] };
+/** Only the list rows are capped; a rowsFrom tool's extra row and the summary are always kept, after the "truncated" row. */
+function toolRecord(call: ToolCallRecord, registry: ToolRegistry, limits: ToolDataLimits): RecordPart | null {
+  const tool = registry.get(call.tool);
+  if (!call.result || !tool) return null;
+  const { data } = call.result;
+  const listKey = tool.output.rowsFrom;
+  const list = Array.isArray(data)
+    ? data
+    : listKey && data !== null && typeof data === "object" && Array.isArray((data as Record<string, unknown>)[listKey])
+      ? ((data as Record<string, unknown>)[listKey] as unknown[])
+      : null;
+  if (!list || list.length <= limits.maxRows) return toolResultToRecord(call.tool, tool.output, call.result);
+  const kept = list.slice(0, limits.maxRows);
+  const capped = Array.isArray(data) ? kept : { ...(data as Record<string, unknown>), [listKey as string]: kept };
+  const part = toolResultToRecord(call.tool, tool.output, { ...call.result, data: capped });
+  const truncated = { fields: [{ name: "truncated", class: "D1" as const, value: `showing ${kept.length} of ${list.length} rows` }] };
+  return { ...part, rows: [...part.rows.slice(0, kept.length), truncated, ...part.rows.slice(kept.length)] };
 }
 
-function toolParts(toolCalls: ToolCallRecord[], registry: ToolRegistry): PromptPart[] {
+function toolParts(toolCalls: ToolCallRecord[], registry: ToolRegistry, limits: ToolDataLimits): PromptPart[] {
   return toolCalls.map((call): PromptPart => {
-    const tool = registry.get(call.tool);
-    if (call.result && tool) return capRecordStrings(capRecordRows(toolResultToRecord(call.tool, tool.output, call.result)));
+    const record = toolRecord(call, registry, limits);
+    if (record) return capRecordStrings(record, limits.maxChars);
     return capRecordStrings({
       kind: "record",
       source: "tool_error",
@@ -104,7 +115,7 @@ function toolParts(toolCalls: ToolCallRecord[], registry: ToolRegistry): PromptP
           ],
         },
       ],
-    });
+    }, limits.maxChars);
   });
 }
 
@@ -145,7 +156,7 @@ export function buildIntentRequest(input: {
       ...personaPart(input.persona),
       ...(input.history.length > 0 ? [{ kind: "history" as const, turns: historyTurns(input.history) }] : []),
       { kind: "user_message", text: input.userMessage },
-      ...toolParts(input.toolCalls, input.registry),
+      ...toolParts(input.toolCalls, input.registry, PURPOSES.intent_extraction.toolData),
     ],
   };
 }
@@ -164,7 +175,7 @@ export function buildChatReplyRequest(input: {
       ...personaPart(input.persona),
       ...(input.history.length > 0 ? [{ kind: "history" as const, turns: historyTurns(input.history) }] : []),
       { kind: "user_message", text: input.userMessage },
-      ...toolParts(input.toolCalls.filter((c) => c.result !== null || c.error !== null), input.registry),
+      ...toolParts(input.toolCalls.filter((c) => c.result !== null || c.error !== null), input.registry, PURPOSES.chat_reply.toolData),
     ],
   };
 }
