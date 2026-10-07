@@ -85,7 +85,7 @@ export function createCycleRouter(deps: CycleRouteDeps): Router {
         : [];
 
       const failedActionErrors = actionLogRepo
-        .findAll({ status: "approved", userId, limit: limit * 5 })
+        .findAll({ status: "approved", userId })
         .filter((a) => !!a.errorJson)
         .map((a) => ({
           id: `action-${a.id}-${a.updatedAt}`,
