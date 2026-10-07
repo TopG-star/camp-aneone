@@ -13,7 +13,7 @@ import { InMemoryChoices, InMemoryModelAudit } from "../ai-boundary/__tests__/in
 import { FakeProvider } from "../ai-boundary/__tests__/fake-provider.js";
 import { answered, denied, stubGateway } from "../ai-boundary/__tests__/stub-gateway.js";
 import { DATA_WITHHELD_NOTE } from "./synthesize-response.js";
-import { SECRET_DENIED_MESSAGE, PROVIDER_UNAVAILABLE_MESSAGE, POLICY_DENIED_MESSAGE } from "./send-chat-message.js";
+import { SECRET_IN_MESSAGE_TEXT, SECRET_IN_DATA_TEXT, PROVIDER_UNAVAILABLE_MESSAGE, POLICY_DENIED_MESSAGE } from "./send-chat-message.js";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -629,13 +629,70 @@ describe("sendChatMessage", () => {
     }
   });
 
-  it("explains a secret-triggered denial instead of the generic failure text", async () => {
-    const gateway = stubGateway({ respond: () => denied("secret_present") });
+  it("explains a secret found in the message: rotate it", async () => {
+    const gateway = stubGateway({ respond: () => denied("secret_present", "message") });
     const result = await sendChatMessage(
       { conversationRepo, logger, modelGateway: gateway, toolRegistry: createMockToolRegistry({}) },
       { message: "test", now: NOW, userId: "user-A" }
     );
-    expect(result.response).toBe(SECRET_DENIED_MESSAGE);
+    expect(result.response).toBe(SECRET_IN_MESSAGE_TEXT);
+    expect(SECRET_IN_MESSAGE_TEXT).toBe("A password or key was detected in your message, so it wasn't sent to the AI. It's saved in this conversation, so rotate it now.");
+  });
+
+  it("explains a secret found in the request data", async () => {
+    const gateway = stubGateway({ respond: () => denied("secret_present", "data") });
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: createMockToolRegistry({}) },
+      { message: "test", now: NOW, userId: "user-A" }
+    );
+    expect(result.response).toBe(SECRET_IN_DATA_TEXT);
+    expect(SECRET_IN_DATA_TEXT).toBe("Something in the data for this request looks like a password or key, so it wasn't sent to the AI.");
+  });
+
+  it("denies the turn that pastes a key, then answers the next turn without the key reaching any provider call", async () => {
+    const KEY = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123";
+    const provider = new FakeProvider("deepseek", [
+      JSON.stringify([{ tool: "list_deadlines", parameters: {} }]),
+      JSON.stringify([{ tool: "none", parameters: {} }]),
+      JSON.stringify({ answer: "Here you go", usedTools: ["list_deadlines"] }),
+    ]);
+    const audit = new InMemoryModelAudit();
+    const gateway = createModelGateway({
+      providers: { deepseek: provider },
+      overrides: new Map(),
+      routing: { standard: "deepseek", reasoning: "deepseek" },
+      models: { deepseek: { standard: "s", reasoning: "r" } },
+      choices: new InMemoryChoices(),
+      audit,
+      fingerprinter: new Fingerprinter("k".repeat(32), 1),
+      maxRetries: 0,
+      timeouts: { standard: 1000, reasoning: 1000 },
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    const stored: ConversationMessage[] = [];
+    conversationRepo = createMockConversationRepo({
+      append: vi.fn().mockImplementation((msg) => {
+        const m = { id: `m${stored.length + 1}`, userId: "u1", conversationId: msg.conversationId, role: msg.role, content: msg.content, toolCalls: msg.toolCalls, createdAt: "2026-04-16T09:00:00Z" } satisfies ConversationMessage;
+        stored.push(m);
+        return m;
+      }),
+      findRecentByConversation: vi.fn().mockImplementation(() => [...stored]),
+    });
+    const action = { id: "a1", actionType: "list_deadlines", label: "List", status: "done" };
+    const deps = { conversationRepo, logger, modelGateway: gateway, toolRegistry: registryWithTool("list_deadlines", { data: { action }, summary: "ok" }) };
+
+    const first = await sendChatMessage(deps, { message: `my key is ${KEY}`, now: NOW, userId: "u1" });
+    expect(first.response).toBe(SECRET_IN_MESSAGE_TEXT);
+    expect(provider.calls).toHaveLength(0);
+    expect(audit.decisions.map((d) => d.denyReason)).toEqual(["secret_present"]);
+
+    const second = await sendChatMessage(deps, { message: "anything new?", now: NOW, userId: "u1" });
+    expect(second.response.startsWith("Here you go")).toBe(true);
+    expect(provider.calls).toHaveLength(3);
+    for (const call of provider.calls) expect(`${call.system}
+${call.user}`).not.toContain("sk-ant");
+    expect(audit.decisions.slice(1).map((d) => d.decision)).toEqual(["allow", "allow", "allow"]);
+    expect(audit.decisions[1].withheld).toContainEqual({ part: "history", turn: 0, reason: "secret_present" });
   });
 
   it("says the AI is unavailable when the provider is", async () => {

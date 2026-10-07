@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Logger } from "@oneon/domain";
 import type { ToolRegistry } from "../tools/tool-registry.js";
 import type { GatewayResult, ModelTurn } from "../ai-boundary/gateway.js";
-import type { DenyReason } from "../ai-boundary/decide.js";
+import type { DenyReason, SecretLocation } from "../ai-boundary/decide.js";
 import {
   buildIntentRequest,
   type ChatPersonaProfile,
@@ -64,6 +64,8 @@ export interface RunIntentLoopResult {
   stopped: StopReason;
   /** Why the gateway denied the intent call; set only when `stopped` is "policy_denied". */
   deniedReason?: DenyReason;
+  /** Where the secret was, when `deniedReason` is secret_present. */
+  secretIn?: SecretLocation;
 }
 
 /** The error's name only: messages can echo prompt or tool data, so they never reach a log. */
@@ -111,7 +113,7 @@ export async function runIntentLoop(
     if (result.kind === "denied") {
       logger.info("Intent extraction denied by AI data policy", { round, reason: result.reason });
       stopped = "policy_denied";
-      return { toolCalls: allToolCalls, rounds: round, stopped, deniedReason: result.reason };
+      return { toolCalls: allToolCalls, rounds: round, stopped, deniedReason: result.reason, ...(result.secretIn ? { secretIn: result.secretIn } : {}) };
     }
     if (result.kind !== "answered") {
       logger.error("Intent extraction failed", { round, kind: result.kind });

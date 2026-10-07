@@ -17,6 +17,7 @@ export {
   type FieldDisposition,
   type LayerSnapshot,
   type PartOutcome,
+  type SecretLocation,
   type WithheldItem,
   type WithheldReason,
 } from "./decide.js";

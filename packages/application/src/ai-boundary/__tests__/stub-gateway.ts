@@ -4,7 +4,7 @@ import type { GatewayResult, ModelGateway } from "../gateway.js";
 import type { DataClass, ModelRequest } from "../types.js";
 
 export const answered = (json: unknown, text = JSON.stringify(json)): GatewayResult => ({ kind: "answered", text, json, withheld: [], decisionId: "d" });
-export const denied = (reason: DenyReason): GatewayResult => ({ kind: "denied", reason, withheld: [], decisionId: "d" });
+export const denied = (reason: DenyReason, secretIn?: "message" | "data"): GatewayResult => ({ kind: "denied", reason, ...(secretIn ? { secretIn } : {}), withheld: [], decisionId: "d" });
 export const blocked = (reason: OutputBlockReason): GatewayResult => ({ kind: "blocked", reason, withheld: [], decisionId: "d" });
 
 export function stubGateway(opts: { limit?: DataClass | null; respond?: (req: ModelRequest) => GatewayResult } = {}) {

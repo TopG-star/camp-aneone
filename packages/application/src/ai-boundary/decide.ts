@@ -19,7 +19,9 @@ export type WithheldReason =
   | "row_d3"
   | "above_limit"
   | "group_too_small"
-  | "part_not_allowed";
+  | "part_not_allowed"
+  /** A history turn holding a D4 scanner hit: that turn alone is withheld; the call continues. */
+  | "secret_present";
 
 export const USER_MESSAGE_CLASS: DataClass = "D1";
 export const HISTORY_CLASS: Record<"user" | "assistant", DataClass> = { user: "D1", assistant: "D2" };
@@ -56,8 +58,11 @@ interface Common {
   scannerHits: { D3: number; D4: number };
 }
 export type Decision =
-  | (Common & { kind: "deny"; reason: DenyReason; effectiveLimit: DataClass | null })
+  | (Common & { kind: "deny"; reason: DenyReason; effectiveLimit: DataClass | null; secretIn?: SecretLocation })
   | (Common & { kind: "allow"; effectiveLimit: DataClass; parts: PartOutcome[] });
+
+/** Where a denying secret was found: the current user message, or the request's data (a declared D4 field or row, record free text). */
+export type SecretLocation = "message" | "data";
 
 export interface DecideInput {
   context: ModelContext;
@@ -90,7 +95,13 @@ export function decide(input: DecideInput): Decision {
     alert: false,
     scannerHits: { D3: 0, D4: 0 },
   };
-  const deny = (reason: DenyReason, effectiveLimit: DataClass | null): Decision => ({ ...common, kind: "deny", reason, effectiveLimit });
+  const deny = (reason: DenyReason, effectiveLimit: DataClass | null, secretIn?: SecretLocation): Decision => ({
+    ...common,
+    kind: "deny",
+    reason,
+    effectiveLimit,
+    ...(secretIn ? { secretIn } : {}),
+  });
 
   // ── Stage 1 ──
   if (!def) return deny("unknown_purpose", null);
@@ -98,33 +109,35 @@ export function decide(input: DecideInput): Decision {
   if (!contextComplete(input.context)) return deny("invalid_context", null);
   const limit = lowerClass(lowerClass(pLimit, input.choiceLimit), def.limit);
 
-  // C4: declared D4, rowClass D4, or a scanner D4 hit in any free text. Scan results are kept for stage 2b.
+  // C4 by location: a D4 hit in the current user message, or in any data (declared D4, rowClass D4, record free text), denies the
+  // call; a D4 hit in an earlier history turn withholds that turn only. Scan results are kept for stage 2b.
   const scans = new Map<string, Spans>();
-  let secret = false;
-  const scanFree = (key: string, text: string) => {
+  const secretTurns = new Set<string>();
+  let secretInMessage = false;
+  let secretInData = false;
+  const scanFree = (key: string, text: string): boolean => {
     const result = scanText(text);
-    if (result.d4.length > 0) {
-      secret = true;
-      common.scannerHits.D4 += result.d4.length;
-    }
+    common.scannerHits.D4 += result.d4.length;
     if (result.d3Spans.length > 0) scans.set(key, result.d3Spans);
+    return result.d4.length > 0;
   };
   input.request.parts.forEach((part, p) => {
-    if (part.kind === "user_message") scanFree(`${p}`, part.text);
-    if (part.kind === "history") part.turns.forEach((t, i) => scanFree(`${p}:${i}`, t.text));
+    if (part.kind === "user_message" && scanFree(`${p}`, part.text)) secretInMessage = true;
+    if (part.kind === "history") part.turns.forEach((t, i) => scanFree(`${p}:${i}`, t.text) && secretTurns.add(`${p}:${i}`));
     if (part.kind === "record") {
       part.rows.forEach((r, ri) => {
-        if (validRowClass(r.rowClass) === "D4") secret = true;
+        if (validRowClass(r.rowClass) === "D4") secretInData = true;
         r.fields.forEach((f, fi) => {
-          if (f.class === "D4") secret = true;
-          if (f.freeText && typeof f.value === "string") scanFree(`${p}:${ri}:${fi}`, f.value);
-          else if (f.freeText) {
+          if (f.class === "D4") secretInData = true;
+          if (f.freeText && typeof f.value === "string") {
+            if (scanFree(`${p}:${ri}:${fi}`, f.value)) secretInData = true;
+          } else if (f.freeText) {
             // Non-string free text cannot take D3 spans (withheld in stage 2), but a D4 secret inside it still denies the call.
             const serialised = JSON.stringify(f.value);
             if (serialised !== undefined) {
               const result = scanText(serialised);
               if (result.d4.length > 0) {
-                secret = true;
+                secretInData = true;
                 common.scannerHits.D4 += result.d4.length;
               }
             }
@@ -133,7 +146,7 @@ export function decide(input: DecideInput): Decision {
       });
     }
   });
-  if (secret) return deny("secret_present", limit);
+  if (secretInMessage || secretInData) return deny("secret_present", limit, secretInMessage ? "message" : "data");
 
   // ── Stage 2 ──
   const sentWith = (key: string): FieldDisposition => {
@@ -165,7 +178,11 @@ export function decide(input: DecideInput): Decision {
           index: p,
           key,
           turns: part.turns.map((t, i) =>
-            HISTORY_CLASS[t.role] !== undefined && within(HISTORY_CLASS[t.role], limit) ? sentWith(`${p}:${i}`) : withhold({ part: key, turn: i, reason: "above_limit" }),
+            secretTurns.has(`${p}:${i}`)
+              ? withhold({ part: key, turn: i, reason: "secret_present" })
+              : HISTORY_CLASS[t.role] !== undefined && within(HISTORY_CLASS[t.role], limit)
+                ? sentWith(`${p}:${i}`)
+                : withhold({ part: key, turn: i, reason: "above_limit" }),
           ),
         };
       case "record": {

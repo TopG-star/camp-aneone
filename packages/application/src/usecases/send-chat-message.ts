@@ -8,6 +8,7 @@ import type { ChatActionRef } from "../actions/chat-action-tools.js";
 import { truncateHistory } from "./truncate-history.js";
 import { runIntentLoop, errorName } from "./run-intent-loop.js";
 import { synthesizeResponse, DATA_WITHHELD_NOTE } from "./synthesize-response.js";
+import type { SecretLocation } from "../ai-boundary/decide.js";
 import type { ModelGateway } from "../ai-boundary/gateway.js";
 import type {
   ChatContextStats,
@@ -45,7 +46,8 @@ export interface SendChatMessageResult {
 // ── Constants ────────────────────────────────────────────────
 
 const PLACEHOLDER_RESPONSE = "I'm not connected to tools yet. This will be upgraded once the tool registry and intent extraction loop are wired in.";
-export const SECRET_DENIED_MESSAGE = "A recent message looks like it contains a password or key, so it wasn't sent to the AI.";
+export const SECRET_IN_MESSAGE_TEXT = "A password or key was detected in your message, so it wasn't sent to the AI. It's saved in this conversation, so rotate it now.";
+export const SECRET_IN_DATA_TEXT = "Something in the data for this request looks like a password or key, so it wasn't sent to the AI.";
 export const PROVIDER_UNAVAILABLE_MESSAGE = "The AI is unavailable right now.";
 export const POLICY_DENIED_MESSAGE = "Your AI data settings stopped this message from being sent to the AI.";
 const FALLBACK_RESPONSE = "I ran into trouble processing your request. Please try again.";
@@ -154,7 +156,7 @@ export async function sendChatMessage(
     } else {
       response =
         loopResult.stopped === "policy_denied"
-          ? deniedMessage(loopResult.deniedReason)
+          ? deniedMessage(loopResult.deniedReason, loopResult.secretIn)
           : FALLBACK_RESPONSE;
     }
   } else {
@@ -189,8 +191,8 @@ export async function sendChatMessage(
 
 // ── Helpers ──────────────────────────────────────────────────
 
-function deniedMessage(reason: string | undefined): string {
-  if (reason === "secret_present") return SECRET_DENIED_MESSAGE;
+function deniedMessage(reason: string | undefined, secretIn: SecretLocation | undefined): string {
+  if (reason === "secret_present") return secretIn === "data" ? SECRET_IN_DATA_TEXT : SECRET_IN_MESSAGE_TEXT;
   if (reason === "provider_unavailable") return PROVIDER_UNAVAILABLE_MESSAGE;
   return POLICY_DENIED_MESSAGE;
 }

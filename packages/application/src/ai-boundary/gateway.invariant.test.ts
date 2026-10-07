@@ -90,7 +90,9 @@ describe("gateway invariant (spec §12)", () => {
           const result = await gateway.beginTurn(context).call({ purpose: "chat_reply", output: "json", parts });
 
           const sent = provider.calls.map((c) => c.system + c.user).join("\n");
-          const mustDeny = specs.some((s) => s.cls === "D4" || (s.freeText && s.kind === "d4")) || (history.withHistory && history.userKind === "d4");
+          const mustDeny = specs.some((s) => s.cls === "D4" || (s.freeText && s.kind === "d4"));
+          // C4 by location: a D4 hit in an earlier history turn withholds that turn only; the call still goes out.
+          const historyTurnWithheld = history.withHistory && history.userKind === "d4";
 
           // Decision: deny on any D4 with no provider call; otherwise allow and call the provider once.
           expect(audit.decisions).toHaveLength(1);
@@ -119,7 +121,8 @@ describe("gateway invariant (spec §12)", () => {
             expect(sent).not.toContain(userSecret);
             if (!mustDeny) {
               // History turns follow the same limit: user text is D1, assistant text is D2.
-              if (history.userKind !== "d4") expect(sent).toContain(userTurn);
+              if (historyTurnWithheld) expect(sent).not.toContain(userTurn);
+              else expect(sent).toContain(userTurn);
               if (limit === "D2") expect(sent).toContain(assistantTurn);
               else expect(sent).not.toContain(assistantTurn);
             } else {

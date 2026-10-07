@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { decide } from "./decide.js";
 import { PROVIDER_REGISTRY } from "./providers.js";
-import type { ModelContext } from "./types.js";
+import type { ModelContext, PromptPart } from "./types.js";
 import { emailRecord, field, input, personal, record, row, tenant, userMessage } from "./__tests__/builders.js";
 
 describe("decide — stage 1 (whole call)", () => {
@@ -255,5 +255,47 @@ describe("decide — fail closed on out-of-domain input and unscannable free tex
       kind: "deny",
       reason: "required_part_withheld",
     });
+  });
+});
+
+describe("decide — C4 by location (changed 2026-10-04, Gerry)", () => {
+  const KEY = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123";
+  const history = (...turns: Array<{ role: "user" | "assistant"; text: string }>) => ({ kind: "history" as const, turns });
+  const chat = (parts: PromptPart[]) => input({ choiceLimit: "D2", request: { purpose: "chat_reply", parts } });
+
+  it("case 1: a D4 hit in the current user message denies the call with secretIn message", () => {
+    const d = decide(chat([userMessage(`my key is ${KEY}`)]));
+    expect(d).toMatchObject({ kind: "deny", reason: "secret_present", secretIn: "message", scannerHits: { D4: 1 } });
+    expect(JSON.stringify(d)).not.toContain("sk-ant");
+  });
+  it("case 2: a D4 hit in an earlier user turn withholds that turn only, and the call continues", () => {
+    const d = decide(chat([history({ role: "user", text: `my key is ${KEY}` }, { role: "user", text: "hi" }), userMessage("and now?")]));
+    expect(d.kind).toBe("allow");
+    if (d.kind !== "allow") return;
+    expect(d.withheld).toContainEqual({ part: "history", turn: 0, reason: "secret_present" });
+    expect(d.withheld).toHaveLength(1);
+    expect(d.parts[0].turns?.map((t) => t.kind)).toEqual(["withheld", "sent"]);
+    expect(d.scannerHits.D4).toBe(1);
+    expect(JSON.stringify(d)).not.toContain("sk-ant");
+  });
+  it("case 2: a D4 hit in an earlier assistant turn is withheld too", () => {
+    const d = decide(chat([history({ role: "assistant", text: `use ${KEY}` }), userMessage("and now?")]));
+    expect(d.kind).toBe("allow");
+    if (d.kind !== "allow") return;
+    expect(d.withheld).toContainEqual({ part: "history", turn: 0, reason: "secret_present" });
+    expect(d.scannerHits.D4).toBe(1);
+  });
+  it("a secret in history and in the current message denies as message", () => {
+    expect(decide(chat([history({ role: "user", text: KEY }), userMessage(KEY)]))).toMatchObject({ kind: "deny", reason: "secret_present", secretIn: "message" });
+  });
+  it("case 3: a declared D4 field or a rowClass D4 denies with secretIn data", () => {
+    expect(decide(input({ request: { parts: [record("email", [row([field("from", "D4", "x")])])] } }))).toMatchObject({ kind: "deny", reason: "secret_present", secretIn: "data" });
+    expect(decide(input({ request: { parts: [record("email", [row([field("source", "D0", "gmail")], "D4")])] } }))).toMatchObject({ kind: "deny", reason: "secret_present", secretIn: "data" });
+  });
+  it("case 4: a scanner D4 hit in a record free-text field denies with secretIn data", () => {
+    expect(decide(input({ request: { parts: [emailRecord({ bodyPreview: `key ${KEY}` })] } }))).toMatchObject({ kind: "deny", reason: "secret_present", secretIn: "data" });
+  });
+  it("other denials carry no secretIn", () => {
+    expect(decide(input({ choiceLimit: "D1" }))).not.toHaveProperty("secretIn");
   });
 });

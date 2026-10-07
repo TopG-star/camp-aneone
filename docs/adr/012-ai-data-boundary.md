@@ -57,8 +57,9 @@ ImpressoRx pharmacies (Step B) would add customer credit, supplier prices and co
   unavailable or capped below D2. An item denied for its own content (a secret, a required field left empty, a masked
   value) counts a classify attempt, so it is skipped after the maximum.
 - The daily briefing falls back to its structured summary without AI wording. On an empty day no model call is made.
-- Chat keeps working at D1 without earlier assistant replies. A secret pasted into recent history blocks the AI for
-  that conversation until it leaves the 20-message window (an open spec question).
+- Chat keeps working at D1 without earlier assistant replies. A secret pasted into the current message denies that turn only
+  (the reply tells the person to rotate it); in later turns the history turn holding it is withheld and chat carries on
+  (changed 2026-10-04, Gerry). A secret in a tool record still denies the whole call.
 - A scanner on free text is a backstop with false negatives. Prompt injection is mitigated, not prevented.
 - "Personal" is defined by source, not content; business data in a personal inbox leaves on the person's opt-in.
 - That an action's business facts come from `resolve`, not from the model's proposal, is a review convention until

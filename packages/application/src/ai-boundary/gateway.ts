@@ -4,7 +4,7 @@ import { ApprovedModelCall, ProviderError, type ModelProvider } from "./approved
 import { checkAnswer, restoreToolParams, type OutputBlockReason } from "./answer-check.js";
 import { assemblePrompt } from "./assemble.js";
 import type { AiDataChoiceRepository, ModelAuditRepository } from "./audit.js";
-import { decide, type Decision, type DenyReason, type FieldDisposition, type WithheldItem } from "./decide.js";
+import { decide, type Decision, type DenyReason, type FieldDisposition, type SecretLocation, type WithheldItem } from "./decide.js";
 import type { Fingerprinter } from "./fingerprints.js";
 import { PlaceholderMap } from "./placeholders.js";
 import { findRestoredValue } from "./restored-values.js";
@@ -17,7 +17,7 @@ export const TENANT_CHOICE_LIMIT: DataClass = "D1";
 
 export type GatewayResult =
   | { kind: "answered"; text: string; json?: unknown; withheld: WithheldItem[]; decisionId: string }
-  | { kind: "denied"; reason: DenyReason; withheld: WithheldItem[]; decisionId: string }
+  | { kind: "denied"; reason: DenyReason; /** Set when reason is secret_present: where the secret was. A response detail only; never stored. */ secretIn?: SecretLocation; withheld: WithheldItem[]; decisionId: string }
   | { kind: "blocked"; reason: OutputBlockReason; withheld: WithheldItem[]; decisionId: string }
   | { kind: "failed"; message: string; withheld: WithheldItem[]; decisionId: string };
 
@@ -178,7 +178,7 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
 
     if (decision.kind === "deny") {
       deps.audit.recordDecision({ ...base, decision: "deny", denyReason: decision.reason, released: [], placeholderCount: 0, inputFingerprint: null });
-      return { kind: "denied", reason: decision.reason, withheld: decision.withheld, decisionId };
+      return { kind: "denied", reason: decision.reason, ...(decision.secretIn ? { secretIn: decision.secretIn } : {}), withheld: decision.withheld, decisionId };
     }
 
     // decide() denies unknown purposes, so an allow always has a definition.
