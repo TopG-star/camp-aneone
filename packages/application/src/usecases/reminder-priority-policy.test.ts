@@ -52,19 +52,31 @@ describe("evaluateReminderPriorityPolicy", () => {
     expect(suppressed.reason).toBe("action_auto_risk_not_notified");
   });
 
-  it("allows deadline approaching notifications by default", () => {
+  it("allows deadline approaching notifications when confidence is above threshold", () => {
     const decision = evaluateReminderPriorityPolicy({
       eventType: NotificationEventType.DeadlineApproaching,
       userId: "user-1",
-      confidence: 0.63,
+      confidence: 0.9,
     });
 
     expect(decision.shouldNotify).toBe(true);
-    expect(decision.reason).toBe("deadline_approaching_default_allow");
+    expect(decision.reason).toBe("deadline_confidence_within_threshold");
     expect(decision.details).toEqual(
       expect.objectContaining({
-        confidence: 0.63,
+        confidence: 0.9,
+        threshold: 0.7,
       }),
     );
+  });
+
+  it("suppresses deadline approaching notifications when confidence is below threshold", () => {
+    const decision = evaluateReminderPriorityPolicy({
+      eventType: NotificationEventType.DeadlineApproaching,
+      userId: "user-1",
+      confidence: 0.5,
+    });
+
+    expect(decision.shouldNotify).toBe(false);
+    expect(decision.reason).toBe("deadline_confidence_below_threshold");
   });
 });

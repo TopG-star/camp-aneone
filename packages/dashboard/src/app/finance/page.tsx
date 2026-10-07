@@ -2,7 +2,11 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { useFinanceStatements, useFinanceTransactions } from "@/lib/hooks";
+import {
+  useFinanceInsights,
+  useFinanceStatements,
+  useFinanceTransactions,
+} from "@/lib/hooks";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { AlertTriangle, Filter } from "lucide-react";
@@ -49,6 +53,31 @@ interface FinanceTransactionsResponse {
   items: FinanceTransactionItem[];
 }
 
+interface FinanceInsightsResponse {
+  summary: {
+    inflowMinor: number;
+    outflowMinor: number;
+    netMinor: number;
+    averageOutflowMinor: number;
+    transactionCount: number;
+    outflowCount: number;
+  } | null;
+  topCategories: Array<{
+    category: string;
+    amountMinor: number;
+    transactionCount: number;
+  }>;
+  anomalies: Array<{
+    id: string;
+    kind: "large_outflow" | "merchant_burst";
+    severity: "high" | "medium";
+    title: string;
+    description: string;
+    postedAt: string | null;
+    amountMinor: number | null;
+  }>;
+}
+
 const STATUS_OPTIONS: readonly StatementStatus[] = [
   "all",
   "discovered",
@@ -77,6 +106,11 @@ function statusBadgeVariant(status: FinanceStatementItem["status"]) {
   return "default" as const;
 }
 
+function anomalyBadgeVariant(severity: "high" | "medium") {
+  if (severity === "high") return "error" as const;
+  return "warning" as const;
+}
+
 export default function FinancePage() {
   const [status, setStatus] = useState<StatementStatus>("all");
   const [search, setSearch] = useState("");
@@ -97,6 +131,11 @@ export default function FinancePage() {
     return params.toString();
   }, [search]);
 
+  const insightsQuery = useMemo(() => {
+    const params = new URLSearchParams({ limit: "400" });
+    return params.toString();
+  }, []);
+
   const {
     data: statementsData,
     error: statementsError,
@@ -109,8 +148,15 @@ export default function FinancePage() {
     isLoading: transactionsLoading,
   } = useFinanceTransactions(transactionsQuery);
 
+  const {
+    data: insightsData,
+    error: insightsError,
+    isLoading: insightsLoading,
+  } = useFinanceInsights(insightsQuery);
+
   const statements = statementsData as FinanceStatementsResponse | undefined;
   const transactions = transactionsData as FinanceTransactionsResponse | undefined;
+  const insights = insightsData as FinanceInsightsResponse | undefined;
 
   return (
     <div className="space-y-6 md:space-y-7 lg:space-y-8 motion-page-enter">
@@ -191,8 +237,95 @@ export default function FinancePage() {
         </div>
       )}
 
+      <Card className={`motion-rise-in-soft ${getMotionDelayClass(3)}`}>
+        <CardHeader>
+          <CardTitle>Insights and Anomaly Flags</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {insightsLoading && (
+            <div className="space-y-3">
+              {[1, 2].map((i) => (
+                <div key={i} className="state-skeleton h-16" />
+              ))}
+            </div>
+          )}
+
+          {insightsError && (
+            <div className="state-content state-content-center py-8">
+              <AlertTriangle className="h-8 w-8 text-red-500/80 dark:text-red-400/80" />
+              <p className="state-error">Failed to load finance insights.</p>
+            </div>
+          )}
+
+          {insights && insights.summary && (
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="rounded-eight bg-surface-low p-3 dark:bg-dark-surface-low">
+                <p className="text-label-sm meta-copy">Net</p>
+                <p className="font-semibold text-on-surface dark:text-dark-on-surface">
+                  {formatMinorCurrency(insights.summary.netMinor)}
+                </p>
+              </div>
+              <div className="rounded-eight bg-surface-low p-3 dark:bg-dark-surface-low">
+                <p className="text-label-sm meta-copy">Outflow</p>
+                <p className="font-semibold text-on-surface dark:text-dark-on-surface">
+                  {formatMinorCurrency(insights.summary.outflowMinor)}
+                </p>
+              </div>
+              <div className="rounded-eight bg-surface-low p-3 dark:bg-dark-surface-low">
+                <p className="text-label-sm meta-copy">Inflow</p>
+                <p className="font-semibold text-on-surface dark:text-dark-on-surface">
+                  {formatMinorCurrency(insights.summary.inflowMinor)}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {insights && insights.anomalies.length > 0 ? (
+            <div className="space-y-2">
+              {insights.anomalies.slice(0, 5).map((anomaly) => (
+                <div
+                  key={anomaly.id}
+                  className="rounded-eight border border-outline-variant/30 bg-surface-low p-3 dark:border-dark-outline-variant/35 dark:bg-dark-surface-low"
+                >
+                  <div className="mb-1 flex items-center gap-2">
+                    <Badge variant={anomalyBadgeVariant(anomaly.severity)}>
+                      {anomaly.severity}
+                    </Badge>
+                    <p className="font-medium text-on-surface dark:text-dark-on-surface">
+                      {anomaly.title}
+                    </p>
+                  </div>
+                  <p className="text-label-md meta-copy">{anomaly.description}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            insights && !insightsLoading && (
+              <div className="state-content state-content-center py-4">
+                <p className="state-subtext">No anomaly flags in the current sample window.</p>
+              </div>
+            )
+          )}
+
+          {insights && insights.topCategories.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-label-sm text-on-surface-variant dark:text-dark-on-surface-variant">
+                Top spend categories
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {insights.topCategories.slice(0, 4).map((row) => (
+                  <Badge key={row.category}>
+                    {row.category}: {formatMinorCurrency(row.amountMinor)}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       <div className="grid gap-5 md:gap-6 lg:grid-cols-2">
-        <Card className={`motion-rise-in-soft ${getMotionDelayClass(3)}`}>
+        <Card className={`motion-rise-in-soft ${getMotionDelayClass(4)}`}>
           <CardHeader>
             <CardTitle>Statements</CardTitle>
           </CardHeader>
@@ -248,7 +381,7 @@ export default function FinancePage() {
           </CardContent>
         </Card>
 
-        <Card className={`motion-rise-in-soft ${getMotionDelayClass(4)}`}>
+        <Card className={`motion-rise-in-soft ${getMotionDelayClass(5)}`}>
           <CardHeader>
             <CardTitle>Transactions</CardTitle>
           </CardHeader>

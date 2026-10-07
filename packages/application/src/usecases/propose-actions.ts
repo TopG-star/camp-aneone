@@ -22,6 +22,8 @@ export const ACTION_RISK_LEVELS: Record<ActionType, RiskLevel> = {
   forward: "approval_required",
 };
 
+const DEADLINE_CONFIDENCE_THRESHOLD = 0.7;
+
 // ── Types ───────────────────────────────────────────────────
 
 export interface ProposedAction {
@@ -68,6 +70,10 @@ export function deriveActions(
 
   // Rule 2: Create reminder for each deadline (resourceId = deadline.id for per-deadline idempotency)
   for (const deadline of deadlines) {
+    if (deadline.confidence < DEADLINE_CONFIDENCE_THRESHOLD) {
+      continue;
+    }
+
     actions.push({
       actionType: "create_reminder",
       resourceId: deadline.id,

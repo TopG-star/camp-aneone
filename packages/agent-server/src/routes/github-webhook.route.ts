@@ -63,6 +63,12 @@ export function createGitHubWebhookRouter(deps: GitHubWebhookDeps): Router {
     }
 
     try {
+      if (resolveUserId && resolveUserId() === null) {
+        logger.warn("GitHub webhook: unable to resolve user ownership");
+        res.status(409).json({ error: "Unable to resolve webhook user ownership" });
+        return;
+      }
+
       if (eventType === "ping") {
         logger.info("GitHub webhook: ping received");
         res.status(200).json({ status: "pong" });
