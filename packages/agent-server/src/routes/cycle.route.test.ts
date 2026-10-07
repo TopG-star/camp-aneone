@@ -245,7 +245,10 @@ describe("POST /api/cycle/run-now", () => {
     // Create app without userId middleware
     const noAuthApp = express();
     noAuthApp.use(express.json());
-    noAuthApp.use("/api/cycle", createCycleRouter({ getBackgroundLoop: () => loop, logger }));
+    noAuthApp.use(
+      "/api/cycle",
+      createCycleRouter({ getBackgroundLoop: () => loop, actionLogRepo, logger }),
+    );
     const res = await request(noAuthApp).post("/api/cycle/run-now");
     expect(res.status).toBe(401);
     expect(res.body.reason).toBe("User not authenticated");

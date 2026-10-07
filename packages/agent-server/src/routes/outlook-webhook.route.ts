@@ -48,6 +48,12 @@ export function createOutlookWebhookRouter(deps: OutlookWebhookDeps): Router {
 
     const payload = parseResult.data;
 
+    if (resolveUserId && resolveUserId() === null) {
+      logger.warn("Outlook webhook: unable to resolve user ownership");
+      res.status(409).json({ error: "Unable to resolve webhook user ownership" });
+      return;
+    }
+
     // ── 3. Delegate to Use Case ───────────────────────────
     try {
       const senderEmail = extractSenderEmail(payload.from);

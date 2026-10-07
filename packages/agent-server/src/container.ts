@@ -15,6 +15,8 @@ import type {
   UserRepository,
   UserProfileRepository,
   OAuthTokenRepository,
+  PersonalMemoryNoteRepository,
+  PersonalMemoryPinRepository,
   LLMPort,
   CalendarPort,
   GitHubPort,
@@ -41,6 +43,8 @@ import {
   SqliteUserRepository,
   SqliteUserProfileRepository,
   SqliteOAuthTokenRepository,
+  SqlitePersonalMemoryNoteRepository,
+  SqlitePersonalMemoryPinRepository,
   SqliteTransactionRunner,
   ClaudeClassifierAdapter,
   DeepSeekClassifierAdapter,
@@ -64,6 +68,7 @@ import {
 } from "@oneon/infrastructure";
 
 import type { Env } from "./config/env.js";
+import { recordGmailRefreshFailure } from "./gmail-refresh-state.js";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -92,6 +97,8 @@ export interface AppContainer {
   userRepo: UserRepository | null;
   userProfileRepo: UserProfileRepository;
   oauthTokenRepo: OAuthTokenRepository | null;
+  personalMemoryNoteRepo: PersonalMemoryNoteRepository;
+  personalMemoryPinRepo: PersonalMemoryPinRepository;
 
   // ── External Ports ────────────────────────────────────────
   llmPort: LLMPort | null;
@@ -151,6 +158,8 @@ export function createContainer(env: Env): AppContainer {
     },
   ]);
   const userProfileRepo = new SqliteUserProfileRepository(db);
+  const personalMemoryNoteRepo = new SqlitePersonalMemoryNoteRepository(db);
+  const personalMemoryPinRepo = new SqlitePersonalMemoryPinRepository(db);
 
   // ── OAuth Repositories (requires OAUTH_TOKEN_ENCRYPTION_KEY) ──
   let userRepo: UserRepository | null = null;
@@ -198,6 +207,7 @@ export function createContainer(env: Env): AppContainer {
         env.GOOGLE_CLIENT_ID!,
         env.GOOGLE_CLIENT_SECRET!,
         primaryUser!.id,
+        () => recordGmailRefreshFailure(preferenceRepo, primaryUser!.id),
       );
       logger.info("Google: ✓ active (DB token)", {
         user: dbGoogleToken.providerEmail ?? primaryUser!.email,
@@ -246,6 +256,7 @@ export function createContainer(env: Env): AppContainer {
       env.GOOGLE_CLIENT_ID!,
       env.GOOGLE_CLIENT_SECRET!,
       userId,
+      () => recordGmailRefreshFailure(preferenceRepo, userId),
     );
   };
 
@@ -469,6 +480,8 @@ export function createContainer(env: Env): AppContainer {
     userRepo,
     userProfileRepo,
     oauthTokenRepo,
+    personalMemoryNoteRepo,
+    personalMemoryPinRepo,
     hasGoogleCredentials: hasGoogleClientCreds,
     getEligibleUsers,
     createGoogleTokenProvider,

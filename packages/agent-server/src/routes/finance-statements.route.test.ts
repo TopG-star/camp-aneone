@@ -321,6 +321,64 @@ describe("Finance Statements Route", () => {
     });
   });
 
+  it("returns finance insights with summary and anomaly flags", async () => {
+    vi.mocked(deps.bankStatementParseRepo.findTransactions).mockReturnValue([
+      {
+        id: "tx-a",
+        statementId: "b",
+        userId: "u1",
+        postedAt: "2026-04-21",
+        description: "PAYROLL",
+        amountMinor: 220000,
+        balanceMinor: 220000,
+        dedupeKey: "dedupe-a",
+        createdAt: "2026-04-21T01:00:00.000Z",
+      },
+      {
+        id: "tx-b",
+        statementId: "b",
+        userId: "u1",
+        postedAt: "2026-04-22",
+        description: "GROCERY",
+        amountMinor: -5600,
+        balanceMinor: 214400,
+        dedupeKey: "dedupe-b",
+        createdAt: "2026-04-22T01:00:00.000Z",
+      },
+      {
+        id: "tx-c",
+        statementId: "b",
+        userId: "u1",
+        postedAt: "2026-04-23",
+        description: "LAPTOP STORE",
+        amountMinor: -150000,
+        balanceMinor: 64400,
+        dedupeKey: "dedupe-c",
+        createdAt: "2026-04-23T01:00:00.000Z",
+      },
+    ]);
+
+    const res = await request(app)
+      .get("/api/finance/statements/insights")
+      .query({ limit: "200" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      summary: {
+        inflowMinor: expect.any(Number),
+        outflowMinor: expect.any(Number),
+        netMinor: expect.any(Number),
+      },
+      anomalies: expect.any(Array),
+      topCategories: expect.any(Array),
+    });
+    expect(
+      (res.body.anomalies as Array<{ kind: string }>).some(
+        (item) => item.kind === "large_outflow",
+      ),
+    ).toBe(true);
+  });
+
   it("returns 400 for invalid transaction date filter", async () => {
     const res = await request(app)
       .get("/api/finance/statements/transactions")

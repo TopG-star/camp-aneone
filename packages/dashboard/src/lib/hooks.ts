@@ -128,3 +128,14 @@ export function useFinanceTransactions(query?: string, config?: SWRConfiguration
     ...config,
   });
 }
+
+/** Finance insights — refresh every 30s */
+export function useFinanceInsights(query?: string, config?: SWRConfiguration) {
+  const path = query
+    ? `/api/finance/statements/insights?${query}`
+    : "/api/finance/statements/insights";
+  return useSWR(path, fetcher, {
+    refreshInterval: 30_000,
+    ...config,
+  });
+}
