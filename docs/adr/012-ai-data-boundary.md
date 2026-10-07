@@ -63,7 +63,7 @@ ImpressoRx pharmacies (Step B) would add customer credit, supplier prices and co
 - A scanner on free text is a backstop with false negatives. Prompt injection is mitigated, not prevented.
 - "Personal" is defined by source, not content; business data in a personal inbox leaves on the person's opt-in.
 - That an action's business facts come from `resolve`, not from the model's proposal, is a review convention until
-  Step C adds a mechanism.
+  Step C enforces it with a contract test per business action (spec §7.6, AX2).
 
 ## Deploy
 
@@ -76,12 +76,15 @@ Manage the key like any other long-lived secret:
 - Each audit row stores the `key_version` that wrote it. The server loads one key at a time, set by
   `MODEL_AUDIT_HMAC_KEY` and `MODEL_AUDIT_HMAC_KEY_VERSION` (default 1). Fingerprints are derived per context from the
   master key with HKDF.
+- To verify old rows offline, recompute the fingerprint as in `packages/application/src/ai-boundary/fingerprints.ts`: derive a
+  32-byte key with HKDF-SHA256 over the master key, salt `oneon-model-audit`, info `tenant:<tenantId>` or
+  `personal:<identityId>`. The fingerprint is the HMAC-SHA256 of the text with that key, as hex.
 - Keep every old key with its version. An old fingerprint can only be checked with the key that wrote it. The running
   server does not check old versions, so verify old rows offline or in a separate tool, using the old key and its
   version from the secret manager.
 - To rotate, store the new key as a new version and bump `MODEL_AUDIT_HMAC_KEY_VERSION`. New rows use the new key. Old
-  rows keep their old `key_version`.
-- That an action's business facts come from `resolve` is now a Step C requirement for business actions (spec §7.6, AX2).
+  rows keep their old `key_version`. If you rotate the key without bumping the version, new rows claim the old version
+  and cannot be attributed to the right key.
 
 ## References
 

@@ -345,7 +345,8 @@ Under the Action Spec (ADR-011), **the model proposes a type and input; code res
   - Business facts the action depends on, such as a balance, a price, current stock or contact details, are read by `resolve`. The approval screen shows them from there.
   - The model may never have seen these facts, so it must not be their source.
   - **Step C requirement (added 2026-10-04, Gerry):** an action definition's input schema (what the model may propose) has no fields for balances, prices, totals or other business facts. Those are read by `resolve` only. A contract test per business action asserts this.
-  - **Mechanism: none in phase 1a — a review convention (§14.9).** Step C makes it structural: action input schemas have no business-fact fields, checked by a contract test per business action (above).
+  - Today the only chat-proposable definitions, `create_calendar_event` and `update_calendar_event`, take only the person's intent and identifiers.
+  - **Mechanism: none in phase 1a — a review convention (§14.9).** Step C enforces it with the requirement above.
 - **AX3. Reporting back to the model is a new disclosure.**
   - What an action tool returns to the chat (status, label, plain-language description) is tool output with a declared schema (§10.1). Rules F1–F6 check it like any other tool output.
   - The status is D1. The description names people, so it is D2. At D1, the model knows the action is awaiting approval, but not who it invites.
@@ -384,7 +385,7 @@ Oneon migration 015 adds two tables. Both are append-only and locked by triggers
 - the result of each answer check (O1–O5);
 - output_fingerprint and key_version.
 
-**Fingerprints** are HMAC-SHA256 with a key per context, derived from a master secret held outside the database (`MODEL_AUDIT_HMAC_KEY`, via HKDF with the tenant id, or `personal:` plus the identity id). A plain hash of small structured data could be reversed by guessing; a keyed one cannot, without the key. Oneon can still confirm that a given text was sent, by recomputing its HMAC. Rotating the key bumps `key_version`.
+**Fingerprints** are HMAC-SHA256 with a key per context, derived from a master secret held outside the database (`MODEL_AUDIT_HMAC_KEY`, via HKDF with the tenant id, or `personal:` plus the identity id). A plain hash of small structured data could be reversed by guessing; a keyed one cannot, without the key. Oneon can still confirm that a given text was sent, by recomputing its HMAC. Rotating the key means bumping `MODEL_AUDIT_HMAC_KEY_VERSION`; rows store it as `key_version`.
 
 **Never stored, in these tables or in logs written by the gateway and model call sites:** prompts, answers, data values, matched scanner text, or the placeholder mapping. This applies to shadow calls too. Oneon's own records, such as action events, are outside this rule (§7.6).
 
@@ -531,7 +532,7 @@ These are accepted, not solved:
 6. **Legal references are to be confirmed by counsel** (§4).
 7. **Typed names are matched on a best-effort basis.** In tenant context, names staff type are swapped for placeholders only when ImpressoRx recognises them (§7.4). Misspellings, nicknames and people not in ImpressoRx reach the provider as typed. The pharmacy admin acknowledges this when enabling Oneon (Step B).
 8. **Aggregates can be differenced.** A minimum group size of 5 stops aggregates over one person, but two overlapping aggregates (all customers in a district, then all except one segment), or an "other" bucket next to a known group, can still reveal an individual. Oneon does not track what earlier calls released, so it cannot prevent this.
-9. **"Facts come from `resolve`" is a convention.** Nothing stops an action definition from accepting a business fact, such as a balance, from the model's proposal. Review catches it until Step C decides on a mechanism (§7.6, AX2). The Step C requirement in AX2 closes this for business actions: their input schemas carry no business-fact fields, and a contract test per action asserts it.
+9. **"Facts come from `resolve`" is a convention.** Nothing stops an action definition from accepting a business fact, such as a balance, from the model's proposal. Review catches it until Step C enforces it with a contract test per business action (§7.6, AX2).
 10. **Other recipients are not governed here.** Push notifications, email delivery and future messaging channels receive data under their own rules, which this spec does not define (§1.1).
 
 ## Appendix A — ImpressoRx classification draft
