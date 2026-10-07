@@ -244,7 +244,7 @@ function deriveExecutionStatus(action: Pick<ActionLogEntry, "status" | "resultJs
   if (action.status === "approved") {
     if (action.errorJson) return "failed";
     if (action.resultJson) return "succeeded";
-    return "running";
+    return "not_started";
   }
 
   return "not_started";
