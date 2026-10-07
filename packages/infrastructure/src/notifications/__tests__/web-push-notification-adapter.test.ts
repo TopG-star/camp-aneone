@@ -201,4 +201,90 @@ describe("WebPushNotificationAdapter", () => {
       expect.objectContaining({ eventType: "urgent_item" }),
     );
   });
+
+  it("suppresses push during quiet hours using timezone preference", async () => {
+    pushSubscriptionRepo.findByUserId.mockReturnValue([
+      {
+        id: "sub-1",
+        userId: "user-A",
+        endpoint: "https://push.example.com/1",
+        keysJson: JSON.stringify({ p256dh: "k1", auth: "a1" }),
+        createdAt: "2026-05-01T00:00:00.000Z",
+      },
+    ]);
+
+    preferenceRepo.get.mockImplementation((key: string) => {
+      if (key === "user:user-A:notification.quiet_hours") {
+        return JSON.stringify({ start: "22:00", end: "07:00" });
+      }
+      if (key === "user:user-A:notification.timezone") {
+        return "America/New_York";
+      }
+      return null;
+    });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-15T02:00:00Z")); // 22:00 EDT
+
+    const adapter = new WebPushNotificationAdapter({
+      ...config,
+      pushSubscriptionRepo,
+      preferenceRepo,
+      logger,
+    });
+
+    await adapter.send({
+      eventType: "urgent_item",
+      title: "Urgent",
+      body: "Action required",
+      userId: "user-A",
+    });
+
+    expect(webpush.sendNotification).not.toHaveBeenCalled();
+    expect(logger.debug).toHaveBeenCalledWith(
+      "Web push suppressed: quiet hours active",
+      expect.objectContaining({ eventType: "urgent_item" }),
+    );
+
+    vi.useRealTimers();
+  });
+
+  it("ignores malformed quiet hours and still sends push", async () => {
+    pushSubscriptionRepo.findByUserId.mockReturnValue([
+      {
+        id: "sub-1",
+        userId: "user-A",
+        endpoint: "https://push.example.com/1",
+        keysJson: JSON.stringify({ p256dh: "k1", auth: "a1" }),
+        createdAt: "2026-05-01T00:00:00.000Z",
+      },
+    ]);
+
+    preferenceRepo.get.mockImplementation((key: string) => {
+      if (key === "user:user-A:notification.quiet_hours") {
+        return "not-valid-json";
+      }
+      return null;
+    });
+
+    const adapter = new WebPushNotificationAdapter({
+      ...config,
+      pushSubscriptionRepo,
+      preferenceRepo,
+      logger,
+    });
+
+    await adapter.send({
+      eventType: "urgent_item",
+      title: "Urgent",
+      body: "Action required",
+      userId: "user-A",
+    });
+
+    expect(webpush.sendNotification).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Invalid quiet hours preference, ignoring",
+      expect.objectContaining({ raw: "not-valid-json" }),
+    );
+  });
 });
