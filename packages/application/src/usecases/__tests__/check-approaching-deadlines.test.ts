@@ -150,6 +150,23 @@ describe("checkApproachingDeadlines", () => {
     expect(result.checked).toBe(2);
   });
 
+  it("suppresses notification for low-confidence deadlines", async () => {
+    const deadlines = [
+      makeDeadline({ id: "dl-001", confidence: 0.5 }),
+    ];
+    const deps = makeDeps({
+      deadlineRepo: createMockDeadlineRepo({
+        findByDateRange: vi.fn().mockReturnValue(deadlines),
+      }),
+    });
+
+    const result = await checkApproachingDeadlines(deps, { leadDays: 2 });
+
+    expect(deps.notificationPort.send).not.toHaveBeenCalled();
+    expect(result.checked).toBe(1);
+    expect(result.notified).toBe(0);
+  });
+
   it("skips deadlines that already have a recent notification", async () => {
     const deadlines = [makeDeadline({ id: "dl-001" })];
     const existingNotification = makeNotification({

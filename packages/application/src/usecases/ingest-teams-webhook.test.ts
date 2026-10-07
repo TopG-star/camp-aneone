@@ -100,6 +100,7 @@ describe("ingestTeamsWebhook", () => {
     expect(repo.findBySourceAndExternalId).toHaveBeenCalledWith(
       "teams",
       "teams-msg-1",
+      null,
     );
   });
 

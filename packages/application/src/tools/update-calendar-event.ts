@@ -12,6 +12,7 @@ export const updateCalendarEventSchema = z.object({
   description: z.string().nullable().optional().describe("New description"),
   attendees: z.array(z.string().email()).optional().describe("Updated attendee list"),
   location: z.string().nullable().optional().describe("New location"),
+  userId: z.string().trim().min(1).optional(),
 });
 
 export type UpdateCalendarEventInput = z.infer<typeof updateCalendarEventSchema>;
@@ -19,7 +20,8 @@ export type UpdateCalendarEventInput = z.infer<typeof updateCalendarEventSchema>
 // ── Deps ─────────────────────────────────────────────────────
 
 export interface UpdateCalendarEventDeps {
-  calendarPort: CalendarPort;
+  calendarPort?: CalendarPort;
+  resolveCalendarPort?: (userId: string) => CalendarPort | null;
 }
 
 // ── Factory ──────────────────────────────────────────────────
@@ -37,12 +39,23 @@ export function createUpdateCalendarEventTool(
       const input = validatedInput as UpdateCalendarEventInput;
       const { id, ...updates } = input;
 
+      const calendarPort = input.userId && deps.resolveCalendarPort
+        ? deps.resolveCalendarPort(input.userId)
+        : deps.calendarPort ?? null;
+
+      if (!calendarPort) {
+        return {
+          data: null,
+          summary: "Calendar integration is not configured for this user.",
+        };
+      }
+
       const filtered: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(updates)) {
         if (value !== undefined) filtered[key] = value;
       }
 
-      const updated = await deps.calendarPort.updateEvent(
+      const updated = await calendarPort.updateEvent(
         id,
         filtered as Partial<Omit<import("@oneon/domain").CalendarEvent, "id">>,
       );

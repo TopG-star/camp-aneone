@@ -15,6 +15,7 @@ export const listGitHubNotificationsSchema = z.object({
     .optional()
     .default(false)
     .describe("If true, only show notifications where the user is directly participating."),
+  userId: z.string().trim().min(1).optional(),
 });
 
 export type ListGitHubNotificationsInput = z.infer<
@@ -24,7 +25,8 @@ export type ListGitHubNotificationsInput = z.infer<
 // ── Deps ─────────────────────────────────────────────────────
 
 export interface ListGitHubNotificationsDeps {
-  githubPort: GitHubPort;
+  githubPort?: GitHubPort;
+  resolveGitHubPort?: (userId: string) => GitHubPort | null;
 }
 
 // ── Factory ──────────────────────────────────────────────────
@@ -41,7 +43,18 @@ export function createListGitHubNotificationsTool(
     async execute(validatedInput: unknown): Promise<ToolResult> {
       const input = validatedInput as ListGitHubNotificationsInput;
 
-      const notifications = await deps.githubPort.listNotifications({
+      const githubPort = input.userId && deps.resolveGitHubPort
+        ? deps.resolveGitHubPort(input.userId)
+        : deps.githubPort ?? null;
+
+      if (!githubPort) {
+        return {
+          data: [],
+          summary: "GitHub integration is not configured for this user.",
+        };
+      }
+
+      const notifications = await githubPort.listNotifications({
         all: input.all,
         participating: input.participating,
       });

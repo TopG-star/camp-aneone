@@ -39,6 +39,11 @@ export function useActions(query?: string, config?: SWRConfiguration) {
   });
 }
 
+/** Action detail for deep-link fallback */
+export function useAction(id: string | null, config?: SWRConfiguration) {
+  return useSWR(id ? `/api/actions/${id}` : null, fetcher, config);
+}
+
 /** Notifications — refresh every 15s */
 export function useNotifications(config?: SWRConfiguration) {
   return useSWR("/api/notifications", fetcher, {
@@ -51,6 +56,28 @@ export function useNotifications(config?: SWRConfiguration) {
 export function useCycleStatus(config?: SWRConfiguration) {
   return useSWR("/api/cycle/status", fetcher, {
     refreshInterval: 5_000,
+    ...config,
+  });
+}
+
+/** Cycle errors drill-down — refresh every 10s */
+export function useCycleErrors(
+  options?: {
+    limit?: number;
+    component?: string | null;
+    stage?: string | null;
+    scope?: "global" | "action" | null;
+  },
+  config?: SWRConfiguration,
+) {
+  const params = new URLSearchParams();
+  params.set("limit", String(options?.limit ?? 25));
+  if (options?.component) params.set("component", options.component);
+  if (options?.stage) params.set("stage", options.stage);
+  if (options?.scope) params.set("scope", options.scope);
+
+  return useSWR(`/api/cycle/errors?${params.toString()}`, fetcher, {
+    refreshInterval: 10_000,
     ...config,
   });
 }
@@ -96,6 +123,17 @@ export function useFinanceTransactions(query?: string, config?: SWRConfiguration
   const path = query
     ? `/api/finance/statements/transactions?${query}`
     : "/api/finance/statements/transactions";
+  return useSWR(path, fetcher, {
+    refreshInterval: 30_000,
+    ...config,
+  });
+}
+
+/** Finance insights — refresh every 30s */
+export function useFinanceInsights(query?: string, config?: SWRConfiguration) {
+  const path = query
+    ? `/api/finance/statements/insights?${query}`
+    : "/api/finance/statements/insights";
   return useSWR(path, fetcher, {
     refreshInterval: 30_000,
     ...config,

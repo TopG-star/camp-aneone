@@ -10,6 +10,58 @@ export class ApiError extends Error {
   }
 }
 
+function shouldAttemptJson(contentType: string | null): boolean {
+  return contentType?.toLowerCase().includes("application/json") ?? false;
+}
+
+async function readErrorMessage(res: Response): Promise<string> {
+  const contentType = res.headers.get("content-type");
+
+  if (shouldAttemptJson(contentType)) {
+    const body = await res.json().catch(() => ({}));
+    if (typeof body.error === "string" && body.error.trim().length > 0) {
+      return body.error;
+    }
+  }
+
+  const text = await res.text().catch(() => "");
+  const trimmed = text.trim();
+  if (trimmed.length > 0) {
+    return trimmed;
+  }
+
+  return res.statusText || "Request failed";
+}
+
+async function parseSuccessBody<T>(res: Response): Promise<T> {
+  if (res.status === 204) {
+    return null as T;
+  }
+
+  const contentType = res.headers.get("content-type");
+  if (shouldAttemptJson(contentType)) {
+    return res.json() as Promise<T>;
+  }
+
+  const text = await res.text();
+  return text as T;
+}
+
+function maybeRedirectToSignIn(status: number): void {
+  if (status !== 401 && status !== 403) {
+    return;
+  }
+  if (typeof window === "undefined") {
+    return;
+  }
+  if (window.location.pathname.startsWith("/auth/")) {
+    return;
+  }
+
+  const callbackUrl = `${window.location.pathname}${window.location.search}`;
+  window.location.assign(`/auth/signin?callbackUrl=${encodeURIComponent(callbackUrl)}`);
+}
+
 /**
  * Fetch wrapper for dashboard → agent-server API calls.
  *
@@ -30,9 +82,10 @@ export async function apiFetch<T>(
   const res = await fetch(url, { ...init, headers, credentials: "include" });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new ApiError(res.status, body.error ?? res.statusText);
+    maybeRedirectToSignIn(res.status);
+    const message = await readErrorMessage(res);
+    throw new ApiError(res.status, message);
   }
 
-  return res.json() as Promise<T>;
+  return parseSuccessBody<T>(res);
 }

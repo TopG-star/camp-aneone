@@ -127,7 +127,8 @@ describe("ingestOutlookWebhook", () => {
 
     expect(repo.findBySourceAndExternalId).toHaveBeenCalledWith(
       "outlook",
-      "AAMkAGI123"
+      "AAMkAGI123",
+      null
     );
   });
 

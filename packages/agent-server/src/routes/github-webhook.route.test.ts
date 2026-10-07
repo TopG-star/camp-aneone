@@ -253,6 +253,23 @@ describe("POST /api/webhooks/github", () => {
   // ── Pull Request Events ─────────────────────────────────
 
   describe("pull_request events", () => {
+    it("returns 409 when resolveUserId cannot determine ownership", async () => {
+      const scopedApp = buildApp({
+        inboundItemRepo: repo,
+        webhookSecret: WEBHOOK_SECRET,
+        logger,
+        resolveUserId: () => null,
+      });
+
+      const res = await sendSigned(scopedApp, VALID_PR_PAYLOAD, {
+        eventType: "pull_request",
+      });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe("Unable to resolve webhook user ownership");
+      expect(repo.upsert).not.toHaveBeenCalled();
+    });
+
     it("returns 200 and creates item for valid opened PR", async () => {
       const res = await sendSigned(app, VALID_PR_PAYLOAD, {
         eventType: "pull_request",
@@ -277,6 +294,25 @@ describe("POST /api/webhooks/github", () => {
           from: "octocat",
           subject: "[octocat/hello-world] PR #42: Fix README typo",
         }),
+      );
+    });
+
+    it("propagates resolveUserId to PR existence lookup", async () => {
+      const scopedApp = buildApp({
+        inboundItemRepo: repo,
+        webhookSecret: WEBHOOK_SECRET,
+        logger,
+        resolveUserId: () => "user-A",
+      });
+
+      await sendSigned(scopedApp, VALID_PR_PAYLOAD, {
+        eventType: "pull_request",
+      });
+
+      expect(repo.findBySourceAndExternalId).toHaveBeenCalledWith(
+        "github",
+        "pr:octocat/hello-world#42",
+        "user-A",
       );
     });
 
