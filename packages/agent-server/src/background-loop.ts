@@ -236,7 +236,7 @@ export class BackgroundLoop {
           if (summary.actionErrors > 0) {
             this.pushError({
               component: "actions",
-              stage: "execute",
+              stage: "action",
               userId,
               message: `${summary.actionErrors} action execution/proposal failure(s) in cycle`,
             });
