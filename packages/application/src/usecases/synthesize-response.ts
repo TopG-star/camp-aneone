@@ -1,6 +1,7 @@
 import type { ConversationMessage, Logger } from "@oneon/domain";
 import type { ToolRegistry } from "../tools/tool-registry.js";
 import type { ModelTurn } from "../ai-boundary/gateway.js";
+import type { DenyReason, SecretLocation } from "../ai-boundary/decide.js";
 import {
   buildChatReplyRequest,
   type ChatPersonaProfile,
@@ -33,7 +34,7 @@ export interface SynthesizeResponseInput {
 
 export type SynthesizeResponseResult =
   | { kind: "answered"; response: SynthesisResponse; dataWithheld: boolean }
-  | { kind: "unavailable"; reason: string; dataWithheld: boolean };
+  | { kind: "unavailable"; reason: string; dataWithheld: boolean; deniedReason?: DenyReason; secretIn?: SecretLocation };
 
 // ── synthesizeResponse ───────────────────────────────────────
 
@@ -50,5 +51,10 @@ export async function synthesizeResponse(
     return { kind: "answered", response: result.json as SynthesisResponse, dataWithheld };
   }
   deps.logger.warn("Chat reply unavailable", { kind: result.kind });
-  return { kind: "unavailable", reason: result.kind, dataWithheld: dataWithheld || deniedForData };
+  return {
+    kind: "unavailable",
+    reason: result.kind,
+    dataWithheld: dataWithheld || deniedForData,
+    ...(result.kind === "denied" ? { deniedReason: result.reason, ...(result.secretIn ? { secretIn: result.secretIn } : {}) } : {}),
+  };
 }

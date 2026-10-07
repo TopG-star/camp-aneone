@@ -144,7 +144,9 @@ export async function sendChatMessage(
             registry: deps.toolRegistry!,
           },
         );
-        const note = synthesis.dataWithheld ? `\n\n${DATA_WITHHELD_NOTE}` : "";
+        // A key in the tool data is not a settings matter: say what happened instead of pointing at the settings.
+        const keyInData = synthesis.kind === "unavailable" && synthesis.deniedReason === "secret_present" && synthesis.secretIn === "data";
+        const note = keyInData ? `\n\n${SECRET_IN_DATA_TEXT}` : synthesis.dataWithheld ? `\n\n${DATA_WITHHELD_NOTE}` : "";
         response = (synthesis.kind === "answered" ? synthesis.response.answer : summaryFallback()) + note;
       } catch (error) {
         // Never log the error text: it may carry prompt or tool data.

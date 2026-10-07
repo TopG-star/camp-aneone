@@ -295,7 +295,13 @@ describe("decide — C4 by location (changed 2026-10-04, Gerry)", () => {
   it("case 4: a scanner D4 hit in a record free-text field denies with secretIn data", () => {
     expect(decide(input({ request: { parts: [emailRecord({ bodyPreview: `key ${KEY}` })] } }))).toMatchObject({ kind: "deny", reason: "secret_present", secretIn: "data" });
   });
+  it("a key in both the user message and a record's free text denies as message", () => {
+    const d = decide(input({ request: { purpose: "chat_reply", parts: [userMessage(KEY), emailRecord({ bodyPreview: KEY })] } }));
+    expect(d).toMatchObject({ kind: "deny", secretIn: "message" });
+  });
   it("other denials carry no secretIn", () => {
-    expect(decide(input({ choiceLimit: "D1" }))).not.toHaveProperty("secretIn");
+    const d = decide(input({ choiceLimit: "D1" }));
+    expect(d).toMatchObject({ kind: "deny", reason: "required_part_withheld" });
+    expect(d).not.toHaveProperty("secretIn");
   });
 });

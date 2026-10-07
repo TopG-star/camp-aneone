@@ -146,13 +146,18 @@ describe("synthesizeResponse", () => {
   it("is unavailable and flags withheld data when the gateway denies the reply", async () => {
     const logger = createMockLogger();
     const result = await synthesizeResponse({ modelTurn: turnFor(denied("required_part_withheld")), logger }, baseInput);
-    expect(result).toEqual({ kind: "unavailable", reason: "denied", dataWithheld: true });
+    expect(result).toEqual({ kind: "unavailable", reason: "denied", dataWithheld: true, deniedReason: "required_part_withheld" });
     expect(logger.warn).toHaveBeenCalledWith("Chat reply unavailable", { kind: "denied" });
   });
 
   it("flags withheld data for a secret-triggered denial", async () => {
     const result = await synthesizeResponse({ modelTurn: turnFor(denied("secret_present")), logger: createMockLogger() }, baseInput);
-    expect(result).toMatchObject({ kind: "unavailable", dataWithheld: true });
+    expect(result).toMatchObject({ kind: "unavailable", dataWithheld: true, deniedReason: "secret_present" });
+  });
+
+  it("returns where the secret was for a secret-triggered denial", async () => {
+    const result = await synthesizeResponse({ modelTurn: turnFor(denied("secret_present", "data")), logger: createMockLogger() }, baseInput);
+    expect(result).toMatchObject({ kind: "unavailable", deniedReason: "secret_present", secretIn: "data" });
   });
 
   it.each(["provider_unavailable", "unknown_purpose", "invalid_context"] as const)("does not flag withheld data when the denial is %s", async (reason) => {

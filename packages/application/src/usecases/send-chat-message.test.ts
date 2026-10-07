@@ -695,6 +695,73 @@ ${call.user}`).not.toContain("sk-ant");
     expect(audit.decisions[1].withheld).toContainEqual({ part: "history", turn: 0, reason: "secret_present" });
   });
 
+  function realGateway(provider: FakeProvider) {
+    const audit = new InMemoryModelAudit();
+    const gateway = createModelGateway({
+      providers: { deepseek: provider },
+      overrides: new Map(),
+      routing: { standard: "deepseek", reasoning: "deepseek" },
+      models: { deepseek: { standard: "s", reasoning: "r" } },
+      choices: new InMemoryChoices(),
+      audit,
+      fingerprinter: new Fingerprinter("k".repeat(32), 1),
+      maxRetries: 0,
+      timeouts: { standard: 1000, reasoning: 1000 },
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    return { gateway, audit };
+  }
+
+  it("says a key in tool data stopped the reply, instead of blaming the AI data settings", async () => {
+    const KEY = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123";
+    const provider = new FakeProvider("deepseek", [JSON.stringify([{ tool: "list_notes", parameters: {} }])]);
+    const { gateway, audit } = realGateway(provider);
+    const registry = createToolRegistry();
+    registry.register({
+      name: "list_notes",
+      version: "1",
+      description: "list_notes",
+      inputSchema: z.object({}).passthrough(),
+      output: { fields: { note: { class: "D2", freeText: true } }, summaryClass: "D2" },
+      execute: () => ({ data: { note: `token ${KEY}` }, summary: "1 note" }),
+    });
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: registry },
+      { message: "show my notes", now: NOW, userId: "u1" }
+    );
+    expect(result.response).toBe(`1 note
+
+${SECRET_IN_DATA_TEXT}`);
+    expect(result.response).not.toContain(DATA_WITHHELD_NOTE);
+    expect(audit.decisions.some((d) => d.denyReason === "secret_present")).toBe(true);
+    for (const call of provider.calls) expect(`${call.system}
+${call.user}`).not.toContain("sk-ant");
+  });
+
+  it("never sends a fragment of a key that straddles the history cap", async () => {
+    const KEY = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123";
+    const provider = new FakeProvider("deepseek", [
+      JSON.stringify([{ tool: "list_deadlines", parameters: {} }]),
+      JSON.stringify([{ tool: "none", parameters: {} }]),
+      JSON.stringify({ answer: "Here you go", usedTools: ["list_deadlines"] }),
+    ]);
+    const { gateway, audit } = realGateway(provider);
+    const seeded: ConversationMessage[] = [
+      { id: "h1", userId: "u1", conversationId: "user:u1", role: "user", content: "x".repeat(1980) + " " + KEY + " tail", toolCalls: null, createdAt: "2026-04-16T08:00:00Z" },
+    ];
+    conversationRepo = createMockConversationRepo({ findRecentByConversation: vi.fn().mockReturnValue(seeded) });
+    const action = { id: "a1", actionType: "list_deadlines", label: "List", status: "done" };
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: registryWithTool("list_deadlines", { data: { action }, summary: "ok" }) },
+      { message: "anything new?", now: NOW, userId: "u1" }
+    );
+    expect(result.response.startsWith("Here you go")).toBe(true);
+    expect(provider.calls).toHaveLength(3);
+    for (const call of provider.calls) expect(`${call.system}
+${call.user}`).not.toMatch(/sk-ant|api03/);
+    expect(audit.decisions[0].withheld).toContainEqual({ part: "history", turn: 0, reason: "secret_present" });
+  });
+
   it("says the AI is unavailable when the provider is", async () => {
     const gateway = stubGateway({ respond: () => denied("provider_unavailable") });
     const result = await sendChatMessage(

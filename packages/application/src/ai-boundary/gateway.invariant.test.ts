@@ -121,7 +121,11 @@ describe("gateway invariant (spec §12)", () => {
             expect(sent).not.toContain(userSecret);
             if (!mustDeny) {
               // History turns follow the same limit: user text is D1, assistant text is D2.
-              if (historyTurnWithheld) expect(sent).not.toContain(userTurn);
+              if (historyTurnWithheld) {
+                expect(sent).not.toContain(userTurn);
+                expect(audit.decisions[0].withheld.some((w) => w.reason === "secret_present")).toBe(true);
+                expect(audit.decisions[0].scannerHits.D4).toBeGreaterThanOrEqual(1);
+              }
               else expect(sent).toContain(userTurn);
               if (limit === "D2") expect(sent).toContain(assistantTurn);
               else expect(sent).not.toContain(assistantTurn);
