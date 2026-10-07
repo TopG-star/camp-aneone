@@ -59,6 +59,12 @@ export function createTeamsWebhookRouter(deps: TeamsWebhookDeps): Router {
 
     const payload = parseResult.data;
 
+    if (resolveUserId && resolveUserId() === null) {
+      logger.warn("Teams webhook: unable to resolve user ownership");
+      res.status(409).json({ error: "Unable to resolve webhook user ownership" });
+      return;
+    }
+
     // ── 3. Delegate to Use Case ───────────────────────────
     try {
       const { item, wasCreated } = ingestTeamsWebhook(

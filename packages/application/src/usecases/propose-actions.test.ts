@@ -169,6 +169,21 @@ describe("deriveActions", () => {
     expect(reminders).toHaveLength(3);
   });
 
+  it("skips create_reminder for deadlines below confidence threshold", () => {
+    const cls = makeFakeClassification();
+    const item = makeFakeItem();
+    const deadlines = [
+      makeFakeDeadline({ id: "dl-high", confidence: 0.9 }),
+      makeFakeDeadline({ id: "dl-low", confidence: 0.4 }),
+    ];
+
+    const actions = deriveActions(cls, item, deadlines);
+    const reminders = actions.filter((a) => a.actionType === "create_reminder");
+
+    expect(reminders).toHaveLength(1);
+    expect(reminders[0].resourceId).toBe("dl-high");
+  });
+
   it("uses deadline.id as resourceId for reminders", () => {
     const cls = makeFakeClassification();
     const item = makeFakeItem({ id: "item-001" });

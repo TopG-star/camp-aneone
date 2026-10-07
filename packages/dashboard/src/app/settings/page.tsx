@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useSession } from "next-auth/react";
 import {
   useStatus,
   useNotificationPreferences,
@@ -60,9 +59,7 @@ const integrationIcons: Record<string, typeof Mail> = {
 };
 
 export default function SettingsPage() {
-  const { data: session } = useSession();
   const { mode: themeMode, resolvedMode, setMode: setThemeMode } = useThemeMode();
-  const userId = session?.user?.email ?? "";
   const { data: statusData, isLoading: statusLoading, mutate: mutateStatus } = useStatus();
   const { data: prefsData } = useNotificationPreferences();
   const {
@@ -114,7 +111,7 @@ export default function SettingsPage() {
     setBusy("google");
     setError(null);
     try {
-      const data = await apiFetch<{ url: string }>(`/api/oauth/start/google?userId=${userId}&returnTo=/settings`);
+      const data = await apiFetch<{ url: string }>("/api/oauth/start/google?returnTo=/settings");
       window.location.href = data.url;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start Google OAuth");
@@ -128,7 +125,6 @@ export default function SettingsPage() {
     try {
       await apiFetch("/api/oauth/disconnect/google", {
         method: "POST",
-        body: JSON.stringify({ userId }),
       });
       setSuccess("Google disconnected");
       await mutateStatus();
@@ -146,7 +142,7 @@ export default function SettingsPage() {
     try {
       const data = await apiFetch<{ connected: boolean; login: string; email: string | null }>("/api/integrations/github/connect", {
         method: "POST",
-        body: JSON.stringify({ token: githubPat.trim(), userId }),
+        body: JSON.stringify({ token: githubPat.trim() }),
       });
       setSuccess(`GitHub connected as ${data.login}`);
       setGithubPat("");
@@ -164,7 +160,6 @@ export default function SettingsPage() {
     try {
       await apiFetch("/api/integrations/github/disconnect", {
         method: "POST",
-        body: JSON.stringify({ userId }),
       });
       setSuccess("GitHub disconnected");
       await mutateStatus();
