@@ -32,7 +32,7 @@ export const CycleErrorItemSchema = z.object({
   userId: z.string().nullable(),
   message: z.string(),
   actionId: z.string().nullable(),
-  actionHref: z.string().nullable(),
+  actionHref: z.string().nullish().default(null),
 });
 
 export const CycleErrorsResponseSchema = z.object({
