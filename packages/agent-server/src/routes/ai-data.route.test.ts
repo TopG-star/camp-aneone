@@ -13,7 +13,7 @@ let choices: SqliteAiDataChoiceRepository;
 let gateway: ModelGateway;
 let dbRef: Database.Database;
 
-function mount(overrides: Map<ProviderId, ProviderOverride>, db: Database.Database) {
+function mount(overrides: Map<ProviderId, ProviderOverride>, db: Database.Database, routingWarnings: Array<{ role: "standard" | "reasoning" | "shadow"; provider: ProviderId }> = []) {
   const audit = new SqliteModelAuditRepository(db);
   const provider: ModelProvider = { id: "deepseek", complete: async () => ({ text: "{}" }) };
   const routing = { standard: "deepseek" as const, reasoning: "deepseek" as const };
@@ -24,7 +24,7 @@ function mount(overrides: Map<ProviderId, ProviderOverride>, db: Database.Databa
   const a = express();
   a.use(express.json());
   a.use((req, _res, next) => { (req as { userId?: string }).userId = req.header("x-test-user") ?? undefined; next(); });
-  a.use("/api/ai-data", createAiDataRouter({ gateway, routing, overrides, configuredProviders: ["deepseek"], choices, audit, logger }));
+  a.use("/api/ai-data", createAiDataRouter({ gateway, routing, overrides, configuredProviders: ["deepseek"], routingWarnings, choices, audit, logger }));
   return a;
 }
 
@@ -105,5 +105,15 @@ describe("AI data API", () => {
       active: false,
       reason: "Email classification is paused: the platform currently limits what can be sent to DeepSeek.",
     });
+  });
+
+  it("passes the routing warnings through", async () => {
+    const warnings = [{ role: "reasoning" as const, provider: "anthropic" as const }];
+    const warned = mount(new Map(), dbRef, warnings);
+    const res = await request(warned).get("/api/ai-data").set("x-test-user", "user-A").expect(200);
+    expect(AiDataViewSchema.safeParse(res.body).success).toBe(true);
+    expect(res.body.routingWarnings).toEqual(warnings);
+    const none = await request(app).get("/api/ai-data").set("x-test-user", "user-A").expect(200);
+    expect(none.body.routingWarnings).toEqual([]);
   });
 });

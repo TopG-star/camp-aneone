@@ -17,6 +17,10 @@ export function callLabel(call: { decision: "allow" | "deny"; outcome: "answered
   return "Sent";
 }
 
+export function routingWarningText(warning: { role: string; provider: string }, label: string): string {
+  return `${label} is set as the ${warning.role} AI provider but has no API key, so its requests are refused.`;
+}
+
 export function pendingDecisionText(decision: { decidedOn: string }, label: string): string {
   const date = new Date(`${decision.decidedOn}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
   return `On ${date} you approved ${label} receiving your personal email content until this setting existed. Check ${label}'s current terms, then confirm or keep the basic level.`;

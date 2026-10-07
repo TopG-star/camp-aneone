@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { callLabel, classLabel, pendingDecisionText, purposeLabel } from "./ai-data-ui";
+import { callLabel, classLabel, pendingDecisionText, purposeLabel, routingWarningText } from "./ai-data-ui";
 
 describe("AI data UI helpers", () => {
   it("labels classes and purposes in plain words", () => {
@@ -16,6 +16,11 @@ describe("AI data UI helpers", () => {
   it("words the pending decision with its date and provider", () => {
     expect(pendingDecisionText({ decidedOn: "2026-10-03" }, "DeepSeek")).toBe(
       "On 3 Oct 2026 you approved DeepSeek receiving your personal email content until this setting existed. Check DeepSeek's current terms, then confirm or keep the basic level.",
+    );
+  });
+  it("words a routed provider without a key", () => {
+    expect(routingWarningText({ role: "reasoning", provider: "anthropic" }, "Anthropic")).toBe(
+      "Anthropic is set as the reasoning AI provider but has no API key, so its requests are refused.",
     );
   });
 });

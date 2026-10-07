@@ -19,6 +19,7 @@ export interface AiDataRouteDeps {
   routing: ModelRouting | null;
   overrides: Map<ProviderId, ProviderOverride>;
   configuredProviders: ProviderId[];
+  routingWarnings: Array<{ role: "standard" | "reasoning" | "shadow"; provider: ProviderId }>;
   choices: AiDataChoiceRepository;
   audit: ModelAuditRepository;
   clock?: () => Date;
@@ -75,7 +76,7 @@ export function createAiDataRouter(deps: AiDataRouteDeps): Router {
       alert: decision.alert,
       outcome: outcome?.status ?? null,
     }));
-    return { providers, pendingDecision: pending, emailClassification: { active, reason }, recent };
+    return { providers, pendingDecision: pending, emailClassification: { active, reason }, routingWarnings: deps.routingWarnings, recent };
   };
 
   router.get("/", (req, res) => {

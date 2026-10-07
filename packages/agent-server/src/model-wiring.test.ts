@@ -40,6 +40,30 @@ describe("createModelWiring", () => {
     expect(wiring.configuredProviders).toEqual(["deepseek"]);
   });
 
+  it("warns that the standard provider has no key when there is no gateway", () => {
+    baseEnv();
+    vi.stubEnv("LLM_PROVIDER", "anthropic");
+    const wiring = createModelWiring(loadEnv(), { db: db(), logger });
+    expect(wiring.gateway).toBeNull();
+    expect(wiring.routingWarnings).toEqual([{ role: "standard", provider: "anthropic" }]);
+  });
+
+  it("warns about a routed reasoning or shadow provider without a key", () => {
+    deepseekOnly();
+    vi.stubEnv("LLM_REASONING_PROVIDER_PREMIUM", "anthropic");
+    vi.stubEnv("LLM_SHADOW_PROVIDER", "anthropic");
+    const wiring = createModelWiring(loadEnv(), { db: db(), logger });
+    expect(wiring.routingWarnings).toEqual([
+      { role: "reasoning", provider: "anthropic" },
+      { role: "shadow", provider: "anthropic" },
+    ]);
+  });
+
+  it("has no warnings when every routed provider has a key", () => {
+    deepseekOnly();
+    expect(createModelWiring(loadEnv(), { db: db(), logger }).routingWarnings).toEqual([]);
+  });
+
   it("builds the gateway's authored vocabulary from the real tool registry", () => {
     deepseekOnly();
     const wiring = createModelWiring(loadEnv(), { db: db(), logger });

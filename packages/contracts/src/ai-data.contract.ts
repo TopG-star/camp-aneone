@@ -32,6 +32,7 @@ export const AiDataViewSchema = z.object({
   providers: z.array(AiDataProviderViewSchema),
   pendingDecision: z.object({ provider: ProviderIdSchema, maxClass: z.literal("D2"), decidedOn: z.string(), note: z.string() }).nullable(),
   emailClassification: z.object({ active: z.boolean(), reason: z.string().nullable() }),
+  routingWarnings: z.array(z.object({ role: z.enum(["standard", "reasoning", "shadow"]), provider: ProviderIdSchema })),
   recent: z.array(AiDataCallViewSchema),
 });
 export type AiDataView = z.infer<typeof AiDataViewSchema>;

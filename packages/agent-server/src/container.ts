@@ -105,6 +105,8 @@ export interface AppContainer {
   modelAudit: ModelAuditRepository;
   modelOverrides: Map<ProviderId, ProviderOverride>;
   modelProviders: ProviderId[];
+  /** Routed providers with no API key, for Settings → AI data and /api/status. */
+  modelRoutingWarnings: Array<{ role: "standard" | "reasoning" | "shadow"; provider: ProviderId }>;
   calendarPort: CalendarPort | null;
   githubPort: GitHubPort | null;
   teamsPort: TeamsPort | null;
@@ -444,6 +446,7 @@ export function createContainer(env: Env): AppContainer {
     modelAudit: modelWiring.audit,
     modelOverrides: modelWiring.overrides,
     modelProviders: modelWiring.configuredProviders,
+    modelRoutingWarnings: modelWiring.routingWarnings,
     calendarPort,
     githubPort,
     teamsPort,

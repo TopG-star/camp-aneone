@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
 import { useAiData } from "@/lib/hooks";
-import { callLabel, classLabel, pendingDecisionText, purposeLabel } from "@/lib/ai-data-ui";
+import { callLabel, classLabel, pendingDecisionText, purposeLabel, routingWarningText } from "@/lib/ai-data-ui";
 
 export function AiDataSettings() {
   const { data, error, mutate } = useAiData();
@@ -62,6 +62,12 @@ export function AiDataSettings() {
                 </div>
               </div>
             )}
+
+            {view.routingWarnings.map((w) => (
+              <div key={w.role} className="rounded-eight border border-amber-500/35 bg-amber-500/10 p-3 text-sm text-amber-900 dark:border-amber-400/40 dark:bg-amber-500/15 dark:text-amber-100">
+                <p>{routingWarningText(w, view.providers.find((p) => p.id === w.provider)?.label ?? w.provider)}</p>
+              </div>
+            ))}
 
             <div className="space-y-2">
               {view.providers.filter((p) => p.configured).map((p) => (

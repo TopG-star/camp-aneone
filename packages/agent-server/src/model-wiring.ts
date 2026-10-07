@@ -35,19 +35,20 @@ export function createModelWiring(env: Env, deps: { db: Database.Database; logge
 
   const overrides = parseProviderOverrides(env.MODEL_PROVIDER_OVERRIDES); // throws: the server refuses to start (spec §6.7)
   const standard = env.LLM_PROVIDER as ProviderId;
+  const routingWarnings: Array<{ role: "standard" | "reasoning" | "shadow"; provider: ProviderId }> = [];
   if (!providers[standard]) {
+    routingWarnings.push({ role: "standard", provider: standard });
     deps.logger.warn("Model gateway: disabled (no key for LLM_PROVIDER)", { provider: standard });
-    return { gateway: null as ModelGateway | null, routing: null as ModelRouting | null, choices, audit, configuredProviders, overrides, setToolVocabulary, toolVocabulary: currentToolVocabulary };
+    return { gateway: null as ModelGateway | null, routing: null as ModelRouting | null, choices, audit, configuredProviders, routingWarnings, overrides, setToolVocabulary, toolVocabulary: currentToolVocabulary };
   }
   const routing: ModelRouting = {
     standard,
     reasoning: env.LLM_REASONING_PROVIDER_PREMIUM !== "none" ? (env.LLM_REASONING_PROVIDER_PREMIUM as ProviderId) : standard,
     ...(env.LLM_SHADOW_PROVIDER !== "none" ? { shadow: env.LLM_SHADOW_PROVIDER as ProviderId } : {}),
   };
-  const missing: Array<{ role: "reasoning" | "shadow"; provider: ProviderId }> = [];
-  if (!providers[routing.reasoning]) missing.push({ role: "reasoning", provider: routing.reasoning });
-  if (routing.shadow && !providers[routing.shadow]) missing.push({ role: "shadow", provider: routing.shadow });
-  for (const m of missing) deps.logger.warn("Model gateway: routed provider has no key; its calls will be denied", m);
+  if (!providers[routing.reasoning]) routingWarnings.push({ role: "reasoning", provider: routing.reasoning });
+  if (routing.shadow && !providers[routing.shadow]) routingWarnings.push({ role: "shadow", provider: routing.shadow });
+  for (const m of routingWarnings) deps.logger.warn("Model gateway: routed provider has no key; its calls will be denied", m);
 
   const deepseekModels =
     env.DEEPSEEK_API_KEY && env.DEEPSEEK_CLASSIFIER_MODEL && env.DEEPSEEK_SYNTHESIS_MODEL
@@ -69,6 +70,6 @@ export function createModelWiring(env: Env, deps: { db: Database.Database; logge
     logger: deps.logger,
     authoredVocabulary: currentToolVocabulary,
   });
-  deps.logger.info(missing.length ? "Model gateway: active (degraded routing)" : "Model gateway: ✓ active", { routing, overrides: Object.fromEntries(overrides) });
-  return { gateway, routing, choices, audit, configuredProviders, overrides, setToolVocabulary, toolVocabulary: currentToolVocabulary };
+  deps.logger.info(routingWarnings.length ? "Model gateway: active (degraded routing)" : "Model gateway: ✓ active", { routing, overrides: Object.fromEntries(overrides) });
+  return { gateway, routing, choices, audit, configuredProviders, routingWarnings, overrides, setToolVocabulary, toolVocabulary: currentToolVocabulary };
 }

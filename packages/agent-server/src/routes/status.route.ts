@@ -25,6 +25,7 @@ export function createStatusRouter(deps: StatusRouteDeps): Router {
         source?: "db" | "env" | "none";
         connectedAs?: string | null;
         detail?: string;
+        routingWarnings?: number;
       }> = [];
 
       // Gmail / Outlook (inbound mail)
@@ -89,6 +90,7 @@ export function createStatusRouter(deps: StatusRouteDeps): Router {
         name: "llm",
         connected: llmConnected,
         detail: llmConnected ? "model gateway" : "not configured",
+        routingWarnings: container.modelRoutingWarnings?.length ?? 0,
       });
 
       // Notifications

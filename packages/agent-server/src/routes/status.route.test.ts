@@ -170,6 +170,24 @@ describe("GET /api/status", () => {
     expect(llm.detail).toBe("model gateway");
   });
 
+  it("includes the routing warning count in the llm detail", async () => {
+    container = {
+      env: {},
+      modelGateway: {},
+      modelRoutingWarnings: [{ role: "reasoning", provider: "anthropic" }, { role: "shadow", provider: "anthropic" }],
+      calendarPort: null,
+      oauthTokenRepo: null,
+      userRepo: null,
+    } as unknown as AppContainer;
+    app = express();
+    app.use((req, _res, next) => { req.userId = "user-A"; next(); });
+    app.use("/api/status", createStatusRouter({ container, logger }));
+
+    const res = await request(app).get("/api/status");
+    const llm = res.body.integrations.find((i: any) => i.name === "llm");
+    expect(llm.routingWarnings).toBe(2);
+  });
+
   it("shows llm connected=false when the gateway is not wired", async () => {
     container = {
       env: {},

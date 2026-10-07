@@ -485,6 +485,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       routing: container.modelRouting,
       overrides: container.modelOverrides,
       configuredProviders: container.modelProviders,
+      routingWarnings: container.modelRoutingWarnings,
       choices: container.aiDataChoices,
       audit: container.modelAudit,
       logger: new StructuredLogger("ai-data", env.LOG_LEVEL),
