@@ -345,7 +345,7 @@ Under the Action Spec (ADR-011), **the model proposes a type and input; code res
   - Business facts the action depends on, such as a balance, a price, current stock or contact details, are read by `resolve`. The approval screen shows them from there.
   - The model may never have seen these facts, so it must not be their source.
   - **Step C requirement (added 2026-10-04, Gerry):** an action definition's input schema (what the model may propose) has no fields for balances, prices, totals or other business facts. Those are read by `resolve` only. A contract test per business action asserts this.
-  - **Mechanism: none yet.** This is a convention for writing action definitions, checked in review (§14.9). Today, the only definitions chat can propose, `create_calendar_event` and `update_calendar_event`, take only the person's intent and identifiers. Step C adds the first business action. It decides whether each input field declares where its value comes from.
+  - **Mechanism: none in phase 1a — a review convention (§14.9).** Step C makes it structural: action input schemas have no business-fact fields, checked by a contract test per business action (above).
 - **AX3. Reporting back to the model is a new disclosure.**
   - What an action tool returns to the chat (status, label, plain-language description) is tool output with a declared schema (§10.1). Rules F1–F6 check it like any other tool output.
   - The status is D1. The description names people, so it is D2. At D1, the model knows the action is awaiting approval, but not who it invites.
