@@ -4,7 +4,11 @@ import type {
   BankStatementRepository,
 } from "@oneon/domain";
 import type { ToolDefinition, ToolResult } from "./tool-registry.js";
-import { formatUsdMinor, resolveFinanceUserId } from "./finance-tool-helpers.js";
+import {
+  formatUsdMinor,
+  inferSpendCategory,
+  resolveFinanceUserId,
+} from "./finance-tool-helpers.js";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -74,7 +78,7 @@ export function createSummarizeFinanceSpendTool(
       const byCategory = new Map<string, SpendCategoryRow>();
 
       for (const tx of outgoing) {
-        const category = inferCategory(tx.description);
+        const category = inferSpendCategory(tx.description);
         const current = byCategory.get(category) ?? {
           category,
           amountMinor: 0,
@@ -102,42 +106,4 @@ export function createSummarizeFinanceSpendTool(
       };
     },
   };
-}
-
-function inferCategory(description: string): string {
-  const value = description.toUpperCase();
-
-  if (hasAny(value, ["GROCERY", "WHOLEFOOD", "SUPERMARKET", "TRADER JOE", "WALMART"])) {
-    return "groceries";
-  }
-
-  if (hasAny(value, ["UBER", "LYFT", "FUEL", "SHELL", "CHEVRON", "EXXON", "TRANSIT", "METRO"])) {
-    return "transport";
-  }
-
-  if (hasAny(value, ["COFFEE", "CAFE", "STARBUCKS", "RESTAURANT", "DINER", "DOORDASH", "UBER EATS"])) {
-    return "dining";
-  }
-
-  if (hasAny(value, ["ELECTRIC", "WATER", "INTERNET", "PHONE", "MOBILE", "UTILITY", "VERIZON", "COMCAST"])) {
-    return "utilities";
-  }
-
-  if (hasAny(value, ["RENT", "MORTGAGE", "LANDLORD", "PROPERTY"])) {
-    return "housing";
-  }
-
-  if (hasAny(value, ["PHARMACY", "HOSPITAL", "CLINIC", "MEDICAL", "DENTAL"])) {
-    return "health";
-  }
-
-  if (hasAny(value, ["AMAZON", "TARGET", "STORE", "SHOP", "BEST BUY"])) {
-    return "shopping";
-  }
-
-  return "other";
-}
-
-function hasAny(value: string, keywords: string[]): boolean {
-  return keywords.some((keyword) => value.includes(keyword));
 }

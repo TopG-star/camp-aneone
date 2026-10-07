@@ -152,6 +152,28 @@ describe("POST /api/webhooks/teams", () => {
   });
 
   describe("successful ingestion", () => {
+    it("returns 409 when resolveUserId cannot determine ownership", async () => {
+      const scopedApp = buildApp({
+        inboundItemRepo: repo,
+        webhookSecret: WEBHOOK_SECRET,
+        logger,
+        resolveUserId: () => null,
+      });
+
+      const body = JSON.stringify(VALID_PAYLOAD);
+      const signature = sign(body);
+
+      const res = await request(scopedApp)
+        .post("/api/webhooks/teams")
+        .set("X-Webhook-Signature", signature)
+        .set("Content-Type", "application/json")
+        .send(body);
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe("Unable to resolve webhook user ownership");
+      expect(repo.upsert).not.toHaveBeenCalled();
+    });
+
     it("returns created for new item", async () => {
       const body = JSON.stringify(VALID_PAYLOAD);
       const signature = sign(body);

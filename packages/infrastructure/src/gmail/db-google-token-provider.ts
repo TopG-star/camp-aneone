@@ -9,17 +9,20 @@ export class DbGoogleTokenProvider implements TokenProvider {
   private readonly clientSecret: string;
   private readonly userId: string;
   private readonly oauthTokenRepo: OAuthTokenRepository;
+  private readonly onRefreshFailure?: () => void;
 
   constructor(
     oauthTokenRepo: OAuthTokenRepository,
     clientId: string,
     clientSecret: string,
     userId: string,
+    onRefreshFailure?: () => void,
   ) {
     this.oauthTokenRepo = oauthTokenRepo;
     this.clientId = clientId;
     this.clientSecret = clientSecret;
     this.userId = userId;
+    this.onRefreshFailure = onRefreshFailure;
   }
 
   async getAccessToken(): Promise<string> {
@@ -38,9 +41,13 @@ export class DbGoogleTokenProvider implements TokenProvider {
     const client = new OAuth2Client(this.clientId, this.clientSecret);
     client.setCredentials({ refresh_token: token.refreshToken! });
 
-    const result = await client.getAccessToken();
+    const result = await client.getAccessToken().catch((error: unknown) => {
+      this.onRefreshFailure?.();
+      throw error;
+    });
     const newAccessToken = result.token;
     if (!newAccessToken) {
+      this.onRefreshFailure?.();
       throw new Error("Token refresh failed");
     }
 

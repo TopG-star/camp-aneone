@@ -479,6 +479,29 @@ describe("runIntentLoop", () => {
     expect(result.toolCalls[1].round).toBe(2);
   });
 
+  it("injects userId into tool execution parameters when provided", async () => {
+    const extractor = createMockExtractor([
+      [{ tool: "list_deadlines", parameters: { from: "2026-04-17" } }],
+      [{ tool: "none", parameters: {} }],
+    ]);
+    const registry = createMockToolRegistry({
+      list_deadlines: makeToolResult("list_deadlines", "ok"),
+    });
+
+    await runIntentLoop(
+      { intentExtractor: extractor, toolRegistry: registry, logger },
+      defaultInput({ userId: "user-123" }),
+    );
+
+    expect(registry.execute).toHaveBeenCalledWith(
+      "list_deadlines",
+      expect.objectContaining({
+        from: "2026-04-17",
+        userId: "user-123",
+      }),
+    );
+  });
+
   // ── Context Assembly ─────────────────────────────────────
 
   it("passes growing executedActions to extractor each round", async () => {

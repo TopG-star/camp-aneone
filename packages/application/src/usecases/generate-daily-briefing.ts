@@ -13,7 +13,6 @@ import type {
 
 // ── Constants ────────────────────────────────────────────────
 
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_URGENT_PRIORITY = 2;
 const MAX_URGENT_ITEMS = 20;
 
@@ -84,43 +83,83 @@ function getLocalDateString(now: Date, timezone: string): string {
  * Returns the start-of-day (00:00:00) in the given timezone as a UTC ISO string.
  */
 function startOfDayUTC(dateStr: string, timezone: string): string {
-  // Build an Intl.DateTimeFormat to find the timezone offset at midnight local
-  // We construct the local midnight and convert to UTC.
-  const parts = dateStr.split("-");
-  const year = parseInt(parts[0], 10);
-  const month = parseInt(parts[1], 10) - 1;
-  const day = parseInt(parts[2], 10);
+  const [year, month, day] = dateStr.split("-").map((part) => Number(part));
 
-  // Use a temporary date to find the offset
-  const tempDate = new Date(Date.UTC(year, month, day, 12, 0, 0)); // noon UTC as starting point
+  if (timezone === "UTC") {
+    return new Date(Date.UTC(year, month - 1, day, 0, 0, 0)).toISOString();
+  }
+
+  // Start with UTC midnight guess and iteratively converge on local midnight in target timezone.
+  let guessMs = Date.UTC(year, month - 1, day, 0, 0, 0);
+  const targetLocalMs = Date.UTC(year, month - 1, day, 0, 0, 0);
+
+  for (let i = 0; i < 6; i++) {
+    const local = getLocalDateTimeParts(new Date(guessMs), timezone);
+    const localMs = Date.UTC(
+      local.year,
+      local.month - 1,
+      local.day,
+      local.hour,
+      local.minute,
+      local.second,
+    );
+    const diffMs = localMs - targetLocalMs;
+    if (diffMs === 0) {
+      break;
+    }
+    guessMs -= diffMs;
+  }
+
+  return new Date(guessMs).toISOString();
+}
+
+function getLocalDateTimeParts(
+  date: Date,
+  timezone: string,
+): {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+} {
   const formatter = new Intl.DateTimeFormat("en-US", {
     timeZone: timezone,
     year: "numeric",
-    month: "numeric",
-    day: "numeric",
-    hour: "numeric",
-    minute: "numeric",
-    second: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
     hour12: false,
   });
 
-  // For UTC timezone, just return the date at 00:00:00Z
-  if (timezone === "UTC") {
-    return new Date(Date.UTC(year, month, day, 0, 0, 0)).toISOString();
-  }
+  const parts = formatter.formatToParts(date);
+  const get = (type: string) =>
+    Number(parts.find((part) => part.type === type)?.value ?? "0");
 
-  // For other timezones, use formatToParts to determine offset
-  const localParts = formatter.formatToParts(tempDate);
-  const getPart = (type: string) =>
-    parseInt(localParts.find((p) => p.type === type)?.value ?? "0", 10);
+  const hour = get("hour") % 24;
 
-  const localHourAtNoonUTC = getPart("hour");
-  const offsetHours = localHourAtNoonUTC - 12;
+  return {
+    year: get("year"),
+    month: get("month"),
+    day: get("day"),
+    hour,
+    minute: get("minute"),
+    second: get("second"),
+  };
+}
 
-  // Start of day in local TZ = midnight local = midnight - offset in UTC
-  return new Date(
-    Date.UTC(year, month, day, -offsetHours, 0, 0)
-  ).toISOString();
+function addDaysToDateString(dateStr: string, days: number): string {
+  const [year, month, day] = dateStr.split("-").map((part) => Number(part));
+  const date = new Date(Date.UTC(year, month - 1, day + days));
+
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
+
+  return `${y}-${m}-${d}`;
 }
 
 // ── buildBriefingPrompt ──────────────────────────────────────
@@ -260,9 +299,8 @@ export async function generateDailyBriefing(
 
   // ── Derive date boundaries in UTC ──
   const dayStartUTC = startOfDayUTC(dateStr, input.timezone);
-  const dayStartDate = new Date(dayStartUTC);
-  const weekEndUTC = new Date(dayStartDate.getTime() + SEVEN_DAYS_MS).toISOString();
-  const nextDayUTC = new Date(dayStartDate.getTime() + 24 * 60 * 60 * 1000).toISOString();
+  const weekEndUTC = startOfDayUTC(addDaysToDateString(dateStr, 7), input.timezone);
+  const nextDayUTC = startOfDayUTC(addDaysToDateString(dateStr, 1), input.timezone);
 
   // ── 1. Urgent items (priority ≤ 2) ──
   const classifications = deps.classificationRepo.findAll({

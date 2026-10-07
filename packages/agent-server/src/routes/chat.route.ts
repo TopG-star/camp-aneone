@@ -4,13 +4,25 @@ import type {
   IntentExtractionPort,
   SynthesisPort,
   UserProfileRepository,
+  InboundItemRepository,
+  ClassificationRepository,
+  DeadlineRepository,
+  ActionLogRepository,
   Logger,
 } from "@oneon/domain";
-import { sendChatMessage, type ToolRegistry } from "@oneon/application";
+import {
+  sendChatMessage,
+  type ToolRegistry,
+  type ChatContextStats,
+} from "@oneon/application";
 
 export interface ChatRouteDeps {
   conversationRepo: ConversationRepository;
   logger: Logger;
+  inboundItemRepo?: Pick<InboundItemRepository, "count"> | null;
+  classificationRepo?: Pick<ClassificationRepository, "count" | "findAll"> | null;
+  deadlineRepo?: Pick<DeadlineRepository, "findByDateRange"> | null;
+  actionLogRepo?: Pick<ActionLogRepository, "count"> | null;
   userProfileRepo?: Pick<UserProfileRepository, "findByUserId"> | null;
   intentExtractor?: IntentExtractionPort | null;
   synthesizer?: SynthesisPort | null;
@@ -23,6 +35,10 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
     conversationRepo,
     logger,
     userProfileRepo,
+    inboundItemRepo,
+    classificationRepo,
+    deadlineRepo,
+    actionLogRepo,
     intentExtractor,
     synthesizer,
     toolRegistry,
@@ -58,8 +74,24 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
     }
 
     // ── 3. Delegate to use case ───────────────────────────
+    const stats = buildChatStats({
+      inboundItemRepo,
+      classificationRepo,
+      deadlineRepo,
+      actionLogRepo,
+      userId,
+      now: new Date(),
+    });
+
     sendChatMessage(
-      { conversationRepo, logger, intentExtractor, synthesizer, toolRegistry },
+      {
+        conversationRepo,
+        logger,
+        intentExtractor,
+        synthesizer,
+        toolRegistry,
+        stats,
+      },
       {
         message: message.trim(),
         conversationId: conversationId || undefined,
@@ -93,4 +125,46 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
   });
 
   return router;
+}
+
+function buildChatStats(input: {
+  inboundItemRepo?: Pick<InboundItemRepository, "count"> | null;
+  classificationRepo?: Pick<ClassificationRepository, "count" | "findAll"> | null;
+  deadlineRepo?: Pick<DeadlineRepository, "findByDateRange"> | null;
+  actionLogRepo?: Pick<ActionLogRepository, "count"> | null;
+  userId: string;
+  now: Date;
+}): ChatContextStats | null {
+  const {
+    inboundItemRepo,
+    classificationRepo,
+    deadlineRepo,
+    actionLogRepo,
+    userId,
+    now,
+  } = input;
+
+  if (!inboundItemRepo || !classificationRepo || !deadlineRepo || !actionLogRepo) {
+    return null;
+  }
+
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+  const upcomingDeadlinesCount = deadlineRepo.findByDateRange(
+    now.toISOString(),
+    new Date(now.getTime() + sevenDaysMs).toISOString(),
+    "open",
+    userId,
+  ).length;
+
+  const followUpCount = classificationRepo
+    .findAll({ limit: 500, userId })
+    .filter((classification) => classification.followUpNeeded).length;
+
+  return {
+    totalInboxItems: inboundItemRepo.count({ userId }),
+    unreadUrgentCount: classificationRepo.count({ category: "urgent", userId }),
+    pendingActionsCount: actionLogRepo.count({ status: "proposed", userId }),
+    upcomingDeadlinesCount,
+    followUpCount,
+  };
 }
