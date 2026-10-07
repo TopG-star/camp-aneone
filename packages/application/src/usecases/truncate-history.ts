@@ -1,4 +1,5 @@
 import type { ConversationMessage } from "@oneon/domain";
+import { scanText } from "../ai-boundary/scanner.js";
 
 export interface TruncateHistoryOptions {
   maxMessages: number;
@@ -17,9 +18,13 @@ export function truncateHistory(
   // Step 1: Keep only the most recent maxMessages
   let result = messages.slice(-maxMessages);
 
+  // A message holding a secret is never cut: a cut could leave a fragment too short for the scanner, which would then be
+  // sent. Kept whole, the boundary withholds the turn.
+  const holdsSecret = (text: string) => scanText(text).d4.length > 0;
+
   // Step 2: Truncate each message's content to maxCharsPerMessage (immutable)
   result = result.map((msg) =>
-    msg.content.length > maxCharsPerMessage
+    msg.content.length > maxCharsPerMessage && !holdsSecret(msg.content)
       ? { ...msg, content: msg.content.slice(0, maxCharsPerMessage) }
       : msg
   );
@@ -33,7 +38,7 @@ export function truncateHistory(
   }
 
   // Step 4: If the single remaining message still exceeds budget, truncate it
-  if (result.length === 1 && result[0].content.length > totalBudget) {
+  if (result.length === 1 && result[0].content.length > totalBudget && !holdsSecret(result[0].content)) {
     result = [{ ...result[0], content: result[0].content.slice(0, totalBudget) }];
   }
 

@@ -46,6 +46,10 @@ export function createFinanceStatementStatusTool(
     description:
       "Show finance statement processing status with total counts and recent statement items.",
     inputSchema: financeStatementStatusSchema,
+    output: {
+      fields: { userId: { class: "D1" }, counts: { class: "D1" }, recent: { class: "D2" } },
+      summaryClass: "D1",
+    },
     execute(validatedInput: unknown): ToolResult {
       const input = validatedInput as FinanceStatementStatusInput;
       const userId = resolveFinanceUserId(bankStatementRepo, input.userId);

@@ -14,6 +14,7 @@ import { createDevFinanceRouter } from "./dev-finance.route.js";
 import { createInboxRouter } from "./inbox.route.js";
 import { createActionsRouter } from "./actions.route.js";
 import { createActionDefinitionsRouter } from "./action-definitions.route.js";
+import { createAiDataRouter } from "./ai-data.route.js";
 import { createTodayRouter } from "./today.route.js";
 import { createCycleRouter } from "./cycle.route.js";
 import { createStatusRouter } from "./status.route.js";
@@ -311,19 +312,21 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       }));
     }
 
-    // Daily briefing (requires synthesizer)
-    if (container.llmPort) {
+    // Daily briefing (requires the model gateway)
+    if (container.modelGateway) {
       toolRegistry.register(createDailyBriefingTool({
         classificationRepo: container.classificationRepo,
         inboundItemRepo: container.inboundItemRepo,
         deadlineRepo: container.deadlineRepo,
         instanceRepo: container.actions.instanceRepo,
-        synthesizer: container.llmPort,
+        modelGateway: container.modelGateway,
         calendarPort: container.calendarPort ?? undefined,
         resolveCalendarPort,
         logger: chatLogger,
       }));
     }
+
+    container.setModelToolVocabulary(toolRegistry.list());
 
     const chatLimiter = rateLimit({
       windowMs: 60_000,
@@ -345,8 +348,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
         deadlineRepo: container.deadlineRepo,
         instanceRepo: container.actions.instanceRepo,
         userProfileRepo: container.userProfileRepo,
-        intentExtractor: container.llmPort,
-        synthesizer: container.llmPort,
+        modelGateway: container.modelGateway,
         toolRegistry,
       })
     );
@@ -475,6 +477,20 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     }),
   );
   actionsLogger.info("Actions routes registered at /api/actions and /api/action-definitions");
+  app.use(
+    "/api/ai-data",
+    ...userAuth,
+    createAiDataRouter({
+      gateway: container.modelGateway,
+      routing: container.modelRouting,
+      overrides: container.modelOverrides,
+      configuredProviders: container.modelProviders,
+      routingWarnings: container.modelRoutingWarnings,
+      choices: container.aiDataChoices,
+      audit: container.modelAudit,
+      logger: new StructuredLogger("ai-data", env.LOG_LEVEL),
+    }),
+  );
 
   // ── Deadlines ─────────────────────────────────────────────
   const deadlinesLogger = new StructuredLogger("deadlines", env.LOG_LEVEL);

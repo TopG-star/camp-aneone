@@ -4,8 +4,11 @@ import {
   intentOutputSchema,
   type RunIntentLoopInput,
 } from "./run-intent-loop.js";
-import type { IntentExtractionPort, Logger } from "@oneon/domain";
-import type { ToolRegistry, ToolExecutionResult } from "../tools/tool-registry.js";
+import { z } from "zod";
+import type { Logger } from "@oneon/domain";
+import { createToolRegistry, type ToolRegistry, type ToolExecutionResult } from "../tools/tool-registry.js";
+import type { ModelTurn } from "../ai-boundary/gateway.js";
+import { answered, blocked, denied, stubGateway } from "../ai-boundary/__tests__/stub-gateway.js";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -21,17 +24,30 @@ function createMockLogger(): Logger {
   };
 }
 
+const PERSONAL = { kind: "personal", identityId: "u1" } as const;
+
+/** A gateway turn that answers each intent round with the next scripted intent list. */
 function createMockExtractor(
   responses: Array<Array<{ tool: string; parameters: Record<string, unknown> }>>
-): IntentExtractionPort {
+): ModelTurn {
   let callIndex = 0;
-  return {
-    extractIntents: vi.fn(async () => {
-      const response = responses[callIndex] ?? [];
-      callIndex++;
-      return response;
-    }),
-  };
+  return stubGateway({ respond: () => answered(responses[callIndex++] ?? []) }).beginTurn(PERSONAL);
+}
+
+/** A real registry whose tools return an empty result; the model-facing output schema is empty. */
+function registryWith(...names: string[]) {
+  const registry = createToolRegistry();
+  for (const name of names) {
+    registry.register({
+      name,
+      version: "1",
+      description: name,
+      inputSchema: z.object({}).passthrough(),
+      output: { fields: {}, summaryClass: "D1" },
+      execute: () => ({ data: [], summary: "ok" }),
+    });
+  }
+  return registry;
 }
 
 function createMockToolRegistry(
@@ -161,7 +177,7 @@ describe("runIntentLoop", () => {
     });
 
     const result = await runIntentLoop(
-      { intentExtractor: extractor, toolRegistry: registry, logger },
+      { modelTurn: extractor, toolRegistry: registry, logger },
       defaultInput()
     );
 
@@ -187,7 +203,7 @@ describe("runIntentLoop", () => {
     });
 
     const result = await runIntentLoop(
-      { intentExtractor: extractor, toolRegistry: registry, logger },
+      { modelTurn: extractor, toolRegistry: registry, logger },
       defaultInput({
         toolDefinitions: [
           { name: "list_deadlines", description: "d" },
@@ -208,7 +224,7 @@ describe("runIntentLoop", () => {
     const registry = createMockToolRegistry({});
 
     const result = await runIntentLoop(
-      { intentExtractor: extractor, toolRegistry: registry, logger },
+      { modelTurn: extractor, toolRegistry: registry, logger },
       defaultInput()
     );
 
@@ -224,7 +240,7 @@ describe("runIntentLoop", () => {
     const registry = createMockToolRegistry({});
 
     const result = await runIntentLoop(
-      { intentExtractor: extractor, toolRegistry: registry, logger },
+      { modelTurn: extractor, toolRegistry: registry, logger },
       defaultInput()
     );
 
@@ -245,7 +261,7 @@ describe("runIntentLoop", () => {
     });
 
     const result = await runIntentLoop(
-      { intentExtractor: extractor, toolRegistry: registry, logger },
+      { modelTurn: extractor, toolRegistry: registry, logger },
       defaultInput()
     );
 
@@ -257,19 +273,12 @@ describe("runIntentLoop", () => {
   // ── Zod Validation (Refinement #2) ──────────────────────
 
   it("breaks gracefully when LLM returns invalid intent shape", async () => {
-    const badExtractor: IntentExtractionPort = {
-      extractIntents: vi.fn(async () => {
-        // Return something that won't pass Zod: 'type' instead of 'tool'
-        return [{ type: "oops", parameters: {} }] as unknown as Array<{
-          tool: string;
-          parameters: Record<string, unknown>;
-        }>;
-      }),
-    };
+    // Something that fails Zod: 'type' instead of 'tool'
+    const badExtractor = stubGateway({ respond: () => answered([{ type: "oops", parameters: {} }]) }).beginTurn(PERSONAL);
     const registry = createMockToolRegistry({});
 
     const result = await runIntentLoop(
-      { intentExtractor: badExtractor, toolRegistry: registry, logger },
+      { modelTurn: badExtractor, toolRegistry: registry, logger },
       defaultInput()
     );
 
@@ -293,7 +302,7 @@ describe("runIntentLoop", () => {
     });
 
     const result = await runIntentLoop(
-      { intentExtractor: extractor, toolRegistry: registry, logger },
+      { modelTurn: extractor, toolRegistry: registry, logger },
       defaultInput()
     );
 
@@ -315,7 +324,7 @@ describe("runIntentLoop", () => {
     });
 
     const result = await runIntentLoop(
-      { intentExtractor: extractor, toolRegistry: registry, logger },
+      { modelTurn: extractor, toolRegistry: registry, logger },
       defaultInput()
     );
 
@@ -339,7 +348,7 @@ describe("runIntentLoop", () => {
     });
 
     const result = await runIntentLoop(
-      { intentExtractor: extractor, toolRegistry: registry, logger },
+      { modelTurn: extractor, toolRegistry: registry, logger },
       defaultInput({
         toolDefinitions: [
           { name: "list_deadlines", description: "d" },
@@ -369,7 +378,7 @@ describe("runIntentLoop", () => {
     });
 
     const result = await runIntentLoop(
-      { intentExtractor: extractor, toolRegistry: registry, logger },
+      { modelTurn: extractor, toolRegistry: registry, logger },
       defaultInput()
     );
 
@@ -396,7 +405,7 @@ describe("runIntentLoop", () => {
     });
 
     const result = await runIntentLoop(
-      { intentExtractor: extractor, toolRegistry: registry, logger },
+      { modelTurn: extractor, toolRegistry: registry, logger },
       defaultInput()
     );
 
@@ -407,23 +416,87 @@ describe("runIntentLoop", () => {
 
   // ── LLM Extraction Failure ───────────────────────────────
 
-  it("returns gracefully when LLM extraction throws", async () => {
-    const badExtractor: IntentExtractionPort = {
-      extractIntents: vi.fn(async () => {
-        throw new Error("LLM service unavailable");
-      }),
-    };
+  it("returns gracefully when the gateway blocks the intent answer", async () => {
+    const badExtractor = stubGateway({ respond: () => blocked("invalid_output") }).beginTurn(PERSONAL);
     const registry = createMockToolRegistry({});
 
     const result = await runIntentLoop(
-      { intentExtractor: badExtractor, toolRegistry: registry, logger },
+      { modelTurn: badExtractor, toolRegistry: registry, logger },
       defaultInput()
     );
 
     expect(result.toolCalls).toHaveLength(0);
     expect(result.stopped).toBe("extraction_error");
     expect(result.rounds).toBe(1);
-    expect(logger.error).toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith("Intent extraction failed", { round: 1, kind: "blocked" });
+  });
+
+  it("stops with policy_denied when the gateway denies the intent call", async () => {
+    const turn = stubGateway({ respond: () => denied("required_part_withheld") }).beginTurn(PERSONAL);
+    const result = await runIntentLoop({ modelTurn: turn, toolRegistry: registryWith(), logger }, defaultInput());
+    expect(result.stopped).toBe("policy_denied");
+    expect(result.deniedReason).toBe("required_part_withheld");
+    expect(result.toolCalls).toHaveLength(0);
+    expect(logger.info).toHaveBeenCalledWith("Intent extraction denied by AI data policy", { round: 1, reason: "required_part_withheld" });
+  });
+
+  it("ends the turn with extraction_error when the gateway call throws, logging only the error name", async () => {
+    const turn = {
+      call: vi.fn().mockRejectedValue(new TypeError("audit failed for ama@x.com")),
+      restoreToolParams: (p: Record<string, unknown>) => ({ ok: true as const, params: p }),
+      effectiveLimit: () => "D1" as const,
+    };
+    const result = await runIntentLoop({ modelTurn: turn, toolRegistry: registryWith(), logger }, defaultInput());
+    expect(result.stopped).toBe("extraction_error");
+    expect(logger.error).toHaveBeenCalledWith("Intent extraction threw", { round: 1, errorName: "TypeError" });
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain("ama@x.com");
+  });
+
+  it("logs only the error name when a tool fails", async () => {
+    const turn = createMockExtractor([[{ tool: "list_deadlines", parameters: {} }], [{ tool: "none", parameters: {} }]]);
+    const registry = createMockToolRegistry({ list_deadlines: new Error("bad address ama@x.com") });
+    await runIntentLoop({ modelTurn: turn, toolRegistry: registry, logger }, defaultInput());
+    expect(logger.warn).toHaveBeenCalledWith("Tool execution failed", { tool: "list_deadlines", round: 1, errorName: "Error" });
+  });
+
+  // ── Placeholders ─────────────────────────────────────────
+
+  it("skips an intent whose placeholder was never issued and runs the others (Review Focus 4)", async () => {
+    const turn = {
+      call: vi.fn().mockResolvedValueOnce(answered([{ tool: "get_customer", parameters: { customerId: "CUSTOMER_9" } }, { tool: "list_inbox", parameters: {} }])).mockResolvedValue(answered([{ tool: "none", parameters: {} }])),
+      restoreToolParams: (p: Record<string, unknown>) => (JSON.stringify(p).includes("CUSTOMER_9") ? { ok: false as const, token: "CUSTOMER_9" } : { ok: true as const, params: p }),
+      effectiveLimit: () => "D2" as const,
+    };
+    const result = await runIntentLoop({ modelTurn: turn, toolRegistry: registryWith("get_customer", "list_inbox"), logger }, defaultInput());
+    expect(result.toolCalls.map((c) => c.tool)).toEqual(["list_inbox"]);
+    expect(logger.warn).toHaveBeenCalledWith("Model used an unknown placeholder", expect.objectContaining({ tool: "get_customer", token: "CUSTOMER_9" }));
+  });
+
+  it("hands an action tool the real identifier, never the placeholder (Review Focus 6)", async () => {
+    const seen: unknown[] = [];
+    const registry = registryWith();
+    registry.register({
+      name: "create_calendar_event", version: "1", description: "Request an event", inputSchema: z.object({}).passthrough(),
+      output: { fields: { action: { class: "D1" } }, summaryClass: "D2" },
+      execute: (input: unknown) => { seen.push(input); return { data: null, summary: "ok" }; },
+    });
+    const turn = {
+      call: vi.fn().mockResolvedValueOnce(answered([{ tool: "create_calendar_event", parameters: { title: "Sync", attendees: ["PERSON_1"] } }])).mockResolvedValue(answered([{ tool: "none", parameters: {} }])),
+      restoreToolParams: (p: Record<string, unknown>) => ({ ok: true as const, params: JSON.parse(JSON.stringify(p).replaceAll("PERSON_1", "ama@x.com")) as Record<string, unknown> }),
+      effectiveLimit: () => "D1" as const,
+    };
+    await runIntentLoop({ modelTurn: turn, toolRegistry: registry, logger }, defaultInput());
+    expect(seen).toEqual([expect.objectContaining({ attendees: ["ama@x.com"] })]);
+    expect(JSON.stringify(seen)).not.toContain("PERSON_1");
+  });
+
+  it("never logs tool parameters when skipping a duplicate", async () => {
+    const turn = createMockExtractor([
+      [{ tool: "list_inbox", parameters: { who: "ama@x.com" } }, { tool: "list_inbox", parameters: { who: "ama@x.com" } }],
+      [{ tool: "none", parameters: {} }],
+    ]);
+    await runIntentLoop({ modelTurn: turn, toolRegistry: registryWith("list_inbox"), logger }, defaultInput());
+    expect(JSON.stringify(vi.mocked(logger.warn).mock.calls)).not.toContain("ama@x.com");
   });
 
   // ── Tool Call Records (Refinement #7) ────────────────────
@@ -438,7 +511,7 @@ describe("runIntentLoop", () => {
     });
 
     const result = await runIntentLoop(
-      { intentExtractor: extractor, toolRegistry: registry, logger },
+      { modelTurn: extractor, toolRegistry: registry, logger },
       defaultInput()
     );
 
@@ -466,7 +539,7 @@ describe("runIntentLoop", () => {
     });
 
     const result = await runIntentLoop(
-      { intentExtractor: extractor, toolRegistry: registry, logger },
+      { modelTurn: extractor, toolRegistry: registry, logger },
       defaultInput({
         toolDefinitions: [
           { name: "list_deadlines", description: "d" },
@@ -489,7 +562,7 @@ describe("runIntentLoop", () => {
     });
 
     await runIntentLoop(
-      { intentExtractor: extractor, toolRegistry: registry, logger },
+      { modelTurn: extractor, toolRegistry: registry, logger },
       defaultInput({ userId: "user-123" }),
     );
 
@@ -512,7 +585,7 @@ describe("runIntentLoop", () => {
     });
 
     await runIntentLoop(
-      { intentExtractor: extractor, toolRegistry: registry, logger },
+      { modelTurn: extractor, toolRegistry: registry, logger },
       defaultInput({ userId: "user-123", turnId: "t1" }),
     );
 
@@ -534,7 +607,7 @@ describe("runIntentLoop", () => {
     });
 
     await runIntentLoop(
-      { intentExtractor: extractor, toolRegistry: registry, logger },
+      { modelTurn: extractor, toolRegistry: registry, logger },
       defaultInput(),
     );
 
@@ -543,28 +616,15 @@ describe("runIntentLoop", () => {
 
   // ── Context Assembly ─────────────────────────────────────
 
-  it("passes growing executedActions to extractor each round", async () => {
-    const extractorFn = vi.fn<
-      (msg: string, ctx: string) => Promise<Array<{ tool: string; parameters: Record<string, unknown> }>>
-    >();
-    extractorFn
-      .mockResolvedValueOnce([{ tool: "list_deadlines", parameters: {} }])
-      .mockResolvedValueOnce([{ tool: "none", parameters: {} }]);
-
-    const extractor: IntentExtractionPort = { extractIntents: extractorFn };
-    const registry = createMockToolRegistry({
-      list_deadlines: makeToolResult("list_deadlines", "Found 3"),
+  it("sends earlier tool results in the next round request", async () => {
+    const gateway = stubGateway({
+      respond: (req) => answered(req.parts.some((p) => p.kind === "record" && p.source === "tool:list_deadlines") ? [{ tool: "none", parameters: {} }] : [{ tool: "list_deadlines", parameters: {} }]),
     });
+    await runIntentLoop({ modelTurn: gateway.beginTurn(PERSONAL), toolRegistry: registryWith("list_deadlines"), logger }, defaultInput());
 
-    await runIntentLoop(
-      { intentExtractor: extractor, toolRegistry: registry, logger },
-      defaultInput()
-    );
-
-    // Second call's context should contain executed action from round 1
-    const secondCallContext = extractorFn.mock.calls[1][1];
-    expect(secondCallContext).toContain("list_deadlines");
-    expect(secondCallContext).toContain("Found 3");
-    expect(secondCallContext).toContain("ACTIONS ALREADY EXECUTED THIS TURN");
+    expect(gateway.requests).toHaveLength(2);
+    expect(gateway.requests[0].purpose).toBe("intent_extraction");
+    expect(gateway.requests[0].parts.some((p) => p.kind === "record" && p.source.startsWith("tool:"))).toBe(false);
+    expect(gateway.requests[1].parts.some((p) => p.kind === "record" && p.source === "tool:list_deadlines")).toBe(true);
   });
 });

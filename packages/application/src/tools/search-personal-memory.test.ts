@@ -5,6 +5,7 @@ import {
   searchPersonalMemorySchema,
   type PersonalDocMemoryProvider,
 } from "./search-personal-memory.js";
+import { expectMatchesOutputSchema } from "./__tests__/output-contract.js";
 
 describe("searchPersonalMemorySchema", () => {
   it("applies defaults", () => {
@@ -135,5 +136,6 @@ describe("search_personal_memory tool", () => {
     expect(data.length).toBe(1);
     expect(data[0].source).toBe("note");
     expect(result.summary).toContain("Found 1 personal memory match");
+    expectMatchesOutputSchema(tool, result);
   });
 });

@@ -22,7 +22,6 @@ export type {
 } from "./user-profile-repository.port.js";
 export type { OAuthTokenRepository } from "./oauth-token-repository.port.js";
 export type { IngestionPort, EmailPort } from "./email.port.js";
-export type { LLMPort, IntentExtractionPort, SynthesisPort, ClassificationResult } from "./llm.port.js";
 export type {
   CalendarPort,
   CalendarEvent,

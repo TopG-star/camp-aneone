@@ -7,7 +7,7 @@ import type {
   ConversationRepository,
   Logger,
 } from "@oneon/domain";
-import { createToolRegistry } from "@oneon/application";
+import { createToolRegistry, type ModelGateway } from "@oneon/application";
 import { createChatRouter, type ChatRouteDeps } from "./chat.route.js";
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -158,15 +158,28 @@ describe("POST /api/chat", () => {
       version: "2.0.0",
       description: "stub",
       inputSchema: z.object({}).passthrough(),
+      output: { fields: {}, summaryClass: "D1" },
       execute: () => ({ data: { action }, summary: "Waiting for your approval." }),
     });
-    const intentExtractor = {
-      extractIntents: vi
-        .fn()
-        .mockResolvedValueOnce([{ tool: "create_calendar_event", parameters: {} }])
-        .mockResolvedValue([{ tool: "none", parameters: {} }]),
+    // Intent rounds: request the action, then stop. The chat reply is denied, so tool summaries answer.
+    let intentRounds = 0;
+    const modelGateway: ModelGateway = {
+      beginTurn: () => ({
+        call: async (req) =>
+          req.purpose === "chat_reply"
+            ? { kind: "denied", reason: "required_part_withheld", withheld: [], decisionId: "d" }
+            : {
+                kind: "answered",
+                text: "",
+                json: intentRounds++ === 0 ? [{ tool: "create_calendar_event", parameters: {} }] : [{ tool: "none", parameters: {} }],
+                withheld: [],
+                decisionId: "d",
+              },
+        restoreToolParams: (params) => ({ ok: true, params }),
+        effectiveLimit: () => "D2",
+      }),
     };
-    app = buildApp({ conversationRepo, logger, intentExtractor, toolRegistry });
+    app = buildApp({ conversationRepo, logger, modelGateway, toolRegistry });
 
     const res = await request(app)
       .post("/api/chat")

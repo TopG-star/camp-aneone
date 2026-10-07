@@ -7,6 +7,7 @@ import {
   type InboxEntry,
 } from "./list-inbox.js";
 import { createToolRegistry } from "./tool-registry.js";
+import { expectMatchesOutputSchema } from "./__tests__/output-contract.js";
 
 // ── Fixtures ─────────────────────────────────────────────────
 
@@ -175,6 +176,7 @@ describe("list_inbox tool", () => {
       priority: 2,
       summary: "Important meeting notes",
     });
+    expectMatchesOutputSchema(tool, result);
   });
 
   it("includes unclassified items with null classification fields", async () => {

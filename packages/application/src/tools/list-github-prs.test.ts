@@ -6,6 +6,7 @@ import {
   type ListGitHubPRsDeps,
 } from "./list-github-prs.js";
 import { createToolRegistry } from "./tool-registry.js";
+import { expectMatchesOutputSchema } from "./__tests__/output-contract.js";
 
 // ── Fixtures ─────────────────────────────────────────────────
 
@@ -123,6 +124,7 @@ describe("list_github_prs tool", () => {
 
     expect(result.data).toHaveLength(2);
     expect(result.summary).toBe("Found 2 pull requests.");
+    expectMatchesOutputSchema(tool, result);
   });
 
   it("returns zero-count summary when empty", async () => {

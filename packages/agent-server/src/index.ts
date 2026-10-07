@@ -35,6 +35,7 @@ function emptyCycleSummary(): CycleSummary {
       skippedMaxAttempts: 0,
       skippedDailyLimit: 0,
       failed: 0,
+      pausedByPolicy: 0,
     },
     actionsProposed: 0,
     actionsAutoExecuted: 0,
@@ -89,7 +90,7 @@ app.get("/health", (_req, res) => {
     timestamp: new Date().toISOString(),
     features: {
       ingestion: container.hasGoogleCredentials,
-      llm: container.llmPort !== null,
+      llm: container.modelGateway !== null,
       calendar: container.calendarPort !== null,
       github: container.githubPort !== null,
       notifications: container.notificationPort !== null,
@@ -140,7 +141,7 @@ logger.info("Camp-Aneone (Oneon) agent-server starting", {
 let backgroundLoop: BackgroundLoop | null = null;
 
 if (env.FEATURE_BACKGROUND_LOOP) {
-  if (!container.llmPort) {
+  if (!container.modelGateway) {
     logger.warn(
       "Background loop running in ingest-only mode (LLM unavailable). " +
         "Inbox will populate, but classification/actions are paused.",
@@ -235,7 +236,7 @@ if (env.FEATURE_BACKGROUND_LOOP) {
       });
     }
 
-    if (!container.llmPort) {
+    if (!container.modelGateway) {
       // Ingest-first fallback: keep Inbox/TODAY counts flowing even without LLM.
       return emptyCycleSummary();
     }
@@ -253,7 +254,7 @@ if (env.FEATURE_BACKGROUND_LOOP) {
         classificationRepo: container.classificationRepo,
         deadlineRepo: container.deadlineRepo,
         transactionRunner: container.transactionRunner,
-        llmPort: container.llmPort!,
+        modelGateway: container.modelGateway!,
         logger,
         classifierModel: env.LLM_CLASSIFIER_MODEL,
         promptVersion: "v1",

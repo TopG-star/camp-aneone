@@ -23,6 +23,10 @@ export function createListPendingActionsTool(deps: ListPendingActionsDeps): Tool
     version: "2.0.0",
     description: "List the user's actions in a status. Defaults to actions awaiting approval.",
     inputSchema: listPendingActionsSchema,
+    output: {
+      fields: { id: { class: "D1" }, actionType: { class: "D1" }, label: { class: "D1" }, status: { class: "D1" }, createdAt: { class: "D1" }, description: { class: "D2", freeText: true } },
+      summaryClass: "D1",
+    },
     execute(validatedInput: unknown): ToolResult {
       const input = validatedInput as z.infer<typeof listPendingActionsSchema>;
       if (!input.userId) return { data: [], summary: "Found 0 actions." };

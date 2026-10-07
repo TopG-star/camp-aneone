@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { beforeAll, describe, it, expect } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,7 +17,19 @@ function sourceFiles(dir: string): string[] {
 
 const IMPORT = /(?:import|export)\s[^;]*?from\s+["']([^"']+)["']/g;
 
-describe("architecture", () => {
+type Source = { path: string; text: string };
+
+// Walking and reading every source file is slow under a loaded full suite, so it happens once, with generous timeouts.
+const TIMEOUT_MS = 60_000;
+
+describe("architecture", { timeout: TIMEOUT_MS }, () => {
+  let sources: Source[] = [];
+  beforeAll(() => {
+    sources = ["domain", "application", "infrastructure", "agent-server"]
+      .flatMap((pkg) => sourceFiles(join(ROOT, pkg, "src")))
+      .map((f) => ({ path: posix(relative(ROOT, f)), text: readFileSync(f, "utf8") }));
+  }, TIMEOUT_MS);
+
   it("domain imports only relative paths inside domain", () => {
     const domainSrc = join(ROOT, "domain", "src");
     const offenders: string[] = [];
@@ -41,10 +53,9 @@ describe("architecture", () => {
       /^agent-server\/src\/actions-wiring\.ts$/,
       /\.test\.ts$/,
     ];
-    const offenders = ["domain", "application", "infrastructure", "agent-server"]
-      .flatMap((pkg) => sourceFiles(join(ROOT, pkg, "src")))
-      .filter((f) => /import[^;]*\bCalendarWriter\b[^;]*from/.test(readFileSync(f, "utf8")))
-      .map((f) => posix(relative(ROOT, f)))
+    const offenders = sources
+      .filter((f) => /import[^;]*\bCalendarWriter\b[^;]*from/.test(f.text))
+      .map((f) => f.path)
       .filter((p) => !allowed.some((re) => re.test(p)));
     expect(offenders).toEqual([]);
   });
@@ -60,5 +71,49 @@ describe("architecture", () => {
     const routes = readFileSync(join(ROOT, "agent-server", "src", "routes", "index.ts"), "utf8");
     expect(routes).not.toMatch(/createCreateCalendarEventTool|createUpdateCalendarEventTool/);
     expect(readFileSync(join(ROOT, "application", "src", "actions", "chat-action-tools.ts"), "utf8")).not.toMatch(/CalendarWriter|writers/);
+  });
+
+  const isTest = (p: string) => /\.test\.ts$/.test(p) || /\/__tests__\//.test(p);
+
+  it("only the gateway mints approved model calls (spec §5.5)", () => {
+    const offenders = sources
+      .filter((f) => /ApprovedModelCall\.mint\(/.test(f.text))
+      .map((f) => f.path)
+      .filter((p) => !isTest(p) && p !== "application/src/ai-boundary/gateway.ts" && p !== "application/src/ai-boundary/approved-call.ts");
+    expect(offenders).toEqual([]);
+  });
+
+  it("nothing casts to ApprovedModelCall or Instruction outside their own modules", () => {
+    const offenders = sources
+      .filter((f) => /\bas\s+(ApprovedModelCall|Instruction)\b/.test(f.text))
+      .map((f) => f.path)
+      .filter((p) => !isTest(p) && !/^application\/src\/ai-boundary\/(instruction|approved-call)\.ts$/.test(p));
+    expect(offenders).toEqual([]);
+  });
+
+  it("provider clients are constructed only by the model wiring", () => {
+    const offenders = sources
+      .filter((f) => /new\s+(DeepSeekProvider|AnthropicProvider)\(/.test(f.text))
+      .map((f) => f.path)
+      .filter((p) => !isTest(p) && p !== "agent-server/src/model-wiring.ts");
+    expect(offenders).toEqual([]);
+  });
+
+  it("only provider clients import a model SDK or the model HTTP client", () => {
+    const offenders = sources
+      .filter((f) => /(from\s+|import\(\s*|require\(\s*)["'](@anthropic-ai\/sdk|[./]*deepseek-http-client(\.js)?)["']/.test(f.text))
+      .map((f) => f.path)
+      .filter((p) => !isTest(p) && !/^infrastructure\/src\/llm\/providers\//.test(p) && p !== "infrastructure/src/llm/index.ts");
+    expect(offenders).toEqual([]);
+  });
+
+  it("model clients and providers are named in imports or exports only by the llm module and the model wiring", () => {
+    const names = /\b(DeepSeekHttpClient|DeepSeekProvider|AnthropicProvider)\b/;
+    const statements = /\b(?:import|export)\b[^;'"]*?\bfrom\s*["'][^"']+["']/g;
+    const offenders = sources
+      .filter((f) => [...f.text.matchAll(statements)].some(([m]) => names.test(m)) || /(import|require)\(\s*["']@anthropic-ai\/sdk["']/.test(f.text))
+      .map((f) => f.path)
+      .filter((p) => !isTest(p) && !/^infrastructure\/src\/llm\//.test(p) && p !== "agent-server/src/model-wiring.ts");
+    expect(offenders).toEqual([]);
   });
 });

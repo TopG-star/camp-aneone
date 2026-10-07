@@ -30,13 +30,17 @@ cp .env.test.local.template .env.test.local  # Test overrides
 
 ## Generating Secrets
 
-### NEXTAUTH_SECRET / API_TOKEN / OAUTH_TOKEN_ENCRYPTION_KEY
+### NEXTAUTH_SECRET / API_TOKEN / OAUTH_TOKEN_ENCRYPTION_KEY / MODEL_AUDIT_HMAC_KEY
 
 ```bash
 openssl rand -base64 32
 ```
 
 Each of these must be unique. Never reuse the same value.
+
+`MODEL_AUDIT_HMAC_KEY` (at least 32 characters, required whenever a model provider key is set) keys the fingerprints in the AI audit log. `MODEL_AUDIT_HMAC_KEY_VERSION` (default 1) is stored on every audit row.
+
+Keep `MODEL_AUDIT_HMAC_KEY` in the secret manager, not only in an env file, and back it up. Keep every old key and its version. The server loads one key at a time, so an old audit fingerprint can only be verified offline, with the old key and the version that wrote it. To rotate, add the new key as a new version and bump `MODEL_AUDIT_HMAC_KEY_VERSION`. If you rotate the key without bumping the version, new rows claim the old version and cannot be attributed to the right key. The server still refuses to start without the key while a model provider key is set.
 
 ### Webhook Secrets (GitHub, Outlook, Teams)
 

@@ -1,8 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import type {
   ConversationRepository,
-  IntentExtractionPort,
-  SynthesisPort,
   UserProfileRepository,
   InboundItemRepository,
   ClassificationRepository,
@@ -13,6 +11,7 @@ import type {
 import {
   sendChatMessage,
   type ToolRegistry,
+  type ModelGateway,
   type ChatContextStats,
 } from "@oneon/application";
 
@@ -24,8 +23,7 @@ export interface ChatRouteDeps {
   deadlineRepo?: Pick<DeadlineRepository, "findByDateRange"> | null;
   instanceRepo?: Pick<ActionInstanceRepository, "count"> | null;
   userProfileRepo?: Pick<UserProfileRepository, "findByUserId"> | null;
-  intentExtractor?: IntentExtractionPort | null;
-  synthesizer?: SynthesisPort | null;
+  modelGateway?: ModelGateway | null;
   toolRegistry?: ToolRegistry | null;
 }
 
@@ -39,8 +37,7 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
     classificationRepo,
     deadlineRepo,
     instanceRepo,
-    intentExtractor,
-    synthesizer,
+    modelGateway,
     toolRegistry,
   } = deps;
 
@@ -87,8 +84,7 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
       {
         conversationRepo,
         logger,
-        intentExtractor,
-        synthesizer,
+        modelGateway,
         toolRegistry,
         stats,
       },

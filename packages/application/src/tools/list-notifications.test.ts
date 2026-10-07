@@ -5,6 +5,8 @@ import {
   listNotificationsSchema,
   type ListNotificationsDeps,
 } from "./list-notifications.js";
+import { expectMatchesOutputSchema } from "./__tests__/output-contract.js";
+import type { ToolResult } from "./tool-registry.js";
 
 // ── Fixtures ─────────────────────────────────────────────────
 
@@ -87,6 +89,7 @@ describe("list_notifications tool", () => {
 
     expect((result as { data: { notifications: Notification[] } }).data.notifications).toHaveLength(2);
     expect(deps.notificationRepo.findUnread).toHaveBeenCalledWith(20);
+    expectMatchesOutputSchema(tool, result as ToolResult);
   });
 
   it("returns all notifications when all=true", () => {

@@ -21,6 +21,18 @@ function makeMsg(
 // ── Tests ────────────────────────────────────────────────────
 
 describe("truncateHistory", () => {
+  it("keeps a message holding a key whole, even when the key straddles the cap", () => {
+    const key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123";
+    const content = "x".repeat(1990) + " " + key + " tail";
+    const [kept] = truncateHistory([makeMsg({ content })], { maxMessages: 20, maxCharsPerMessage: 2000, totalBudget: 40000 });
+    expect(kept.content).toBe(content);
+  });
+
+  it("still cuts a long message without a secret", () => {
+    const [kept] = truncateHistory([makeMsg({ content: "y".repeat(3000) })], { maxMessages: 20, maxCharsPerMessage: 2000, totalBudget: 40000 });
+    expect(kept.content).toHaveLength(2000);
+  });
+
   it("returns empty array for empty input", () => {
     const result = truncateHistory([], {
       maxMessages: 20,

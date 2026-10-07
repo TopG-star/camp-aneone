@@ -1,4 +1,5 @@
 import type { ZodSchema, ZodIssue } from "zod";
+import type { ToolOutputSchema } from "./output-schema.js";
 
 // ── Core Types ───────────────────────────────────────────────
 
@@ -25,6 +26,7 @@ export interface ToolDefinition {
   version: string;
   description: string;
   inputSchema: ZodSchema;
+  output: ToolOutputSchema;
   execute: (validatedInput: unknown) => ToolResult | Promise<ToolResult>;
 }
 

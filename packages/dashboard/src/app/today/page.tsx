@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { useToday } from "@/lib/hooks";
+import { useAiData, useToday } from "@/lib/hooks";
 import { apiFetch } from "@/lib/api";
+import type { AiDataView } from "@oneon/contracts";
 import { Card, CardTitle, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -80,6 +81,8 @@ export default function TodayPage() {
   const { data, error, isLoading, mutate } = useToday();
   const [triageActionBusy, setTriageActionBusy] = useState<Record<string, boolean>>({});
   const today = data as TodayData | undefined;
+  const { data: aiData } = useAiData();
+  const emailSorting = (aiData as AiDataView | undefined)?.emailClassification;
 
   const handleTriageAction = async (itemId: string, action: "snooze" | "dismiss") => {
     try {
@@ -142,6 +145,21 @@ export default function TodayPage() {
           })}
         </p>
       </div>
+
+      {emailSorting?.active === false && (
+        <Card>
+          <CardContent className="space-y-1">
+            <p className="flex items-center gap-2 font-medium text-on-surface dark:text-dark-on-surface">
+              <AlertTriangle className="h-4 w-4" />
+              Email sorting is paused
+            </p>
+            {emailSorting.reason && <p className="text-label-md meta-copy">{emailSorting.reason}</p>}
+            <Link href="/settings#ai-data" className="text-label-sm font-medium text-on-surface hover:underline dark:text-dark-on-surface">
+              Open AI data settings
+            </Link>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-3 md:grid-cols-3 md:gap-4">
         <Link href="/inbox">

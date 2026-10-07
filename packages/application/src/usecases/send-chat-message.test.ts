@@ -1,13 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { z } from "zod";
 import type {
   ConversationMessage,
   ConversationRepository,
-  IntentExtractionPort,
-  SynthesisPort,
   Logger,
 } from "@oneon/domain";
 import { sendChatMessage, type SendChatMessageDeps } from "./send-chat-message.js";
-import type { ToolRegistry, ToolExecutionResult } from "../tools/tool-registry.js";
+import { createToolRegistry, type ToolRegistry, type ToolExecutionResult } from "../tools/tool-registry.js";
+import { createModelGateway, type GatewayResult } from "../ai-boundary/gateway.js";
+import { Fingerprinter } from "../ai-boundary/fingerprints.js";
+import { InMemoryChoices, InMemoryModelAudit } from "../ai-boundary/__tests__/in-memory-audit.js";
+import { FakeProvider } from "../ai-boundary/__tests__/fake-provider.js";
+import { answered, denied, stubGateway } from "../ai-boundary/__tests__/stub-gateway.js";
+import { DATA_WITHHELD_NOTE } from "./synthesize-response.js";
+import { SECRET_IN_MESSAGE_TEXT, SECRET_IN_DATA_TEXT, PROVIDER_UNAVAILABLE_MESSAGE, POLICY_DENIED_MESSAGE } from "./send-chat-message.js";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -46,23 +52,32 @@ function createMockLogger(): Logger {
   };
 }
 
+/**
+ * A stub gateway: intent rounds answer from the script, and the chat reply is
+ * denied unless a reply is given (the tool summaries then become the response).
+ */
 function createMockExtractor(
-  intents: Array<Array<{ tool: string; parameters: Record<string, unknown> }>>
-): IntentExtractionPort {
+  intents: Array<Array<{ tool: string; parameters: Record<string, unknown> }>>,
+  reply: GatewayResult = denied("required_part_withheld"),
+) {
   let callIndex = 0;
-  return {
-    extractIntents: vi.fn(async () => {
-      const response = intents[callIndex] ?? [];
-      callIndex++;
-      return response;
-    }),
-  };
+  return stubGateway({
+    respond: (req) => (req.purpose === "chat_reply" ? reply : answered(intents[callIndex++] ?? [])),
+  });
 }
 
-function createMockSynthesizer(response: string): SynthesisPort {
-  return {
-    synthesize: vi.fn(async () => response),
-  };
+/** A real registry with one tool that returns `result`, declaring only the action as model-visible. */
+function registryWithTool(name: string, result: { data: unknown; summary: string }) {
+  const registry = createToolRegistry();
+  registry.register({
+    name,
+    version: "1",
+    description: name,
+    inputSchema: z.object({}).passthrough(),
+    output: { fields: { action: { class: "D1" } }, summaryClass: "D2" },
+    execute: () => result,
+  });
+  return registry;
 }
 
 function createMockToolRegistry(
@@ -117,7 +132,7 @@ describe("sendChatMessage", () => {
     deps = { conversationRepo, logger };
   });
 
-  // ── Placeholder path (no intentExtractor) ──────────────────
+  // ── Placeholder path (no modelGateway) ──────────────────
 
   it("persists the user message via conversationRepo.append", async () => {
     await sendChatMessage(deps, { message: "Hello Oneon", userId: "user-A" });
@@ -131,7 +146,7 @@ describe("sendChatMessage", () => {
     );
   });
 
-  it("persists the assistant placeholder response when no extractor", async () => {
+  it("persists the assistant placeholder response when no gateway", async () => {
     await sendChatMessage(deps, { message: "Hello", userId: "user-A" });
 
     const calls = (conversationRepo.append as ReturnType<typeof vi.fn>).mock.calls;
@@ -256,12 +271,14 @@ describe("sendChatMessage", () => {
 
   // ── Intent Loop Path ──────────────────────────────────────
 
-  it("runs intent loop when intentExtractor and toolRegistry provided", async () => {
-    const extractor = createMockExtractor([
-      [{ tool: "list_deadlines", parameters: {} }],
-      [{ tool: "none", parameters: {} }],
-    ]);
-    const synthesizer = createMockSynthesizer("You have 2 deadlines this week.");
+  it("runs intent loop when modelGateway and toolRegistry provided", async () => {
+    const extractor = createMockExtractor(
+      [
+        [{ tool: "list_deadlines", parameters: {} }],
+        [{ tool: "none", parameters: {} }],
+      ],
+      answered({ answer: "You have 2 deadlines this week.", usedTools: ["list_deadlines"] }),
+    );
     const registry = createMockToolRegistry({
       list_deadlines: makeToolResult("list_deadlines", "Found 2 deadlines"),
     });
@@ -270,16 +287,14 @@ describe("sendChatMessage", () => {
       {
         conversationRepo,
         logger,
-        intentExtractor: extractor,
-        synthesizer,
+        modelGateway: extractor,
         toolRegistry: registry,
       },
       { message: "What deadlines do I have?", now: NOW, timezone: "UTC", userId: "user-A" }
     );
 
     expect(result.response).toBe("You have 2 deadlines this week.");
-    expect(extractor.extractIntents).toHaveBeenCalled();
-    expect(synthesizer.synthesize).toHaveBeenCalled();
+    expect(extractor.requests.map((r) => r.purpose)).toEqual(["intent_extraction", "intent_extraction", "chat_reply"]);
   });
 
   it("passes the turn id to tools and returns the actions they requested", async () => {
@@ -293,7 +308,7 @@ describe("sendChatMessage", () => {
     });
 
     const result = await sendChatMessage(
-      { conversationRepo, logger, intentExtractor: extractor, toolRegistry: registry },
+      { conversationRepo, logger, modelGateway: extractor, toolRegistry: registry },
       { message: "Set up a call", now: NOW, userId: "user-A" }
     );
 
@@ -317,7 +332,7 @@ describe("sendChatMessage", () => {
       {
         conversationRepo,
         logger,
-        intentExtractor: extractor,
+        modelGateway: extractor,
         toolRegistry: registry,
       },
       { message: "test", now: NOW, userId: "user-A" }
@@ -332,16 +347,14 @@ describe("sendChatMessage", () => {
     expect(parsed[0].tool).toBe("list_deadlines");
   });
 
-  it("falls back to tool summaries when synthesizer fails", async () => {
-    const extractor = createMockExtractor([
-      [{ tool: "list_deadlines", parameters: {} }],
-      [{ tool: "none", parameters: {} }],
-    ]);
-    const failingSynthesizer: SynthesisPort = {
-      synthesize: vi.fn(async () => {
-        throw new Error("LLM down");
-      }),
-    };
+  it("falls back to tool summaries when the chat reply fails", async () => {
+    const extractor = createMockExtractor(
+      [
+        [{ tool: "list_deadlines", parameters: {} }],
+        [{ tool: "none", parameters: {} }],
+      ],
+      { kind: "failed", message: "Model call failed", withheld: [], decisionId: "d" },
+    );
     const registry = createMockToolRegistry({
       list_deadlines: makeToolResult("list_deadlines", "Found 2 deadlines"),
     });
@@ -350,21 +363,73 @@ describe("sendChatMessage", () => {
       {
         conversationRepo,
         logger,
-        intentExtractor: extractor,
-        synthesizer: failingSynthesizer,
+        modelGateway: extractor,
         toolRegistry: registry,
       },
       { message: "test", now: NOW, userId: "user-A" }
     );
 
     expect(result.response).toBe("Found 2 deadlines");
-    expect(logger.error).toHaveBeenCalledWith(
-      expect.stringContaining("Synthesis failed"),
-      expect.anything()
-    );
+    expect(logger.warn).toHaveBeenCalledWith("Chat reply unavailable", { kind: "failed" });
   });
 
-  it("returns concatenated summaries when no synthesizer provided", async () => {
+  it("adds the withheld note to the summaries when the chat reply is denied", async () => {
+    const extractor = createMockExtractor([
+      [{ tool: "list_deadlines", parameters: {} }],
+      [{ tool: "none", parameters: {} }],
+    ]);
+    const registry = createMockToolRegistry({
+      list_deadlines: makeToolResult("list_deadlines", "Found 2 deadlines"),
+    });
+
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: extractor, toolRegistry: registry },
+      { message: "test", now: NOW, userId: "user-A" }
+    );
+
+    expect(result.response).toBe(`Found 2 deadlines\n\n${DATA_WITHHELD_NOTE}`);
+  });
+
+  it("adds the withheld note to an answer when tool data was withheld", async () => {
+    const reply: GatewayResult = {
+      ...answered({ answer: "Two deadlines.", usedTools: [] }),
+      withheld: [{ part: "record:tool:list_deadlines", reason: "above_limit" }],
+    };
+    const extractor = createMockExtractor(
+      [
+        [{ tool: "list_deadlines", parameters: {} }],
+        [{ tool: "none", parameters: {} }],
+      ],
+      reply,
+    );
+    const registry = createMockToolRegistry({
+      list_deadlines: makeToolResult("list_deadlines", "Found 2 deadlines"),
+    });
+
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: extractor, toolRegistry: registry },
+      { message: "test", now: NOW, userId: "user-A" }
+    );
+
+    expect(result.response).toBe(`Two deadlines.\n\n${DATA_WITHHELD_NOTE}`);
+  });
+
+  it("uses one turn per message for the intent rounds and the reply", async () => {
+    const beginTurn = vi.fn();
+    const inner = createMockExtractor([[{ tool: "list_deadlines", parameters: {} }], [{ tool: "none", parameters: {} }]]);
+    beginTurn.mockImplementation((ctx, opts) => inner.beginTurn(ctx, opts));
+    const registry = createMockToolRegistry({ list_deadlines: makeToolResult("list_deadlines", "ok") });
+
+    await sendChatMessage(
+      { conversationRepo, logger, modelGateway: { beginTurn }, toolRegistry: registry },
+      { message: "test", now: NOW, userId: "user-A" }
+    );
+
+    expect(beginTurn).toHaveBeenCalledTimes(1);
+    expect(beginTurn).toHaveBeenCalledWith({ kind: "personal", identityId: "user-A" }, { channel: "web" });
+  });
+
+  it("returns concatenated summaries when the chat reply is denied", async () => {
     const extractor = createMockExtractor([
       [
         { tool: "list_deadlines", parameters: {} },
@@ -381,7 +446,7 @@ describe("sendChatMessage", () => {
       {
         conversationRepo,
         logger,
-        intentExtractor: extractor,
+        modelGateway: extractor,
         toolRegistry: registry,
       },
       { message: "test", now: NOW, userId: "user-A" }
@@ -407,7 +472,7 @@ describe("sendChatMessage", () => {
       {
         conversationRepo,
         logger,
-        intentExtractor: extractor,
+        modelGateway: extractor,
         toolRegistry: registry,
       },
       { message: "Show my uber transactions", now: NOW, userId: "user-A" }
@@ -444,7 +509,7 @@ describe("sendChatMessage", () => {
       {
         conversationRepo,
         logger,
-        intentExtractor: extractor,
+        modelGateway: extractor,
         toolRegistry: registry,
       },
       { message: "Find Teams updates about release", now: NOW, userId: "user-A" },
@@ -488,7 +553,7 @@ describe("sendChatMessage", () => {
       {
         conversationRepo,
         logger,
-        intentExtractor: extractor,
+        modelGateway: extractor,
         toolRegistry: registry,
       },
       { message: "Draft my plan in my usual style", now: NOW, userId: "user-A" },
@@ -515,12 +580,245 @@ describe("sendChatMessage", () => {
       {
         conversationRepo,
         logger,
-        intentExtractor: extractor,
+        modelGateway: extractor,
         toolRegistry: registry,
       },
       { message: "test", now: NOW, userId: "user-A" }
     );
 
     expect(result.response).toContain("trouble processing");
+  });
+
+  it("still answers at the D1 default, leaving earlier assistant replies out (Review Focus 1)", async () => {
+    const provider = new FakeProvider("deepseek", [
+      JSON.stringify([{ tool: "list_deadlines", parameters: {} }]),
+      JSON.stringify([{ tool: "none", parameters: {} }]),
+      JSON.stringify({ answer: "Here you go", usedTools: ["list_deadlines"] }),
+    ]);
+    const audit = new InMemoryModelAudit();
+    const gateway = createModelGateway({
+      providers: { deepseek: provider },
+      overrides: new Map(),
+      routing: { standard: "deepseek", reasoning: "deepseek" },
+      models: { deepseek: { standard: "s", reasoning: "r" } },
+      choices: new InMemoryChoices(),
+      audit,
+      fingerprinter: new Fingerprinter("k".repeat(32), 1),
+      maxRetries: 0,
+      timeouts: { standard: 1000, reasoning: 1000 },
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    const seeded: ConversationMessage[] = [
+      { id: "h1", userId: "u1", conversationId: "user:u1", role: "user", content: "hi", toolCalls: null, createdAt: "2026-04-16T08:00:00Z" },
+      { id: "h2", userId: "u1", conversationId: "user:u1", role: "assistant", content: "Ama owes you GHS 400", toolCalls: null, createdAt: "2026-04-16T08:00:01Z" },
+    ];
+    conversationRepo = createMockConversationRepo({ findRecentByConversation: vi.fn().mockReturnValue(seeded) });
+    const action = { id: "a1", actionType: "list_deadlines", label: "List", status: "done" };
+
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: registryWithTool("list_deadlines", { data: { action }, summary: "ok" }) },
+      { message: "anything new?", now: NOW, userId: "u1" }
+    );
+
+    expect(result.response.startsWith("Here you go")).toBe(true);
+    expect(provider.calls).toHaveLength(3);
+    expect(audit.decisions.map((d) => d.purpose)).toEqual(["intent_extraction", "intent_extraction", "chat_reply"]);
+    for (const call of provider.calls) {
+      expect(call.user).toContain("hi");
+      expect(call.user).not.toContain("Ama owes you");
+    }
+  });
+
+  it("explains a secret found in the message: rotate it", async () => {
+    const gateway = stubGateway({ respond: () => denied("secret_present", "message") });
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: createMockToolRegistry({}) },
+      { message: "test", now: NOW, userId: "user-A" }
+    );
+    expect(result.response).toBe(SECRET_IN_MESSAGE_TEXT);
+    expect(SECRET_IN_MESSAGE_TEXT).toBe("A password or key was detected in your message, so it wasn't sent to the AI. It's saved in this conversation, so rotate it now.");
+  });
+
+  it("explains a secret found in the request data", async () => {
+    const gateway = stubGateway({ respond: () => denied("secret_present", "data") });
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: createMockToolRegistry({}) },
+      { message: "test", now: NOW, userId: "user-A" }
+    );
+    expect(result.response).toBe(SECRET_IN_DATA_TEXT);
+    expect(SECRET_IN_DATA_TEXT).toBe("Something in the data for this request looks like a password or key, so it wasn't sent to the AI.");
+  });
+
+  it("denies the turn that pastes a key, then answers the next turn without the key reaching any provider call", async () => {
+    const KEY = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123";
+    const provider = new FakeProvider("deepseek", [
+      JSON.stringify([{ tool: "list_deadlines", parameters: {} }]),
+      JSON.stringify([{ tool: "none", parameters: {} }]),
+      JSON.stringify({ answer: "Here you go", usedTools: ["list_deadlines"] }),
+    ]);
+    const audit = new InMemoryModelAudit();
+    const gateway = createModelGateway({
+      providers: { deepseek: provider },
+      overrides: new Map(),
+      routing: { standard: "deepseek", reasoning: "deepseek" },
+      models: { deepseek: { standard: "s", reasoning: "r" } },
+      choices: new InMemoryChoices(),
+      audit,
+      fingerprinter: new Fingerprinter("k".repeat(32), 1),
+      maxRetries: 0,
+      timeouts: { standard: 1000, reasoning: 1000 },
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    const stored: ConversationMessage[] = [];
+    conversationRepo = createMockConversationRepo({
+      append: vi.fn().mockImplementation((msg) => {
+        const m = { id: `m${stored.length + 1}`, userId: "u1", conversationId: msg.conversationId, role: msg.role, content: msg.content, toolCalls: msg.toolCalls, createdAt: "2026-04-16T09:00:00Z" } satisfies ConversationMessage;
+        stored.push(m);
+        return m;
+      }),
+      findRecentByConversation: vi.fn().mockImplementation(() => [...stored]),
+    });
+    const action = { id: "a1", actionType: "list_deadlines", label: "List", status: "done" };
+    const deps = { conversationRepo, logger, modelGateway: gateway, toolRegistry: registryWithTool("list_deadlines", { data: { action }, summary: "ok" }) };
+
+    const first = await sendChatMessage(deps, { message: `my key is ${KEY}`, now: NOW, userId: "u1" });
+    expect(first.response).toBe(SECRET_IN_MESSAGE_TEXT);
+    expect(provider.calls).toHaveLength(0);
+    expect(audit.decisions.map((d) => d.denyReason)).toEqual(["secret_present"]);
+
+    const second = await sendChatMessage(deps, { message: "anything new?", now: NOW, userId: "u1" });
+    expect(second.response.startsWith("Here you go")).toBe(true);
+    expect(provider.calls).toHaveLength(3);
+    for (const call of provider.calls) expect(`${call.system}
+${call.user}`).not.toContain("sk-ant");
+    expect(audit.decisions.slice(1).map((d) => d.decision)).toEqual(["allow", "allow", "allow"]);
+    expect(audit.decisions[1].withheld).toContainEqual({ part: "history", turn: 0, reason: "secret_present" });
+  });
+
+  function realGateway(provider: FakeProvider) {
+    const audit = new InMemoryModelAudit();
+    const gateway = createModelGateway({
+      providers: { deepseek: provider },
+      overrides: new Map(),
+      routing: { standard: "deepseek", reasoning: "deepseek" },
+      models: { deepseek: { standard: "s", reasoning: "r" } },
+      choices: new InMemoryChoices(),
+      audit,
+      fingerprinter: new Fingerprinter("k".repeat(32), 1),
+      maxRetries: 0,
+      timeouts: { standard: 1000, reasoning: 1000 },
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    return { gateway, audit };
+  }
+
+  it("says a key in tool data stopped the reply, instead of blaming the AI data settings", async () => {
+    const KEY = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123";
+    const provider = new FakeProvider("deepseek", [JSON.stringify([{ tool: "list_notes", parameters: {} }])]);
+    const { gateway, audit } = realGateway(provider);
+    const registry = createToolRegistry();
+    registry.register({
+      name: "list_notes",
+      version: "1",
+      description: "list_notes",
+      inputSchema: z.object({}).passthrough(),
+      output: { fields: { note: { class: "D2", freeText: true } }, summaryClass: "D2" },
+      execute: () => ({ data: { note: `token ${KEY}` }, summary: "1 note" }),
+    });
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: registry },
+      { message: "show my notes", now: NOW, userId: "u1" }
+    );
+    expect(result.response).toBe(`1 note
+
+${SECRET_IN_DATA_TEXT}`);
+    expect(result.response).not.toContain(DATA_WITHHELD_NOTE);
+    expect(audit.decisions.some((d) => d.denyReason === "secret_present")).toBe(true);
+    for (const call of provider.calls) expect(`${call.system}
+${call.user}`).not.toContain("sk-ant");
+  });
+
+  it("never sends a fragment of a key that straddles the history cap", async () => {
+    const KEY = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123";
+    const provider = new FakeProvider("deepseek", [
+      JSON.stringify([{ tool: "list_deadlines", parameters: {} }]),
+      JSON.stringify([{ tool: "none", parameters: {} }]),
+      JSON.stringify({ answer: "Here you go", usedTools: ["list_deadlines"] }),
+    ]);
+    const { gateway, audit } = realGateway(provider);
+    const seeded: ConversationMessage[] = [
+      { id: "h1", userId: "u1", conversationId: "user:u1", role: "user", content: "x".repeat(1980) + " " + KEY + " tail", toolCalls: null, createdAt: "2026-04-16T08:00:00Z" },
+    ];
+    conversationRepo = createMockConversationRepo({ findRecentByConversation: vi.fn().mockReturnValue(seeded) });
+    const action = { id: "a1", actionType: "list_deadlines", label: "List", status: "done" };
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: registryWithTool("list_deadlines", { data: { action }, summary: "ok" }) },
+      { message: "anything new?", now: NOW, userId: "u1" }
+    );
+    expect(result.response.startsWith("Here you go")).toBe(true);
+    expect(provider.calls).toHaveLength(3);
+    for (const call of provider.calls) expect(`${call.system}
+${call.user}`).not.toMatch(/sk-ant|api03/);
+    expect(audit.decisions[0].withheld).toContainEqual({ part: "history", turn: 0, reason: "secret_present" });
+  });
+
+  it("says the AI is unavailable when the provider is", async () => {
+    const gateway = stubGateway({ respond: () => denied("provider_unavailable") });
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: createMockToolRegistry({}) },
+      { message: "test", now: NOW, userId: "user-A" }
+    );
+    expect(result.response).toBe(PROVIDER_UNAVAILABLE_MESSAGE);
+  });
+
+  it("points at the AI data settings for any other denial", async () => {
+    const gateway = stubGateway({ respond: () => denied("required_part_withheld") });
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: createMockToolRegistry({}) },
+      { message: "test", now: NOW, userId: "user-A" }
+    );
+    expect(result.response).toBe(POLICY_DENIED_MESSAGE);
+  });
+
+  it("logs only the error name when the reply path throws", async () => {
+    const turnGateway = {
+      beginTurn: () => ({
+        call: vi.fn().mockResolvedValueOnce(answered([{ tool: "list_deadlines", parameters: {} }])).mockResolvedValueOnce(answered([{ tool: "none", parameters: {} }])).mockRejectedValue(new TypeError("secret ama@x.com")),
+        restoreToolParams: (params: Record<string, unknown>) => ({ ok: true as const, params }),
+        effectiveLimit: () => "D1" as const,
+      }),
+    };
+    const registry = createMockToolRegistry({ list_deadlines: makeToolResult("list_deadlines", "Found 2") });
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: turnGateway, toolRegistry: registry },
+      { message: "test", now: NOW, userId: "user-A" }
+    );
+    expect(result.response).toBe("Found 2");
+    expect(logger.error).toHaveBeenCalledWith(expect.any(String), { errorName: "TypeError" });
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain("ama@x.com");
+  });
+
+  it("still lists the requested action when the chat reply is denied (Review Focus 7)", async () => {
+    const action = { id: "a1", actionType: "create_calendar_event", label: "Create calendar event", status: "awaiting_approval" };
+    let intentRounds = 0;
+    const gateway = stubGateway({
+      respond: (req) =>
+        req.purpose === "chat_reply"
+          ? denied("required_part_withheld")
+          : answered(intentRounds++ === 0 ? [{ tool: "create_calendar_event", parameters: { title: "Sync" } }] : [{ tool: "none", parameters: {} }]),
+    });
+
+    const result = await sendChatMessage(
+      {
+        conversationRepo,
+        logger,
+        modelGateway: gateway,
+        toolRegistry: registryWithTool("create_calendar_event", { data: { action }, summary: "Waiting for your approval in Action Center." }),
+      },
+      { message: "book a sync", now: NOW, userId: "u1" }
+    );
+
+    expect(result.actions).toEqual([action]);
+    expect(result.response).toContain("Waiting for your approval");
   });
 });

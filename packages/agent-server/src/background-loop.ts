@@ -197,6 +197,7 @@ export class BackgroundLoop {
           skippedMaxAttempts: 0,
           skippedDailyLimit: 0,
           failed: 0,
+          pausedByPolicy: 0,
         },
         actionsProposed: 0,
         actionsAutoExecuted: 0,
@@ -217,6 +218,7 @@ export class BackgroundLoop {
           aggregated.classification.skippedMaxAttempts += summary.classification.skippedMaxAttempts;
           aggregated.classification.skippedDailyLimit += summary.classification.skippedDailyLimit;
           aggregated.classification.failed += summary.classification.failed;
+          aggregated.classification.pausedByPolicy += summary.classification.pausedByPolicy;
           aggregated.actionsProposed += summary.actionsProposed;
           aggregated.actionsAutoExecuted += summary.actionsAutoExecuted;
           aggregated.actionErrors += summary.actionErrors;

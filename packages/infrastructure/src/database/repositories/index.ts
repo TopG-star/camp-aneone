@@ -15,3 +15,5 @@ export { SqlitePersonalMemoryPinRepository } from "./sqlite-personal-memory-pin.
 export { SqliteActionInstanceRepository } from "./sqlite-action-instance.repository.js";
 export { SqliteActionConfigRepository } from "./sqlite-action-config.repository.js";
 export { SqliteLegacyActionRepository } from "./sqlite-legacy-action.repository.js";
+export { SqliteModelAuditRepository } from "./sqlite-model-audit.repository.js";
+export { SqliteAiDataChoiceRepository } from "./sqlite-ai-data-choice.repository.js";

@@ -5,6 +5,7 @@ import type {
   BankStatementRepository,
 } from "@oneon/domain";
 import type { ToolDefinition, ToolResult } from "./tool-registry.js";
+import { TRANSACTION_FIELDS } from "./output-schema.js";
 import { resolveFinanceUserId } from "./finance-tool-helpers.js";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -47,6 +48,10 @@ export function createTopFinanceTransactionsTool(
     description:
       "List top finance transactions by inflow, outflow, or absolute amount.",
     inputSchema: topFinanceTransactionsSchema,
+    output: {
+      fields: TRANSACTION_FIELDS,
+      summaryClass: "D1",
+    },
     execute(validatedInput: unknown): ToolResult {
       const input = validatedInput as TopFinanceTransactionsInput;
       const userId = resolveFinanceUserId(bankStatementRepo, input.userId);

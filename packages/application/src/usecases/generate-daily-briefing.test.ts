@@ -1,10 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   generateDailyBriefing,
-  buildBriefingPrompt,
   type GenerateDailyBriefingDeps,
   type GenerateDailyBriefingInput,
-  type BriefingData,
   type PendingActionSummary,
 } from "./generate-daily-briefing.js";
 import type {
@@ -13,7 +11,6 @@ import type {
   DeadlineRepository,
   CalendarPort,
   CalendarEvent,
-  SynthesisPort,
   Logger,
   Classification,
   InboundItem,
@@ -21,6 +18,7 @@ import type {
   Category,
   Priority,
 } from "@oneon/domain";
+import { stubGateway, answered, denied, blocked } from "../ai-boundary/__tests__/stub-gateway.js";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -134,19 +132,21 @@ function createDeps(overrides: Partial<GenerateDailyBriefingDeps> = {}): Generat
     count: vi.fn(() => 0),
   };
 
-  const synthesizer: SynthesisPort = {
-    synthesize: vi.fn(async () => "Your morning briefing summary."),
-  };
-
   return {
     classificationRepo,
     inboundItemRepo,
     deadlineRepo,
     listPendingActions: () => [],
-    synthesizer,
+    modelGateway: stubGateway({ respond: () => answered(null, "Your morning briefing summary.") }),
     logger: createMockLogger(),
     ...overrides,
   };
+}
+
+function createDepsWithDeadline(overrides: Partial<GenerateDailyBriefingDeps>): GenerateDailyBriefingDeps {
+  const deps = createDeps(overrides);
+  vi.mocked(deps.deadlineRepo.findByDateRange).mockReturnValue([makeDeadline("item-1")]);
+  return deps;
 }
 
 function defaultInput(overrides: Partial<GenerateDailyBriefingInput> = {}): GenerateDailyBriefingInput {
@@ -346,28 +346,61 @@ describe("generateDailyBriefing", () => {
     expect(deps.logger.error).toHaveBeenCalled();
   });
 
-  it("calls synthesizer with a prompt and returns its output as summary", async () => {
-    const deps = createDeps();
-    vi.mocked(deps.synthesizer.synthesize).mockResolvedValue("Here is your briefing: nothing urgent.");
-
-    const result = await generateDailyBriefing(deps, defaultInput());
+  it("sends a daily_briefing request through the gateway and returns its text as summary", async () => {
+    const gateway = stubGateway({ respond: () => answered(null, "Here is your briefing: nothing urgent.") });
+    const result = await generateDailyBriefing(createDepsWithDeadline({ modelGateway: gateway }), defaultInput());
 
     expect(result.summary).toBe("Here is your briefing: nothing urgent.");
-    expect(deps.synthesizer.synthesize).toHaveBeenCalledOnce();
-    expect(typeof (deps.synthesizer.synthesize as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe("string");
+    expect(result.aiWithheld).toBe(false);
+    expect(gateway.requests).toHaveLength(1);
+    expect(gateway.requests[0].purpose).toBe("daily_briefing");
   });
 
-  it("falls back to structured text when synthesizer throws", async () => {
-    const dl = makeDeadline("item-1", { dueDate: "2026-04-20" });
-    const deps = createDeps();
-    vi.mocked(deps.deadlineRepo.findByDateRange).mockReturnValue([dl]);
-    vi.mocked(deps.synthesizer.synthesize).mockRejectedValue(new Error("Sonnet down"));
-
+  it("falls back to the structured summary and flags aiWithheld when the gateway denies", async () => {
+    const deps = createDepsWithDeadline({ modelGateway: stubGateway({ respond: () => denied("required_part_withheld") }) });
     const result = await generateDailyBriefing(deps, defaultInput());
+    expect(result.aiWithheld).toBe(true);
+    expect(result.summary).toContain("Briefing for");
+    expect(deps.logger.info).toHaveBeenCalledWith("Briefing AI summary withheld by policy", { reason: "required_part_withheld" });
+  });
 
-    expect(result.summary).toContain("Briefing for 2026-04-17");
-    expect(result.summary).toContain("Deadline");
-    expect(deps.logger.warn).toHaveBeenCalled();
+  it("falls back without flagging aiWithheld when the gateway blocks the answer", async () => {
+    const deps = createDepsWithDeadline({ modelGateway: stubGateway({ respond: () => blocked("placeholder_leak" as never) }) });
+    const result = await generateDailyBriefing(deps, defaultInput());
+    expect(result.aiWithheld).toBe(false);
+    expect(result.summary).toContain("Briefing for");
+    expect(deps.logger.warn).toHaveBeenCalledWith("Briefing synthesis failed, using fallback", { kind: "blocked" });
+  });
+
+  it("uses the fallback without calling a model when there is no user", async () => {
+    const gateway = stubGateway({ respond: () => answered(null, "AI text") });
+    const result = await generateDailyBriefing(createDeps({ modelGateway: gateway }), defaultInput({ userId: undefined }));
+    expect(gateway.requests).toHaveLength(0);
+    expect(result.aiWithheld).toBe(false);
+    expect(result.summary).toContain("Briefing for");
+  });
+
+  it("skips the gateway on an empty day and does not flag aiWithheld", async () => {
+    const gateway = stubGateway({ respond: () => denied("required_part_withheld") });
+    const result = await generateDailyBriefing(createDeps({ modelGateway: gateway }), defaultInput());
+    expect(gateway.requests).toHaveLength(0);
+    expect(result.aiWithheld).toBe(false);
+    expect(result.summary).toContain("Nothing urgent");
+  });
+
+  it("falls back without flagging aiWithheld when the gateway fails, logging only the kind", async () => {
+    const failed = { kind: "failed" as const, message: "no answer", withheld: [], decisionId: "d" };
+    const deps = createDepsWithDeadline({ modelGateway: stubGateway({ respond: () => failed }) });
+    const result = await generateDailyBriefing(deps, defaultInput());
+    expect(result.aiWithheld).toBe(false);
+    expect(result.summary).toContain("Briefing for");
+    expect(deps.logger.warn).toHaveBeenCalledWith("Briefing synthesis failed, using fallback", { kind: "failed" });
+  });
+
+  it("uses the fallback when there is no gateway", async () => {
+    const result = await generateDailyBriefing(createDeps({ modelGateway: null }), defaultInput());
+    expect(result.aiWithheld).toBe(false);
+    expect(result.summary).toContain("Briefing for");
   });
 
   it("uses 'now' param to derive date — boundary test start of day", async () => {
@@ -443,101 +476,5 @@ describe("generateDailyBriefing", () => {
       "2026-04-17T18:15:00.000Z",
       "2026-04-18T18:15:00.000Z",
     );
-  });
-});
-
-// ── Tests: buildBriefingPrompt ───────────────────────────────
-
-describe("buildBriefingPrompt", () => {
-  const emptyData: BriefingData = {
-    date: "2026-04-17",
-    urgentItems: [],
-    deadlines: [],
-    pendingActions: [],
-    calendar: { status: "not_connected", events: [] },
-  };
-
-  it("includes date in the prompt", () => {
-    const prompt = buildBriefingPrompt(emptyData);
-    expect(prompt).toContain("2026-04-17");
-  });
-
-  it("includes 'Calendar integration not yet configured' when not_connected", () => {
-    const prompt = buildBriefingPrompt(emptyData);
-    expect(prompt).toContain("not yet configured");
-  });
-
-  it("includes calendar event titles when connected", () => {
-    const data: BriefingData = {
-      ...emptyData,
-      calendar: {
-        status: "connected",
-        events: [makeCalendarEvent({ title: "Sprint Planning" })],
-      },
-    };
-    const prompt = buildBriefingPrompt(data);
-    expect(prompt).toContain("Sprint Planning");
-  });
-
-  it("includes urgent item subjects", () => {
-    const data: BriefingData = {
-      ...emptyData,
-      urgentItems: [{
-        id: "item-1",
-        subject: "Server outage alert",
-        from: "ops@example.com",
-        source: "outlook",
-        category: "urgent",
-        priority: 1,
-        summary: "Production server is down",
-      }],
-    };
-    const prompt = buildBriefingPrompt(data);
-    expect(prompt).toContain("Server outage alert");
-    expect(prompt).toContain("Production server is down");
-  });
-
-  it("includes deadline descriptions and due dates", () => {
-    const data: BriefingData = {
-      ...emptyData,
-      deadlines: [makeDeadline("item-1", { dueDate: "2026-04-20", description: "Q2 Report" })],
-    };
-    const prompt = buildBriefingPrompt(data);
-    expect(prompt).toContain("Q2 Report");
-    expect(prompt).toContain("2026-04-20");
-  });
-
-  it("includes pending actions section", () => {
-    const data: BriefingData = {
-      ...emptyData,
-      pendingActions: [makeAction({ actionType: "create_reminder", resourceId: "deadline:d1", riskLevel: "L1" })],
-    };
-    const prompt = buildBriefingPrompt(data);
-    expect(prompt).toContain("Pending");
-    expect(prompt).toContain("- create_reminder on deadline:d1 [L1]");
-  });
-
-  it("includes calendar error status in prompt", () => {
-    const data: BriefingData = {
-      ...emptyData,
-      calendar: { status: "error", events: [] },
-    };
-    const prompt = buildBriefingPrompt(data);
-    expect(prompt).toContain("error");
-  });
-
-  it("renders all-day events as 'All day' instead of time range", () => {
-    const data: BriefingData = {
-      ...emptyData,
-      calendar: {
-        status: "connected",
-        events: [
-          makeCalendarEvent({ title: "Company Holiday", allDay: true, start: "2026-04-17", end: "2026-04-18" }),
-        ],
-      },
-    };
-    const prompt = buildBriefingPrompt(data);
-    expect(prompt).toContain("All day: Company Holiday");
-    expect(prompt).not.toContain("T00:00");
   });
 });

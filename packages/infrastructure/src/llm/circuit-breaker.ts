@@ -63,10 +63,14 @@ export class CircuitBreaker {
   }
 
   private onFailure(error: unknown): void {
+    const statusCode = extractStatusCode(error);
+    // A request the provider rejected (e.g. an oversized prompt) says nothing about its health, so it neither counts
+    // nor resets the count. Auth failures and rate limits still do.
+    if (statusCode !== undefined && statusCode >= 400 && statusCode < 500 && statusCode !== 401 && statusCode !== 403 && statusCode !== 429) return;
+
     this.failureCount++;
     this.lastFailureTime = Date.now();
 
-    const statusCode = extractStatusCode(error);
     const isFatal = statusCode === 401 || statusCode === 403;
 
     if (isFatal) {

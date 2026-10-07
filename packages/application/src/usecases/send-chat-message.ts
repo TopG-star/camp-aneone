@@ -1,27 +1,26 @@
 import type {
   ConversationMessage,
   ConversationRepository,
-  IntentExtractionPort,
-  SynthesisPort,
   Logger,
 } from "@oneon/domain";
 import type { ToolRegistry } from "../tools/tool-registry.js";
 import type { ChatActionRef } from "../actions/chat-action-tools.js";
 import { truncateHistory } from "./truncate-history.js";
-import { runIntentLoop } from "./run-intent-loop.js";
-import { synthesizeResponse } from "./synthesize-response.js";
+import { runIntentLoop, errorName } from "./run-intent-loop.js";
+import { synthesizeResponse, DATA_WITHHELD_NOTE } from "./synthesize-response.js";
+import type { SecretLocation } from "../ai-boundary/decide.js";
+import type { ModelGateway } from "../ai-boundary/gateway.js";
 import type {
   ChatContextStats,
   ChatPersonaProfile,
-} from "./build-chat-context.js";
+} from "../ai-boundary/requests/chat.js";
 
 // ── Types ────────────────────────────────────────────────────
 
 export interface SendChatMessageDeps {
   conversationRepo: ConversationRepository;
   logger: Logger;
-  intentExtractor?: IntentExtractionPort | null;
-  synthesizer?: SynthesisPort | null;
+  modelGateway?: ModelGateway | null;
   toolRegistry?: ToolRegistry | null;
   stats?: ChatContextStats | null;
 }
@@ -47,6 +46,10 @@ export interface SendChatMessageResult {
 // ── Constants ────────────────────────────────────────────────
 
 const PLACEHOLDER_RESPONSE = "I'm not connected to tools yet. This will be upgraded once the tool registry and intent extraction loop are wired in.";
+export const SECRET_IN_MESSAGE_TEXT = "A password or key was detected in your message, so it wasn't sent to the AI. It's saved in this conversation, so rotate it now.";
+export const SECRET_IN_DATA_TEXT = "Something in the data for this request looks like a password or key, so it wasn't sent to the AI.";
+export const PROVIDER_UNAVAILABLE_MESSAGE = "The AI is unavailable right now.";
+export const POLICY_DENIED_MESSAGE = "Your AI data settings stopped this message from being sent to the AI.";
 const FALLBACK_RESPONSE = "I ran into trouble processing your request. Please try again.";
 const HISTORY_LIMIT = 20;
 const TRUNCATE_OPTIONS = {
@@ -87,13 +90,15 @@ export async function sendChatMessage(
   let actions: ChatActionRef[] = [];
 
   const canRunLoop =
-    deps.intentExtractor != null &&
+    deps.modelGateway != null &&
     deps.toolRegistry != null;
 
   if (canRunLoop) {
+    // One turn per message: placeholders stay the same across the intent rounds and the reply.
+    const turn = deps.modelGateway!.beginTurn({ kind: "personal", identityId: userId }, { channel: "web" });
     const loopResult = await runIntentLoop(
       {
-        intentExtractor: deps.intentExtractor!,
+        modelTurn: turn,
         toolRegistry: deps.toolRegistry!,
         logger,
       },
@@ -119,36 +124,42 @@ export async function sendChatMessage(
       toolCallsJson = JSON.stringify(loopResult.toolCalls);
     }
 
-    // Synthesize final response
-    if (deps.synthesizer != null && loopResult.toolCalls.length > 0) {
+    // Tool summaries are the fallback whenever the model reply is not available.
+    const summaryFallback = (): string => {
+      const summaries = loopResult.toolCalls
+        .filter((tc) => tc.result !== null)
+        .map((tc) => tc.result!.summary);
+      return summaries.length > 0 ? summaries.join("\n") : FALLBACK_RESPONSE;
+    };
+
+    if (loopResult.toolCalls.length > 0) {
       try {
-        const synthesisResult = await synthesizeResponse(
-          { synthesizer: deps.synthesizer, logger },
+        const synthesis = await synthesizeResponse(
+          { modelTurn: turn, logger },
           {
             userMessage: input.message,
             toolCalls: loopResult.toolCalls,
             history: truncateHistory(history, TRUNCATE_OPTIONS),
             persona: input.persona ?? null,
-          }
+            registry: deps.toolRegistry!,
+          },
         );
-        response = synthesisResult.response.answer;
-        logger.debug("Synthesis completed", synthesisResult.meta);
+        // A key in the tool data is not a settings matter: say what happened instead of pointing at the settings.
+        const keyInData = synthesis.kind === "unavailable" && synthesis.deniedReason === "secret_present" && synthesis.secretIn === "data";
+        const note = keyInData ? `\n\n${SECRET_IN_DATA_TEXT}` : synthesis.dataWithheld ? `\n\n${DATA_WITHHELD_NOTE}` : "";
+        response = (synthesis.kind === "answered" ? synthesis.response.answer : summaryFallback()) + note;
       } catch (error) {
-        logger.error("Synthesis failed, using tool summaries as fallback", {
-          error: error instanceof Error ? error.message : String(error),
+        // Never log the error text: it may carry prompt or tool data.
+        logger.error("Chat reply failed unexpectedly, using tool summaries as fallback", {
+          errorName: errorName(error),
         });
-        const summaries = loopResult.toolCalls
-          .filter((tc) => tc.result !== null)
-          .map((tc) => tc.result!.summary);
-        response = summaries.length > 0 ? summaries.join("\n") : FALLBACK_RESPONSE;
+        response = summaryFallback();
       }
-    } else if (loopResult.toolCalls.length > 0) {
-      const summaries = loopResult.toolCalls
-        .filter((tc) => tc.result !== null)
-        .map((tc) => tc.result!.summary);
-      response = summaries.length > 0 ? summaries.join("\n") : FALLBACK_RESPONSE;
     } else {
-      response = FALLBACK_RESPONSE;
+      response =
+        loopResult.stopped === "policy_denied"
+          ? deniedMessage(loopResult.deniedReason, loopResult.secretIn)
+          : FALLBACK_RESPONSE;
     }
   } else {
     response = PLACEHOLDER_RESPONSE;
@@ -181,6 +192,12 @@ export async function sendChatMessage(
 }
 
 // ── Helpers ──────────────────────────────────────────────────
+
+function deniedMessage(reason: string | undefined, secretIn: SecretLocation | undefined): string {
+  if (reason === "secret_present") return secretIn === "data" ? SECRET_IN_DATA_TEXT : SECRET_IN_MESSAGE_TEXT;
+  if (reason === "provider_unavailable") return PROVIDER_UNAVAILABLE_MESSAGE;
+  return POLICY_DENIED_MESSAGE;
+}
 
 function defaultStats(): ChatContextStats {
   return {

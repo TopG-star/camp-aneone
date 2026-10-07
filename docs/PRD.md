@@ -128,6 +128,7 @@ execution. *LLM decides; software guarantees.*
 | FR-032 | Action Center shows origin, plan, evidence, policy reasons, checks and timeline; buttons follow policy | P0 |
 | FR-033 | Actions whose policy outcome is auto run immediately after validation | P0 |
 | FR-034 | Retrying a failed or expired action creates a new linked action | P1 |
+| FR-072 | Every model call passes the Model Gateway (AI data boundary, ADR-012); fields carry declared classes D0–D4; the effective limit is the lowest of platform, override, person/pharmacy and purpose limits; personal D2 needs an explicit opt-in in Settings → AI data; the audit log stores decisions and released shape, never content. | P0 |
 
 ### 5.5 Daily Briefing
 
