@@ -20,11 +20,21 @@ import { createOAuthRouter } from "./oauth.route.js";
 import { createIntegrationsRouter } from "./integrations.route.js";
 import { createPushSubscriptionsRouter } from "./push-subscriptions.route.js";
 import { createUsersRouter } from "./users.route.js";
+import { createMemoryRouter } from "./memory.route.js";
 import { createTokenAuthMiddleware } from "../middleware/auth.js";
 import { createSessionAuthMiddleware } from "../middleware/session-auth.js";
 import { requireUser } from "../middleware/require-user.js";
-import { StructuredLogger } from "@oneon/infrastructure";
+import {
+  LocalDocMemoryProvider,
+  StructuredLogger,
+  TTLCache,
+  GCalHttpClient,
+  GoogleCalendarAdapter,
+  GitHubHttpClient,
+  GitHubAdapter,
+} from "@oneon/infrastructure";
 import type { RequestHandler } from "express";
+import type { CalendarEvent, GitHubNotification, GitHubPullRequest } from "@oneon/domain";
 import {
   createToolRegistry,
   createListInboxTool,
@@ -46,10 +56,18 @@ import {
   createSearchFinanceTransactionsTool,
   createTopFinanceTransactionsTool,
   createSummarizeFinanceSpendTool,
+  createFinanceSpendInsightsTool,
+  createSearchPersonalMemoryTool,
 } from "@oneon/application";
 
 export function registerRoutes(app: Express, container: AppContainer): void {
   const { env } = container;
+  const docMemoryProvider = env.FEATURE_PERSONAL_MEMORY
+    ? new LocalDocMemoryProvider({
+        roots: env.MEMORY_DOC_ROOTS,
+        maxFiles: env.MEMORY_DOC_MAX_FILES,
+      })
+    : null;
 
   // ── Auth middleware ─────────────────────────────────────────
   //
@@ -145,6 +163,66 @@ export function registerRoutes(app: Express, container: AppContainer): void {
   // ── Chat Endpoint ─────────────────────────────────────────
   if (env.FEATURE_CHAT) {
     const chatLogger = new StructuredLogger("chat", env.LOG_LEVEL);
+    const calendarPortByUser = new Map<string, NonNullable<typeof container.calendarPort>>();
+    const resolveCalendarPort = (userId: string) => {
+      if (calendarPortByUser.has(userId)) {
+        return calendarPortByUser.get(userId)!;
+      }
+
+      const tokenProvider = container.createGoogleTokenProvider(userId);
+      if (!tokenProvider) {
+        return null;
+      }
+
+      const port = new GoogleCalendarAdapter({
+        client: new GCalHttpClient(tokenProvider),
+        calendarId: env.CALENDAR_ID,
+        cache: new TTLCache<CalendarEvent[]>(),
+        cacheTtlMs: env.CALENDAR_CACHE_TTL_MS,
+      });
+
+      calendarPortByUser.set(userId, port);
+      return port;
+    };
+
+    const githubPortByUser = new Map<
+      string,
+      {
+        accessToken: string;
+        port: NonNullable<typeof container.githubPort>;
+      }
+    >();
+    const resolveGitHubPort = (userId: string) => {
+      if (!container.oauthTokenRepo) {
+        return null;
+      }
+
+      const token = container.oauthTokenRepo.get("github", userId);
+      if (!token) {
+        githubPortByUser.delete(userId);
+        return null;
+      }
+
+      const cached = githubPortByUser.get(userId);
+      if (cached && cached.accessToken === token.accessToken) {
+        return cached.port;
+      }
+
+      const port = new GitHubAdapter({
+        client: new GitHubHttpClient(token.accessToken),
+        notificationCache: new TTLCache<GitHubNotification[]>(),
+        searchCache: new TTLCache<GitHubPullRequest[]>(),
+        notificationCacheTtlMs: env.GITHUB_NOTIFICATION_CACHE_TTL_MS,
+        searchCacheTtlMs: env.GITHUB_SEARCH_CACHE_TTL_MS,
+      });
+
+      githubPortByUser.set(userId, {
+        accessToken: token.accessToken,
+        port,
+      });
+      return port;
+    };
+
 
     // Build tool registry with all available tools
     const toolRegistry = createToolRegistry();
@@ -175,6 +253,13 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     toolRegistry.register(createListNotificationsTool({
       notificationRepo: container.notificationRepo,
     }));
+    if (env.FEATURE_PERSONAL_MEMORY) {
+      toolRegistry.register(createSearchPersonalMemoryTool({
+        personalMemoryNoteRepo: container.personalMemoryNoteRepo,
+        personalMemoryPinRepo: container.personalMemoryPinRepo,
+        docMemoryProvider,
+      }));
+    }
 
     // Finance tools (only when finance intake feature is enabled)
     if (env.FEATURE_FINANCE_STATEMENT_INTAKE) {
@@ -193,6 +278,10 @@ export function registerRoutes(app: Express, container: AppContainer): void {
         bankStatementRepo: container.bankStatementRepo,
         bankStatementParseRepo: container.bankStatementParseRepo,
       }));
+      toolRegistry.register(createFinanceSpendInsightsTool({
+        bankStatementRepo: container.bankStatementRepo,
+        bankStatementParseRepo: container.bankStatementParseRepo,
+      }));
     }
 
 
@@ -200,26 +289,32 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     if (container.calendarPort) {
       toolRegistry.register(createListCalendarEventsTool({
         calendarPort: container.calendarPort,
-      }));
+        resolveCalendarPort,
+      } as Parameters<typeof createListCalendarEventsTool>[0]));
       toolRegistry.register(createCreateCalendarEventTool({
         calendarPort: container.calendarPort,
-      }));
+        resolveCalendarPort,
+      } as Parameters<typeof createCreateCalendarEventTool>[0]));
       toolRegistry.register(createUpdateCalendarEventTool({
         calendarPort: container.calendarPort,
-      }));
+        resolveCalendarPort,
+      } as Parameters<typeof createUpdateCalendarEventTool>[0]));
       toolRegistry.register(createSearchCalendarTool({
         calendarPort: container.calendarPort,
-      }));
+        resolveCalendarPort,
+      } as Parameters<typeof createSearchCalendarTool>[0]));
     }
 
     // GitHub tools (only if githubPort available)
     if (container.githubPort) {
       toolRegistry.register(createListGitHubNotificationsTool({
         githubPort: container.githubPort,
-      }));
+        resolveGitHubPort,
+      } as Parameters<typeof createListGitHubNotificationsTool>[0]));
       toolRegistry.register(createListGitHubPRsTool({
         githubPort: container.githubPort,
-      }));
+        resolveGitHubPort,
+      } as Parameters<typeof createListGitHubPRsTool>[0]));
     }
 
     // Teams tools (only if teamsPort available)
@@ -257,6 +352,10 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       createChatRouter({
         conversationRepo: container.conversationRepo,
         logger: chatLogger,
+        inboundItemRepo: container.inboundItemRepo,
+        classificationRepo: container.classificationRepo,
+        deadlineRepo: container.deadlineRepo,
+        actionLogRepo: container.actionLogRepo,
         userProfileRepo: container.userProfileRepo,
         intentExtractor: container.llmPort,
         synthesizer: container.llmPort,
@@ -318,6 +417,21 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     }),
   );
   profileLogger.info("Profile routes registered at /api/profile");
+
+  if (env.FEATURE_PERSONAL_MEMORY) {
+    const memoryLogger = new StructuredLogger("memory", env.LOG_LEVEL);
+    app.use(
+      "/api/memory",
+      ...userAuth,
+      createMemoryRouter({
+        personalMemoryNoteRepo: container.personalMemoryNoteRepo,
+        personalMemoryPinRepo: container.personalMemoryPinRepo,
+        docMemoryProvider,
+        logger: memoryLogger,
+      }),
+    );
+    memoryLogger.info("Memory routes registered at /api/memory");
+  }
 
   // ── Finance Statement Intake (read-only) ────────────────
   if (env.FEATURE_FINANCE_STATEMENT_INTAKE) {
@@ -387,6 +501,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       deadlineRepo: container.deadlineRepo,
       actionLogRepo: container.actionLogRepo,
       notificationRepo: container.notificationRepo,
+      preferenceRepo: container.preferenceRepo,
       calendarPort: container.calendarPort,
       logger: todayLogger,
     }),

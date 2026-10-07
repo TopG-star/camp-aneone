@@ -40,11 +40,20 @@ export const ActionItemResponseSchema = z.object({
   errorJson: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  // Enriched: source item metadata for human-readable action context
+  itemFrom: z.string().nullable(),
+  itemSource: z.string().nullable(),
   // Enriched: the source item's subject (if available)
   itemSubject: z.string().nullable(),
 });
 
 export type ActionItemResponse = z.infer<typeof ActionItemResponseSchema>;
+
+// ── Single Action Response (GET /api/actions/:id) ───────────
+
+export const ActionResponseSchema = ActionItemResponseSchema;
+
+export type ActionResponse = z.infer<typeof ActionResponseSchema>;
 
 // ── Actions List Response ────────────────────────────────────
 
