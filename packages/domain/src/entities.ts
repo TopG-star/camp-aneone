@@ -88,6 +88,7 @@ export interface Preference {
 
 export interface PushSubscription {
   id: string;
+  userId: string | null;
   endpoint: string;
   keysJson: string;
   createdAt: string;

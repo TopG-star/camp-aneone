@@ -81,3 +81,23 @@ export function useDeadlines(query?: string, config?: SWRConfiguration) {
     ...config,
   });
 }
+
+/** Finance statements — refresh every 30s */
+export function useFinanceStatements(query?: string, config?: SWRConfiguration) {
+  const path = query ? `/api/finance/statements?${query}` : "/api/finance/statements";
+  return useSWR(path, fetcher, {
+    refreshInterval: 30_000,
+    ...config,
+  });
+}
+
+/** Finance transactions — refresh every 30s */
+export function useFinanceTransactions(query?: string, config?: SWRConfiguration) {
+  const path = query
+    ? `/api/finance/statements/transactions?${query}`
+    : "/api/finance/statements/transactions";
+  return useSWR(path, fetcher, {
+    refreshInterval: 30_000,
+    ...config,
+  });
+}

@@ -8,6 +8,7 @@ import type {
   NotificationRepository,
   ConversationRepository,
   PreferenceRepository,
+  PushSubscriptionRepository,
   BankStatementRepository,
   BankStatementParseRepository,
   BankStatementParserRegistry,
@@ -34,6 +35,7 @@ import {
   SqliteNotificationRepository,
   SqliteConversationRepository,
   SqlitePreferenceRepository,
+  SqlitePushSubscriptionRepository,
   SqliteBankStatementRepository,
   SqliteBankStatementParseRepository,
   SqliteUserRepository,
@@ -54,6 +56,7 @@ import {
   GitHubHttpClient,
   GitHubAdapter,
   InAppNotificationAdapter,
+  WebPushNotificationAdapter,
   TokenCipher,
   StaticBankStatementParserRegistry,
   ChaseBankStatementParser,
@@ -81,6 +84,7 @@ export interface AppContainer {
   notificationRepo: NotificationRepository;
   conversationRepo: ConversationRepository;
   preferenceRepo: PreferenceRepository;
+  pushSubscriptionRepo: PushSubscriptionRepository;
   bankStatementRepo: BankStatementRepository;
   bankStatementParseRepo: BankStatementParseRepository;
   bankStatementParserRegistry: BankStatementParserRegistry;
@@ -135,6 +139,7 @@ export function createContainer(env: Env): AppContainer {
   const notificationRepo = new SqliteNotificationRepository(db);
   const conversationRepo = new SqliteConversationRepository(db);
   const preferenceRepo = new SqlitePreferenceRepository(db);
+  const pushSubscriptionRepo = new SqlitePushSubscriptionRepository(db);
   const bankStatementRepo = new SqliteBankStatementRepository(db);
   const bankStatementParseRepo = new SqliteBankStatementParseRepository(db);
   const bankStatementParserRegistry = new StaticBankStatementParserRegistry([
@@ -383,12 +388,42 @@ export function createContainer(env: Env): AppContainer {
     logger.warn("GitHub: ✗ disabled (no DB token and no GITHUB_TOKEN env var)");
   }
 
-  const notificationPort: NotificationPort = new InAppNotificationAdapter({
+  const inAppNotificationPort: NotificationPort = new InAppNotificationAdapter({
     notificationRepo,
     preferenceRepo,
     logger,
   });
-  logger.info("Notifications: ✓ in-app mode");
+
+  let notificationPort: NotificationPort = inAppNotificationPort;
+
+  if (env.FEATURE_PUSH_NOTIFICATIONS) {
+    if (env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY && env.VAPID_SUBJECT) {
+      const webPushNotificationPort = new WebPushNotificationAdapter({
+        pushSubscriptionRepo,
+        preferenceRepo,
+        vapidPublicKey: env.VAPID_PUBLIC_KEY,
+        vapidPrivateKey: env.VAPID_PRIVATE_KEY,
+        vapidSubject: env.VAPID_SUBJECT,
+        logger,
+      });
+
+      notificationPort = {
+        async send(notification): Promise<void> {
+          await inAppNotificationPort.send(notification);
+          await webPushNotificationPort.send(notification);
+        },
+      };
+
+      logger.info("Notifications: ✓ in-app + web-push mode");
+    } else {
+      logger.warn(
+        "Notifications: FEATURE_PUSH_NOTIFICATIONS enabled but VAPID config missing; falling back to in-app mode",
+      );
+      logger.info("Notifications: ✓ in-app mode");
+    }
+  } else {
+    logger.info("Notifications: ✓ in-app mode");
+  }
 
   // ── Power Automate status ─────────────────────────────────
   if (env.PA_OUTLOOK_WEBHOOK_SECRET) {
@@ -421,6 +456,7 @@ export function createContainer(env: Env): AppContainer {
     notificationRepo,
     conversationRepo,
     preferenceRepo,
+    pushSubscriptionRepo,
     bankStatementRepo,
     bankStatementParseRepo,
     bankStatementParserRegistry,

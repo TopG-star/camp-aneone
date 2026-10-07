@@ -138,6 +138,11 @@ function migrationAlreadyAppliedInSchema(
         hasTable(db, "bank_statement_parse_runs") &&
         hasColumn(db, "bank_statement_parse_runs", "outcome")
       );
+    case 11:
+      return (
+        hasTable(db, "push_subscriptions") &&
+        hasColumn(db, "push_subscriptions", "user_id")
+      );
     default:
       return false;
   }
@@ -195,6 +200,7 @@ export function runMigrations(db: Database.Database): void {
     { version: 8, name: "bank_statement_intake", file: "008_bank_statement_intake.sql" },
     { version: 9, name: "bank_statement_status_canonicalization", file: "009_bank_statement_status_canonicalization.sql" },
     { version: 10, name: "bank_statement_parser_framework", file: "010_bank_statement_parser_framework.sql" },
+    { version: 11, name: "push_subscriptions_user_scope", file: "011_push_subscriptions_user_scope.sql" },
   ];
 
   const migrationsDir = getMigrationsDir();

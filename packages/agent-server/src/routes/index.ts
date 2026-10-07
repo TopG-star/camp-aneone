@@ -18,6 +18,7 @@ import { createCycleRouter } from "./cycle.route.js";
 import { createStatusRouter } from "./status.route.js";
 import { createOAuthRouter } from "./oauth.route.js";
 import { createIntegrationsRouter } from "./integrations.route.js";
+import { createPushSubscriptionsRouter } from "./push-subscriptions.route.js";
 import { createUsersRouter } from "./users.route.js";
 import { createTokenAuthMiddleware } from "../middleware/auth.js";
 import { createSessionAuthMiddleware } from "../middleware/session-auth.js";
@@ -41,6 +42,10 @@ import {
   createListNotificationsTool,
   createListUrgentItemsTool,
   createSearchTeamsMessagesTool,
+  createFinanceStatementStatusTool,
+  createSearchFinanceTransactionsTool,
+  createTopFinanceTransactionsTool,
+  createSummarizeFinanceSpendTool,
 } from "@oneon/application";
 
 export function registerRoutes(app: Express, container: AppContainer): void {
@@ -171,6 +176,26 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       notificationRepo: container.notificationRepo,
     }));
 
+    // Finance tools (only when finance intake feature is enabled)
+    if (env.FEATURE_FINANCE_STATEMENT_INTAKE) {
+      toolRegistry.register(createFinanceStatementStatusTool({
+        bankStatementRepo: container.bankStatementRepo,
+      }));
+      toolRegistry.register(createSearchFinanceTransactionsTool({
+        bankStatementRepo: container.bankStatementRepo,
+        bankStatementParseRepo: container.bankStatementParseRepo,
+      }));
+      toolRegistry.register(createTopFinanceTransactionsTool({
+        bankStatementRepo: container.bankStatementRepo,
+        bankStatementParseRepo: container.bankStatementParseRepo,
+      }));
+      toolRegistry.register(createSummarizeFinanceSpendTool({
+        bankStatementRepo: container.bankStatementRepo,
+        bankStatementParseRepo: container.bankStatementParseRepo,
+      }));
+    }
+
+
     // Calendar tools (only if calendarPort available)
     if (container.calendarPort) {
       toolRegistry.register(createListCalendarEventsTool({
@@ -268,6 +293,19 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     }),
   );
   prefLogger.info("Notification preferences routes registered at /api/notification-preferences");
+  if (env.FEATURE_PUSH_NOTIFICATIONS) {
+    const pushLogger = new StructuredLogger("push-subscriptions", env.LOG_LEVEL);
+    app.use(
+      "/api/push",
+      ...userAuth,
+      createPushSubscriptionsRouter({
+        pushSubscriptionRepo: container.pushSubscriptionRepo,
+        logger: pushLogger,
+        vapidPublicKey: env.VAPID_PUBLIC_KEY ?? null,
+      }),
+    );
+    pushLogger.info("Push subscription routes registered at /api/push");
+  }
 
   // ── User Profile Preferences ─────────────────────────────
   const profileLogger = new StructuredLogger("profile", env.LOG_LEVEL);

@@ -5,6 +5,7 @@ export { SqliteActionLogRepository } from "./sqlite-action-log.repository.js";
 export { SqliteNotificationRepository } from "./sqlite-notification.repository.js";
 export { SqliteConversationRepository } from "./sqlite-conversation.repository.js";
 export { SqlitePreferenceRepository } from "./sqlite-preference.repository.js";
+export { SqlitePushSubscriptionRepository } from "./sqlite-push-subscription.repository.js";
 export { SqliteBankStatementRepository } from "./sqlite-bank-statement.repository.js";
 export { SqliteBankStatementParseRepository } from "./sqlite-bank-statement-parse.repository.js";
 export { SqliteUserRepository } from "./sqlite-user.repository.js";

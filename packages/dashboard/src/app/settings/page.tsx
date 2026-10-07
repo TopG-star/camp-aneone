@@ -85,6 +85,11 @@ export default function SettingsPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [pushSupported, setPushSupported] = useState(false);
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [pushPermission, setPushPermission] = useState<
+    NotificationPermission | "unsupported"
+  >("unsupported");
 
   const themeOptions = [
     { value: "light" as const, label: "Light", icon: Sun },
@@ -100,6 +105,10 @@ export default function SettingsPage() {
       setProfileForm(profile);
     }
   }, [profile, profileDirty]);
+
+  useEffect(() => {
+    void refreshPushState();
+  }, []);
 
   async function connectGoogle() {
     setBusy("google");
@@ -161,6 +170,122 @@ export default function SettingsPage() {
       await mutateStatus();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to disconnect GitHub");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function refreshPushState() {
+    if (!supportsBrowserPush()) {
+      setPushSupported(false);
+      setPushPermission("unsupported");
+      setPushEnabled(false);
+      return;
+    }
+
+    setPushSupported(true);
+    setPushPermission(Notification.permission);
+
+    const registration = await navigator.serviceWorker.getRegistration("/sw.js");
+    const subscription = registration
+      ? await registration.pushManager.getSubscription()
+      : null;
+
+    setPushEnabled(Boolean(subscription));
+  }
+
+  async function enableBrowserPush() {
+    if (!supportsBrowserPush()) {
+      setError("This browser does not support push notifications.");
+      return;
+    }
+
+    setBusy("push-enable");
+    setError(null);
+
+    try {
+      const permission = await Notification.requestPermission();
+      setPushPermission(permission);
+
+      if (permission !== "granted") {
+        throw new Error("Notification permission was not granted.");
+      }
+
+      const registration = await navigator.serviceWorker.register("/sw.js");
+      let subscription = await registration.pushManager.getSubscription();
+
+      if (!subscription) {
+        const key = await apiFetch<{ publicKey: string }>("/api/push/public-key");
+
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(key.publicKey),
+        });
+      }
+
+      const subscriptionJson = subscription.toJSON();
+      const endpoint = subscriptionJson.endpoint;
+      const p256dh = subscriptionJson.keys?.p256dh;
+      const auth = subscriptionJson.keys?.auth;
+
+      if (!endpoint || !p256dh || !auth) {
+        throw new Error("Subscription payload is incomplete.");
+      }
+
+      await apiFetch("/api/push/subscriptions", {
+        method: "POST",
+        body: JSON.stringify({
+          endpoint,
+          keys: { p256dh, auth },
+        }),
+      });
+
+      setPushEnabled(true);
+      setSuccess("Browser push notifications enabled.");
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to enable browser push notifications",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function disableBrowserPush() {
+    if (!supportsBrowserPush()) {
+      setError("This browser does not support push notifications.");
+      return;
+    }
+
+    setBusy("push-disable");
+    setError(null);
+
+    try {
+      const registration = await navigator.serviceWorker.getRegistration("/sw.js");
+      const subscription = registration
+        ? await registration.pushManager.getSubscription()
+        : null;
+
+      if (subscription) {
+        const endpoint = subscription.endpoint;
+        await subscription.unsubscribe();
+
+        await apiFetch("/api/push/subscriptions", {
+          method: "DELETE",
+          body: JSON.stringify({ endpoint }),
+        });
+      }
+
+      setPushEnabled(false);
+      setSuccess("Browser push notifications disabled.");
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to disable browser push notifications",
+      );
     } finally {
       setBusy(null);
     }
@@ -357,6 +482,67 @@ export default function SettingsPage() {
                   Connect
                 </button>
               </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Browser Push */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Bell className="h-5 w-5" />
+            Browser Push Notifications
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {!pushSupported ? (
+            <div className="space-y-2">
+              <Badge>Unsupported</Badge>
+              <p className="text-sm meta-copy">
+                This browser does not support push notifications.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={pushEnabled ? "success" : "default"}>
+                  {pushEnabled ? "Subscribed" : "Not subscribed"}
+                </Badge>
+                <Badge>
+                  Permission: {pushPermission}
+                </Badge>
+              </div>
+
+              <p className="text-sm meta-copy">
+                Enables real-time browser notifications for urgent events.
+              </p>
+
+              {pushEnabled ? (
+                <button
+                  onClick={disableBrowserPush}
+                  disabled={busy === "push-disable"}
+                  className="flex w-full items-center justify-center gap-2 rounded-eight px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50 sm:w-auto"
+                >
+                  {busy === "push-disable" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-4 w-4" />
+                  )}
+                  Disable push
+                </button>
+              ) : (
+                <button
+                  onClick={enableBrowserPush}
+                  disabled={busy === "push-enable"}
+                  className="flex w-full items-center justify-center gap-2 rounded-eight bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary/90 disabled:opacity-50 sm:w-auto"
+                >
+                  {busy === "push-enable" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : null}
+                  Enable push
+                </button>
+              )}
             </div>
           )}
         </CardContent>
@@ -625,4 +811,28 @@ function formatUptime(seconds: number): string {
   if (h > 0) return `${h}h ${m}m`;
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
+}
+
+function supportsBrowserPush(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    "serviceWorker" in navigator &&
+    "PushManager" in window &&
+    "Notification" in window
+  );
+}
+
+function urlBase64ToUint8Array(base64String: string): ArrayBuffer {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding)
+    .replace(/-/g, "+")
+    .replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+
+  for (let i = 0; i < rawData.length; i++) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+
+  return outputArray.buffer;
 }
