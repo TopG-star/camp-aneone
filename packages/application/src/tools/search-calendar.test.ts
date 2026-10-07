@@ -75,16 +75,38 @@ describe("search_calendar tool", () => {
       timeMax: "2026-04-30T00:00:00Z",
     });
 
-    expect(deps.calendarPort.searchEvents).toHaveBeenCalledWith(
+    expect(deps.calendarPort!.searchEvents).toHaveBeenCalledWith(
       "standup",
       "2026-04-01T00:00:00Z",
       "2026-04-30T00:00:00Z",
     );
   });
 
+  it("uses resolveCalendarPort when userId is provided", async () => {
+    const resolvedPort = {
+      listEvents: vi.fn().mockResolvedValue([]),
+      createEvent: vi.fn(),
+      updateEvent: vi.fn(),
+      searchEvents: vi.fn().mockResolvedValue([makeEvent()]),
+    };
+
+    const tool = createSearchCalendarTool({
+      resolveCalendarPort: vi.fn().mockReturnValue(resolvedPort),
+    });
+
+    await tool.execute({
+      query: "standup",
+      timeMin: "2026-04-01T00:00:00Z",
+      timeMax: "2026-04-30T00:00:00Z",
+      userId: "user-A",
+    });
+
+    expect(resolvedPort.searchEvents).toHaveBeenCalledOnce();
+  });
+
   it("returns matching events in data field", async () => {
     const deps = makeDeps();
-    (deps.calendarPort.searchEvents as ReturnType<typeof vi.fn>).mockResolvedValue([
+    (deps.calendarPort!.searchEvents as ReturnType<typeof vi.fn>).mockResolvedValue([
       makeEvent(),
       makeEvent({ id: "evt-2", title: "Sprint Standup" }),
     ]);
@@ -116,7 +138,7 @@ describe("search_calendar tool", () => {
 
   it("uses singular form for 1 match", async () => {
     const deps = makeDeps();
-    (deps.calendarPort.searchEvents as ReturnType<typeof vi.fn>).mockResolvedValue([
+    (deps.calendarPort!.searchEvents as ReturnType<typeof vi.fn>).mockResolvedValue([
       makeEvent(),
     ]);
     const tool = createSearchCalendarTool(deps);

@@ -105,7 +105,7 @@ describe("GET /api/actions", () => {
     expect(res.body.pagination).toEqual({ limit: 25, offset: 0, total: 0, hasMore: false });
   });
 
-  it("returns enriched actions with itemSubject", async () => {
+  it("returns enriched actions with item metadata", async () => {
     const action = makeAction();
     const item = makeItem();
     vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
@@ -116,6 +116,8 @@ describe("GET /api/actions", () => {
     expect(res.status).toBe(200);
     expect(res.body.actions).toHaveLength(1);
     expect(res.body.actions[0].itemSubject).toBe("Q4 Review");
+    expect(res.body.actions[0].itemFrom).toBe("boss@company.com");
+    expect(res.body.actions[0].itemSource).toBe("gmail");
     expect(res.body.actions[0].executionStatus).toBe("not_started");
   });
 
@@ -148,6 +150,44 @@ describe("GET /api/actions", () => {
   it("returns 400 for invalid limit", async () => {
     const res = await request(app).get("/api/actions?limit=0");
     expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /api/actions/:id", () => {
+  it("returns one enriched action by id", async () => {
+    const action = makeAction({ id: "act-100", status: "approved", errorJson: '{"message":"boom"}' });
+    const item = makeItem({ id: "item-001", subject: "Escalated follow-up" });
+    vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
+    vi.mocked(inboundItemRepo.findById).mockReturnValue(item);
+
+    const res = await request(app).get("/api/actions/act-100");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: "act-100",
+      status: "approved",
+      executionStatus: "failed",
+      itemSubject: "Escalated follow-up",
+      itemFrom: "boss@company.com",
+      itemSource: "gmail",
+    });
+  });
+
+  it("returns 404 when action does not exist", async () => {
+    vi.mocked(actionLogRepo.findAll).mockReturnValue([]);
+
+    const res = await request(app).get("/api/actions/missing");
+    expect(res.status).toBe(404);
+  });
+
+  it("scopes lookup to authenticated user", async () => {
+    const action = makeAction({ id: "act-200", userId: "user-A" });
+    vi.mocked(actionLogRepo.findAll).mockReturnValue([action]);
+
+    const res = await request(app).get("/api/actions/act-200");
+    expect(res.status).toBe(200);
+    expect(actionLogRepo.findAll).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "user-A" }),
+    );
   });
 });
 

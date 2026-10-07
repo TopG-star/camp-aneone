@@ -19,6 +19,7 @@ export const listGitHubPRsSchema = z.object({
     .regex(/^[^/]+\/[^/]+$/, "Must be in 'owner/repo' format")
     .optional()
     .describe("Limit results to a specific repository (e.g. 'octocat/hello-world')."),
+  userId: z.string().trim().min(1).optional(),
 });
 
 export type ListGitHubPRsInput = z.infer<typeof listGitHubPRsSchema>;
@@ -26,7 +27,8 @@ export type ListGitHubPRsInput = z.infer<typeof listGitHubPRsSchema>;
 // ── Deps ─────────────────────────────────────────────────────
 
 export interface ListGitHubPRsDeps {
-  githubPort: GitHubPort;
+  githubPort?: GitHubPort;
+  resolveGitHubPort?: (userId: string) => GitHubPort | null;
 }
 
 // ── Factory ──────────────────────────────────────────────────
@@ -43,7 +45,18 @@ export function createListGitHubPRsTool(
     async execute(validatedInput: unknown): Promise<ToolResult> {
       const input = validatedInput as ListGitHubPRsInput;
 
-      const prs = await deps.githubPort.listPullRequests({
+      const githubPort = input.userId && deps.resolveGitHubPort
+        ? deps.resolveGitHubPort(input.userId)
+        : deps.githubPort ?? null;
+
+      if (!githubPort) {
+        return {
+          data: [],
+          summary: "GitHub integration is not configured for this user.",
+        };
+      }
+
+      const prs = await githubPort.listPullRequests({
         state: input.state,
         author: input.author,
         repo: input.repo,

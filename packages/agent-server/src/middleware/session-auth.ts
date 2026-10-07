@@ -145,8 +145,14 @@ export function createSessionAuthMiddleware(
   upsertUser?: (user: { id: string; email: string }) => { id: string },
 ): RequestHandler {
   return async (req, _res, next) => {
+    const forwardedProto = String(req.headers["x-forwarded-proto"] ?? "");
+    const isForwardedHttps = forwardedProto
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .includes("https");
+
     const cookieName =
-      req.secure || req.headers["x-forwarded-proto"] === "https"
+      req.secure || isForwardedHttps
         ? "__Secure-authjs.session-token"
         : "authjs.session-token";
 

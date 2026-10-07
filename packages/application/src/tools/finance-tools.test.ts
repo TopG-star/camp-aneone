@@ -21,6 +21,10 @@ import {
   createSummarizeFinanceSpendTool,
   summarizeFinanceSpendSchema,
 } from "./summarize-finance-spend.js";
+import {
+  createFinanceSpendInsightsTool,
+  financeSpendInsightsSchema,
+} from "./finance-spend-insights.js";
 
 function makeStatement(overrides: Partial<BankStatement> = {}): BankStatement {
   return {
@@ -354,5 +358,73 @@ describe("summarize_finance_spend tool", () => {
 
     expect(result.data).toEqual([]);
     expect(result.summary).toContain("No outgoing spending found");
+  });
+});
+
+describe("financeSpendInsightsSchema", () => {
+  it("applies defaults", () => {
+    const result = financeSpendInsightsSchema.parse({});
+    expect(result.limit).toBe(400);
+    expect(result.from).toBeUndefined();
+    expect(result.to).toBeUndefined();
+  });
+});
+
+describe("finance_spend_insights tool", () => {
+  it("returns summary metrics and anomaly flags from parsed transactions", async () => {
+    const bankStatementRepo = makeBankStatementRepo({
+      findByStatus: vi.fn().mockReturnValue([makeStatement()]),
+    });
+    const bankStatementParseRepo = makeParseRepo({
+      findTransactions: vi.fn().mockReturnValue([
+        makeTransaction({ id: "tx-1", postedAt: "2026-04-01", description: "Payroll", amountMinor: 180000 }),
+        makeTransaction({ id: "tx-2", postedAt: "2026-04-02", description: "Coffee Shop", amountMinor: -400 }),
+        makeTransaction({ id: "tx-3", postedAt: "2026-04-03", description: "Coffee Shop", amountMinor: -450 }),
+        makeTransaction({ id: "tx-4", postedAt: "2026-04-04", description: "Coffee Shop", amountMinor: -500 }),
+        makeTransaction({ id: "tx-5", postedAt: "2026-04-05", description: "Laptop Store", amountMinor: -120000 }),
+      ]),
+    });
+
+    const tool = createFinanceSpendInsightsTool({
+      bankStatementRepo,
+      bankStatementParseRepo,
+    });
+
+    const result = await tool.execute(financeSpendInsightsSchema.parse({ limit: 100 }));
+    const data = result.data as {
+      summary: {
+        inflowMinor: number;
+        outflowMinor: number;
+        netMinor: number;
+      };
+      anomalies: Array<{ kind: string; severity: string }>;
+    };
+
+    expect(data.summary.inflowMinor).toBe(180000);
+    expect(data.summary.outflowMinor).toBe(121350);
+    expect(data.summary.netMinor).toBe(58650);
+    expect(data.anomalies.some((item) => item.kind === "large_outflow")).toBe(true);
+    expect(result.summary).toContain("anomaly");
+  });
+
+  it("returns empty data when no statement user can be resolved", async () => {
+    const bankStatementRepo = makeBankStatementRepo();
+    const bankStatementParseRepo = makeParseRepo();
+
+    const tool = createFinanceSpendInsightsTool({
+      bankStatementRepo,
+      bankStatementParseRepo,
+    });
+
+    const result = await tool.execute(financeSpendInsightsSchema.parse({}));
+
+    expect(result.data).toEqual({
+      userId: null,
+      summary: null,
+      topCategories: [],
+      anomalies: [],
+      period: null,
+    });
+    expect(result.summary).toContain("No finance statements found yet");
   });
 });
