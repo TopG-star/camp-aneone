@@ -32,6 +32,9 @@ function createTestDb(): Database.Database {
   const migration7 = readFileSync(join(migrationsDir, "007_user_profiles.sql"), "utf-8");
   const migration8 = readFileSync(join(migrationsDir, "008_bank_statement_intake.sql"), "utf-8");
   const migration9 = readFileSync(join(migrationsDir, "009_bank_statement_status_canonicalization.sql"), "utf-8");
+  const migration10 = readFileSync(join(migrationsDir, "010_bank_statement_parser_framework.sql"), "utf-8");
+  const migration11 = readFileSync(join(migrationsDir, "011_push_subscriptions_user_scope.sql"), "utf-8");
+  const migration12 = readFileSync(join(migrationsDir, "012_inbound_items_user_scope.sql"), "utf-8");
   db.exec(migration1);
   db.exec(migration2);
   db.exec(migration3);
@@ -41,6 +44,9 @@ function createTestDb(): Database.Database {
   db.exec(migration7);
   db.exec(migration8);
   db.exec(migration9);
+  db.exec(migration10);
+  db.exec(migration11);
+  db.exec(migration12);
 
   return db;
 }
@@ -122,7 +128,7 @@ describe("SqliteInboundItemRepository", () => {
   });
 
   it("findBySourceAndExternalId returns null for missing", () => {
-    const found = repo.findBySourceAndExternalId("gmail" as Source, "nope");
+    const found = repo.findBySourceAndExternalId("gmail" as Source, "nope", null);
     expect(found).toBeNull();
   });
 
@@ -684,6 +690,29 @@ describe("SqliteActionLogRepository", () => {
     const found = repo.findByResourceAndType("item-1", "archive" as any);
     expect(found!.status).toBe("executed");
     expect(found!.resultJson).toBe('{"ok":true}');
+  });
+
+  it("allows metadata-only update on same status", () => {
+    const entry = repo.create({
+      userId: null,
+      resourceId: "item-1",
+      actionType: "archive",
+      riskLevel: "approval_required",
+      status: "proposed",
+      payloadJson: "{}",
+      resultJson: null,
+      errorJson: null,
+      rollbackJson: null,
+    });
+
+    repo.updateStatus(entry.id, "approved" as any);
+    repo.updateStatus(entry.id, "approved" as any, {
+      errorJson: '{"message":"execution failed"}',
+    });
+
+    const found = repo.findByResourceAndType("item-1", "archive" as any);
+    expect(found!.status).toBe("approved");
+    expect(found!.errorJson).toBe('{"message":"execution failed"}');
   });
 
   it("state machine rejects invalid transition: proposed → executed", () => {

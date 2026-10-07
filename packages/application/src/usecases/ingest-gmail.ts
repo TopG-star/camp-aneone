@@ -56,7 +56,8 @@ export async function ingestGmail(
     // Check if this item already exists (for duplicate counting)
     const existing = inboundItemRepo.findBySourceAndExternalId(
       item.source,
-      item.externalId
+      item.externalId,
+      userId,
     );
 
     try {

@@ -4,7 +4,7 @@ import type { Source } from "../enums.js";
 export interface InboundItemRepository {
   upsert(item: Omit<InboundItem, "id" | "createdAt" | "updatedAt">): InboundItem;
   findById(id: string): InboundItem | null;
-  findBySourceAndExternalId(source: Source, externalId: string, userId?: string): InboundItem | null;
+  findBySourceAndExternalId(source: Source, externalId: string, userId: string | null): InboundItem | null;
   findUnclassified(limit: number, userId?: string): InboundItem[];
   findAll(options: {
     source?: Source;

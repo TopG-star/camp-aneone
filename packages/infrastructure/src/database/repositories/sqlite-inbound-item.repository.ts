@@ -15,11 +15,10 @@ export class SqliteInboundItemRepository implements InboundItemRepository {
     const id = randomUUID();
     const now = new Date().toISOString();
 
-    this.db
-      .prepare(
-        `INSERT INTO inbound_items (id, source, external_id, "from", subject, body_preview, received_at, raw_json, thread_id, labels, classified_at, classify_attempts, user_id, created_at, updated_at)
+    const upsertSql = item.userId
+      ? `INSERT INTO inbound_items (id, source, external_id, "from", subject, body_preview, received_at, raw_json, thread_id, labels, classified_at, classify_attempts, user_id, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (source, external_id) DO UPDATE SET
+         ON CONFLICT (user_id, source, external_id) WHERE user_id IS NOT NULL DO UPDATE SET
            "from"       = excluded."from",
            subject      = excluded.subject,
            body_preview = excluded.body_preview,
@@ -27,7 +26,19 @@ export class SqliteInboundItemRepository implements InboundItemRepository {
            thread_id    = excluded.thread_id,
            labels       = excluded.labels,
            updated_at   = excluded.updated_at`
-      )
+      : `INSERT INTO inbound_items (id, source, external_id, "from", subject, body_preview, received_at, raw_json, thread_id, labels, classified_at, classify_attempts, user_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (source, external_id) WHERE user_id IS NULL DO UPDATE SET
+           "from"       = excluded."from",
+           subject      = excluded.subject,
+           body_preview = excluded.body_preview,
+           raw_json     = excluded.raw_json,
+           thread_id    = excluded.thread_id,
+           labels       = excluded.labels,
+           updated_at   = excluded.updated_at`;
+
+    this.db
+      .prepare(upsertSql)
       .run(
         id,
         item.source,
@@ -46,7 +57,7 @@ export class SqliteInboundItemRepository implements InboundItemRepository {
         now
       );
 
-    return this.findBySourceAndExternalId(item.source, item.externalId)!;
+    return this.findBySourceAndExternalId(item.source, item.externalId, item.userId)!;
   }
 
   findById(id: string): InboundItem | null {
@@ -59,15 +70,19 @@ export class SqliteInboundItemRepository implements InboundItemRepository {
   findBySourceAndExternalId(
     source: Source,
     externalId: string,
-    userId?: string
+    userId: string | null
   ): InboundItem | null {
-    let sql = "SELECT * FROM inbound_items WHERE source = ? AND external_id = ?";
-    const params: unknown[] = [source, externalId];
-    if (userId) {
-      sql += " AND user_id = ?";
-      params.push(userId);
-    }
-    const row = this.db.prepare(sql).get(...params) as RawInboundItem | undefined;
+    const row = userId
+      ? (this.db
+          .prepare(
+            "SELECT * FROM inbound_items WHERE source = ? AND external_id = ? AND user_id = ?"
+          )
+          .get(source, externalId, userId) as RawInboundItem | undefined)
+      : (this.db
+          .prepare(
+            "SELECT * FROM inbound_items WHERE source = ? AND external_id = ? AND user_id IS NULL"
+          )
+          .get(source, externalId) as RawInboundItem | undefined);
     return row ? mapRow(row) : null;
   }
 

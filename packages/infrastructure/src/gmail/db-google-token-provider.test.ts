@@ -194,4 +194,61 @@ describe("DbGoogleTokenProvider", () => {
 
     await expect(provider.getAccessToken()).rejects.toThrow("Token refresh failed");
   });
+
+  it("reports a refresh failure when Google rejects the refresh token", async () => {
+    const { mockGetAccessToken } = await getMocks();
+    mockGetAccessToken.mockRejectedValueOnce(new Error("invalid_grant"));
+    const onRefreshFailure = vi.fn();
+
+    const token = makeToken({
+      expiresAt: new Date(Date.now() - 60 * 1000).toISOString(),
+    });
+    const repo = createMockRepo(token);
+    const provider = new DbGoogleTokenProvider(repo, CLIENT_ID, CLIENT_SECRET, USER_ID, onRefreshFailure);
+
+    await expect(provider.getAccessToken()).rejects.toThrow("invalid_grant");
+    expect(onRefreshFailure).toHaveBeenCalledTimes(1);
+    expect(repo.upsert).not.toHaveBeenCalled();
+  });
+
+  it("reports a refresh failure when the refresh returns no access token", async () => {
+    const { mockGetAccessToken } = await getMocks();
+    mockGetAccessToken.mockResolvedValueOnce({
+      token: null,
+      res: { data: {} },
+    });
+    const onRefreshFailure = vi.fn();
+
+    const token = makeToken({
+      expiresAt: new Date(Date.now() - 60 * 1000).toISOString(),
+    });
+    const repo = createMockRepo(token);
+    const provider = new DbGoogleTokenProvider(repo, CLIENT_ID, CLIENT_SECRET, USER_ID, onRefreshFailure);
+
+    await expect(provider.getAccessToken()).rejects.toThrow("Token refresh failed");
+    expect(onRefreshFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not report a failure when the refresh succeeds", async () => {
+    const { mockGetAccessToken } = await getMocks();
+    mockGetAccessToken.mockResolvedValueOnce({
+      token: "ya29.refreshed-token",
+      res: {
+        data: {
+          access_token: "ya29.refreshed-token",
+          expiry_date: Date.now() + 3600 * 1000,
+        },
+      },
+    });
+    const onRefreshFailure = vi.fn();
+
+    const token = makeToken({
+      expiresAt: new Date(Date.now() - 60 * 1000).toISOString(),
+    });
+    const repo = createMockRepo(token);
+    const provider = new DbGoogleTokenProvider(repo, CLIENT_ID, CLIENT_SECRET, USER_ID, onRefreshFailure);
+
+    await expect(provider.getAccessToken()).resolves.toBe("ya29.refreshed-token");
+    expect(onRefreshFailure).not.toHaveBeenCalled();
+  });
 });

@@ -11,6 +11,7 @@ export const createCalendarEventSchema = z.object({
   description: z.string().nullable().optional().default(null),
   attendees: z.array(z.string().email()).optional().default([]),
   location: z.string().nullable().optional().default(null),
+  userId: z.string().trim().min(1).optional(),
 });
 
 export type CreateCalendarEventInput = z.infer<typeof createCalendarEventSchema>;
@@ -18,7 +19,8 @@ export type CreateCalendarEventInput = z.infer<typeof createCalendarEventSchema>
 // ── Deps ─────────────────────────────────────────────────────
 
 export interface CreateCalendarEventDeps {
-  calendarPort: CalendarPort;
+  calendarPort?: CalendarPort;
+  resolveCalendarPort?: (userId: string) => CalendarPort | null;
 }
 
 // ── Factory ──────────────────────────────────────────────────
@@ -35,7 +37,18 @@ export function createCreateCalendarEventTool(
     async execute(validatedInput: unknown): Promise<ToolResult> {
       const input = validatedInput as CreateCalendarEventInput;
 
-      const created = await deps.calendarPort.createEvent({
+      const calendarPort = input.userId && deps.resolveCalendarPort
+        ? deps.resolveCalendarPort(input.userId)
+        : deps.calendarPort ?? null;
+
+      if (!calendarPort) {
+        return {
+          data: null,
+          summary: "Calendar integration is not configured for this user.",
+        };
+      }
+
+      const created = await calendarPort.createEvent({
         title: input.title,
         start: input.start,
         end: input.end,

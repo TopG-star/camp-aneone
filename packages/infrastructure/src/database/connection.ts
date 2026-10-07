@@ -57,6 +57,16 @@ function hasColumn(
   return columns.some((column) => column.name === columnName);
 }
 
+function hasIndex(db: Database.Database, indexName: string): boolean {
+  const row = db
+    .prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ? LIMIT 1"
+    )
+    .get(indexName);
+
+  return row !== undefined;
+}
+
 function migrationAlreadyAppliedInSchema(
   db: Database.Database,
   version: number,
@@ -143,6 +153,39 @@ function migrationAlreadyAppliedInSchema(
         hasTable(db, "push_subscriptions") &&
         hasColumn(db, "push_subscriptions", "user_id")
       );
+    case 12: {
+      if (!hasTable(db, "inbound_items") || !hasColumn(db, "inbound_items", "user_id")) {
+        return false;
+      }
+
+      const table = db
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'inbound_items'")
+        .get() as { sql: string } | undefined;
+
+      if (!table?.sql) {
+        return false;
+      }
+
+      const normalizedSql = table.sql.toLowerCase();
+      const hasLegacyGlobalUnique = normalizedSql.includes("unique (source, external_id)");
+
+      if (hasLegacyGlobalUnique) {
+        return false;
+      }
+
+      return (
+        hasIndex(db, "ux_inbound_items_user_source_external") &&
+        hasIndex(db, "ux_inbound_items_null_user_source_external")
+      );
+    }
+    case 13:
+      return (
+        hasTable(db, "personal_memory_notes") &&
+        hasColumn(db, "personal_memory_notes", "user_id") &&
+        hasColumn(db, "personal_memory_notes", "tags") &&
+        hasTable(db, "personal_memory_pins") &&
+        hasColumn(db, "personal_memory_pins", "source_message_id")
+      );
     default:
       return false;
   }
@@ -201,6 +244,8 @@ export function runMigrations(db: Database.Database): void {
     { version: 9, name: "bank_statement_status_canonicalization", file: "009_bank_statement_status_canonicalization.sql" },
     { version: 10, name: "bank_statement_parser_framework", file: "010_bank_statement_parser_framework.sql" },
     { version: 11, name: "push_subscriptions_user_scope", file: "011_push_subscriptions_user_scope.sql" },
+    { version: 12, name: "inbound_items_user_scope", file: "012_inbound_items_user_scope.sql", transactional: false },
+    { version: 13, name: "personal_memory", file: "013_personal_memory.sql" },
   ];
 
   const migrationsDir = getMigrationsDir();
@@ -222,10 +267,15 @@ export function runMigrations(db: Database.Database): void {
     const sql = readFileSync(join(migrationsDir, migration.file), "utf-8");
 
     try {
-      db.transaction(() => {
+      if (migration.transactional === false) {
         db.exec(sql);
         recordMigration(db, migration.version, migration.name);
-      })();
+      } else {
+        db.transaction(() => {
+          db.exec(sql);
+          recordMigration(db, migration.version, migration.name);
+        })();
+      }
     } catch (error) {
       if (!canBackfillAfterError(db, migration.version, error)) {
         throw error;
