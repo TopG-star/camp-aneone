@@ -118,6 +118,22 @@ describe("architecture", { timeout: TIMEOUT_MS }, () => {
     expect(offenders).toEqual([]);
   });
 
+  it("only connection.ts, the gate, the control opener and migrate-all call createDatabase", () => {
+    const allowed = new Set([
+      "infrastructure/src/database/connection.ts",
+      "infrastructure/src/database/context-db-gate.ts",
+      "infrastructure/src/database/control/open-control-db.ts",
+      "infrastructure/src/database/migrate-all.ts",
+    ]);
+    const offenders = readdirSync(ROOT)
+      .filter((pkg) => existsSync(join(ROOT, pkg, "src")))
+      .flatMap((pkg) => sourceFiles(join(ROOT, pkg, "src")))
+      .map((f) => posix(relative(ROOT, f)))
+      .filter((p) => !isTest(p) && !allowed.has(p))
+      .filter((p) => /\bcreateDatabase\(/.test(readFileSync(join(ROOT, p), "utf8")));
+    expect(offenders).toEqual([]);
+  });
+
   // A value import (anything but `import type`) of the SQLite driver, however it is bound or loaded.
   const valueImportsSqlite = (text: string) =>
     /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)["']better-sqlite3["']/.test(

@@ -26,8 +26,12 @@ import type {
 } from "@oneon/domain";
 
 import {
-  createDatabase,
-  runMigrations,
+  openControlDb,
+  ContextDbGate,
+  rawDb,
+  backfillIdentities,
+  SqliteIdentityRepository,
+  type IdentityRepository,
   SqliteInboundItemRepository,
   SqliteClassificationRepository,
   SqliteClassificationFeedbackRepository,
@@ -91,6 +95,7 @@ export interface AppContainer {
   bankStatementParseRepo: BankStatementParseRepository;
   bankStatementParserRegistry: BankStatementParserRegistry;
   userRepo: UserRepository | null;
+  identityRepo: IdentityRepository;
   userProfileRepo: UserProfileRepository;
   oauthTokenRepo: OAuthTokenRepository | null;
   personalMemoryNoteRepo: PersonalMemoryNoteRepository;
@@ -142,8 +147,18 @@ export function createContainer(env: Env): AppContainer {
 
   // ── Database ──────────────────────────────────────────────
   mkdirSync(dirname(env.DATABASE_PATH), { recursive: true });
-  const db = createDatabase(env.DATABASE_PATH);
-  runMigrations(db);
+  mkdirSync(dirname(env.CONTROL_DATABASE_PATH), { recursive: true });
+  const control = openControlDb(env.CONTROL_DATABASE_PATH);
+  const gate = new ContextDbGate({
+    control,
+    personalPath: env.DATABASE_PATH,
+    tenantDir: env.TENANT_DATA_DIR,
+  });
+  const personal = gate.openPersonal();
+  const db = rawDb(personal);
+  const backfilled = backfillIdentities(personal, control);
+  if (backfilled > 0) logger.info("Identities backfilled", { count: backfilled });
+  const identityRepo = new SqliteIdentityRepository(control);
   logger.info("Database ready", { path: env.DATABASE_PATH });
 
   const modelWiring = createModelWiring(env, { db, logger });
@@ -414,6 +429,7 @@ export function createContainer(env: Env): AppContainer {
   function shutdown(): void {
     logger.info("Shutting down...");
     db.close();
+    control.close();
     logger.info("Database connection closed");
   }
 
@@ -432,6 +448,7 @@ export function createContainer(env: Env): AppContainer {
     bankStatementParseRepo,
     bankStatementParserRegistry,
     userRepo,
+    identityRepo,
     userProfileRepo,
     oauthTokenRepo,
     personalMemoryNoteRepo,

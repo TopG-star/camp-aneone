@@ -11,6 +11,7 @@ function baseEnv() {
   vi.stubEnv("ALLOWED_EMAILS", "a@test.com");
   vi.stubEnv("API_TOKEN", "t");
   vi.stubEnv("DATABASE_PATH", ":memory:");
+  vi.stubEnv("CONTROL_DATABASE_PATH", ":memory:");
   vi.stubEnv("LOG_LEVEL", "error");
 }
 function db() {

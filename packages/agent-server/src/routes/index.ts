@@ -76,7 +76,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
 
   const sessionAuth = createSessionAuthMiddleware(
     env.NEXTAUTH_SECRET,
-    (email) => container.userRepo?.findByEmail(email) ?? null,
+    container.identityRepo,
     container.userRepo
       ? (user) => container.userRepo!.upsert(user)
       : undefined,

@@ -1,6 +1,7 @@
 import type { RequestHandler } from "express";
 import { jwtDecrypt } from "jose";
 import { subtle, randomUUID } from "node:crypto";
+import type { IdentityRepository } from "@oneon/infrastructure";
 
 const AUTH_CONTENT_ENCRYPTION_ALGORITHMS = [
   "A256CBC-HS512",
@@ -83,7 +84,7 @@ export async function decryptSessionToken(
       email: (payload.email as string).toLowerCase(),
       name: payload.name as string | undefined,
       picture: payload.picture as string | undefined,
-      sub: payload.sub,
+      sub: typeof payload.sub === "string" && payload.sub ? payload.sub : undefined,
     };
   } catch {
     return null;
@@ -127,13 +128,14 @@ function readSessionTokenCookie(
   return chunks.map((chunk) => chunk.value).join("");
 }
 
+export type SessionIdentities = Pick<IdentityRepository, "findByLogin" | "attachGoogleSubByEmailOnce" | "createWithLogin">;
+
 /**
  * Session-based auth middleware for Auth.js v5.
- * Reads the session cookie, decrypts the JWE, and sets req.userId + req.userEmail.
- *
- * If the user doesn't exist in the database yet (first request after sign-in),
- * the middleware auto-creates them via upsertUser. This eliminates the need for
- * the dashboard to call /api/users/upsert during the sign-in callback.
+ * Reads the session cookie, decrypts the JWE and resolves an identity from Google's stable `sub`.
+ * A session without `sub` is treated as signed out. Email is never used to find an identity, except
+ * once per pre-existing user to attach their `sub` (spec §4.2). A new user is created as an identity
+ * plus a personal `users` row with the same id. Sets req.identityId and req.userId (the same value).
  *
  * Cookie names:
  *   Production (HTTPS): __Secure-authjs.session-token
@@ -141,7 +143,7 @@ function readSessionTokenCookie(
  */
 export function createSessionAuthMiddleware(
   nextauthSecret: string,
-  findUserByEmail: (email: string) => { id: string } | null,
+  identities: SessionIdentities,
   upsertUser?: (user: { id: string; email: string }) => { id: string },
 ): RequestHandler {
   return async (req, _res, next) => {
@@ -162,17 +164,26 @@ export function createSessionAuthMiddleware(
     }
 
     const session = await decryptSessionToken(token, nextauthSecret, cookieName);
-    if (!session) {
-      return next(); // Invalid token — let composite middleware try next strategy
+    if (!session || !session.sub) {
+      return next(); // Invalid token, or no sub: signed out
     }
 
-    let user = findUserByEmail(session.email);
-    if (!user && upsertUser) {
+    let identity = identities.findByLogin("google", session.sub);
+    if (!identity) identity = identities.attachGoogleSubByEmailOnce(session.email, session.sub);
+    if (!identity && upsertUser) {
       // First request from a newly-authenticated user — auto-create
-      user = upsertUser({ id: randomUUID(), email: session.email });
+      const id = randomUUID();
+      try {
+        upsertUser({ id, email: session.email });
+        identity = identities.createWithLogin({ kind: "google", subject: session.sub, email: session.email, id });
+      } catch {
+        // A concurrent first request may have created the identity already.
+        identity = identities.findByLogin("google", session.sub);
+      }
     }
-    if (user) {
-      req.userId = user.id;
+    if (identity && identity.status === "active") {
+      req.identityId = identity.id;
+      req.userId = identity.id;
       req.userEmail = session.email;
     }
 

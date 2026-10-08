@@ -14,6 +14,7 @@ function stubEnv(): void {
   vi.stubEnv("GOOGLE_CLIENT_SECRET", "test-client-secret");
   vi.stubEnv("GOOGLE_REFRESH_TOKEN", "");
   vi.stubEnv("DATABASE_PATH", ":memory:");
+  vi.stubEnv("CONTROL_DATABASE_PATH", ":memory:");
   vi.stubEnv("LOG_LEVEL", "error");
   vi.stubEnv("FEATURE_CHAT", "true");
 }
