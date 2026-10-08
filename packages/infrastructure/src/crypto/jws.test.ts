@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { generateEd25519Key, signJws, verifyJws, type GeneratedKey } from "./jws.js";
+import { generateEd25519Key, parsePublicJwk, signJws, verifyJws, type GeneratedKey } from "./jws.js";
 
 const T0 = new Date("2026-10-08T12:00:00.000Z");
 const at = (seconds: number) => new Date(T0.getTime() + seconds * 1000);
@@ -61,5 +61,21 @@ describe("jws", () => {
     const bad = await sign(at(100));
     await expect(verify(bad, T0, { consumeJti })).rejects.toThrow();
     expect(used.size).toBe(1);
+  });
+
+  it("hands consumeJti an expiry that includes the 30-second leeway the verifier still accepts", async () => {
+    let handed = "";
+    const token = await sign(T0, {}, 60);
+    await verify(token, T0, { consumeJti: (_jti: string, expiresAt: string) => ((handed = expiresAt), true) });
+    expect(handed).toBe(at(60 + 30).toISOString());
+  });
+
+  it("parsePublicJwk accepts only a JSON string holding a public Ed25519 key", () => {
+    expect(parsePublicJwk(JSON.stringify(key.publicKeyJwk))).toEqual(key.publicKeyJwk);
+    expect(parsePublicJwk(key.publicKeyJwk)).toBeNull(); // an object is not a string
+    expect(parsePublicJwk(JSON.stringify(key.privateKeyJwk))).toBeNull(); // has d
+    expect(parsePublicJwk(JSON.stringify({ ...key.publicKeyJwk, crv: "P-256" }))).toBeNull();
+    expect(parsePublicJwk(JSON.stringify({ kty: "OKP", crv: "Ed25519" }))).toBeNull();
+    expect(parsePublicJwk("not json")).toBeNull();
   });
 });

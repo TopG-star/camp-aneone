@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { decodeJwt } from "jose";
+import { decodeJwt, decodeProtectedHeader } from "jose";
 import { openSecret, sealSecret } from "../crypto/envelope.js";
-import { generateEd25519Key, signJws, verifyJws, type JWK, type VerifiedJws } from "../crypto/jws.js";
+import { generateEd25519Key, parsePublicJwk, signJws, verifyJws, type JWK, type VerifiedJws } from "../crypto/jws.js";
 import type { TenantRegistration, TenantRegistrationRepository } from "../database/control/tenant-registration-repository.js";
 
 export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -35,16 +35,23 @@ export interface EnrolInput {
   /** https origin of the deployment. */
   origin: string;
   tenantSlug: string;
-  code: string;
+  /** Named so log redaction (key `enrolmentCode`) covers it. */
+  enrolmentCode: string;
   displayName?: string;
   enrolledBy: string;
+  /** Runs inside the same control-database transaction as the registration; if it throws, nothing is stored. */
+  inTransaction?: (registration: TenantRegistration) => void;
 }
 
 const REQUEST_TIMEOUT_MS = 10_000;
+const VERIFY_REFRESH_MIN_INTERVAL_MS = 60_000;
+/** At most this many Oneon keys are tried when the deployment refuses the newest. */
+const MAX_KEY_ATTEMPTS = 3;
 
 export class EnrolmentService {
   private readonly fetchImpl: FetchLike;
   private readonly clock: () => Date;
+  private readonly lastVerifyRefresh = new Map<string, number>();
 
   constructor(private readonly deps: EnrolmentServiceDeps) {
     this.fetchImpl = deps.fetchImpl ?? ((input, init) => fetch(input, init));
@@ -62,13 +69,20 @@ export class EnrolmentService {
     const key = await generateEd25519Key();
     const nonce = randomUUID();
 
+    // Every JWK travels as a JSON string.
     const request = await signJws({
       privateKeyJwk: key.privateKeyJwk,
       kid: key.keyId,
       iss: "oneon",
       aud: issuer,
       now: this.clock(),
-      claims: { code: input.code, oneonPublicKeyJwk: key.publicKeyJwk, oneonKeyId: key.keyId, oneonOrigin: this.deps.oneonOrigin, nonce },
+      claims: {
+        code: input.enrolmentCode,
+        oneonPublicKeyJwk: JSON.stringify(key.publicKeyJwk),
+        oneonKeyId: key.keyId,
+        oneonOrigin: this.deps.oneonOrigin,
+        nonce,
+      },
     });
     const body = await this.post(origin, "/api/oneon/enrol", { request });
     if (body.status !== 200) throw new EnrolmentFailedError();
@@ -78,8 +92,9 @@ export class EnrolmentService {
     let verified: VerifiedJws;
     try {
       const claimed = decodeJwt(reply) as { deploymentKeyId?: unknown; deploymentPublicKeyJwk?: unknown };
+      const announced = parsePublicJwk(claimed.deploymentPublicKeyJwk);
       verified = await verifyJws(reply, {
-        resolveKey: (kid) => (kid === claimed.deploymentKeyId ? (claimed.deploymentPublicKeyJwk as JWK) : null),
+        resolveKey: (kid) => (kid === claimed.deploymentKeyId ? announced : null),
         issuer,
         audience: "oneon",
         now: this.clock(),
@@ -88,58 +103,96 @@ export class EnrolmentService {
       throw new EnrolmentFailedError();
     }
     const claims = verified.payload;
-    if (
-      claims.nonce !== nonce ||
-      claims.tenantSlug !== input.tenantSlug ||
-      claims.deploymentKeyId !== verified.kid ||
-      typeof claims.deploymentPublicKeyJwk !== "object" ||
-      claims.deploymentPublicKeyJwk === null
-    ) {
+    const deploymentJwk = parsePublicJwk(claims.deploymentPublicKeyJwk);
+    if (claims.nonce !== nonce || claims.tenantSlug !== input.tenantSlug || claims.deploymentKeyId !== verified.kid || !deploymentJwk) {
       throw new EnrolmentFailedError();
     }
 
-    return this.deps.repo.create({
-      tenantSlug: input.tenantSlug,
-      displayName: input.displayName?.trim() || input.tenantSlug,
-      origin,
-      deploymentKeyId: verified.kid,
-      deploymentPublicKeyJwk: claims.deploymentPublicKeyJwk as JWK,
-      oneonKeyId: key.keyId,
-      oneonPublicKeyJwk: key.publicKeyJwk,
-      oneonPrivateKeySealed: sealSecret(JSON.stringify(key.privateKeyJwk), master),
-      enrolledBy: input.enrolledBy,
-    });
+    return this.deps.repo.create(
+      {
+        tenantSlug: input.tenantSlug,
+        displayName: input.displayName?.trim() || input.tenantSlug,
+        origin,
+        deploymentKeyId: verified.kid,
+        deploymentPublicKeyJwk: deploymentJwk,
+        oneonKeyId: key.keyId,
+        oneonPublicKeyJwk: key.publicKeyJwk,
+        oneonPrivateKeySealed: sealSecret(JSON.stringify(key.privateKeyJwk), master),
+        enrolledBy: input.enrolledBy,
+      },
+      input.inTransaction,
+    );
   }
 
-  /** Current Oneon signing key, decrypted on demand. For later tasks that sign requests to a deployment. */
+  /** Current Oneon signing key (newest unretired), decrypted on demand. */
   async oneonSigningKey(registrationId: string): Promise<{ keyId: string; privateKeyJwk: JWK }> {
-    const master = this.master();
-    const current = this.deps.repo.currentOneonKey(registrationId);
-    if (!current) throw new EnrolmentFailedError("No signing key");
-    return { keyId: current.keyId, privateKeyJwk: JSON.parse(openSecret(current.sealedPrivateKey, master)) as JWK };
+    const [first] = this.openOneonKeys(registrationId);
+    if (!first) throw new EnrolmentFailedError("No signing key");
+    return first;
   }
 
-  /** Registers a new Oneon key at the deployment (signed with the current one), then stores it; the old key keeps working for 7 days. */
+  /**
+   * Unretired Oneon keys, newest first. After an unclear rotation the newest key may not be known to the deployment
+   * yet, so a request refused with the newest key should be retried with the next one (as rotateOneonKey does).
+   */
+  oneonSigningKeys(registrationId: string): Array<{ keyId: string; privateKeyJwk: JWK }> {
+    return this.openOneonKeys(registrationId);
+  }
+
+  private openOneonKeys(registrationId: string): Array<{ keyId: string; privateKeyJwk: JWK }> {
+    const master = this.master();
+    return this.deps.repo
+      .unretiredOneonKeys(registrationId)
+      .map((k) => ({ keyId: k.keyId, privateKeyJwk: JSON.parse(openSecret(k.sealedPrivateKey, master)) as JWK }));
+  }
+
+  /**
+   * Registers a new Oneon key at the deployment. The new key is stored (sealed) BEFORE the request, so a lost answer
+   * cannot leave the deployment holding a key Oneon never recorded:
+   * - 204: the other keys retire in 7 days;
+   * - a definite refusal (4xx): the new key is deleted again;
+   * - anything unclear (network, timeout, 5xx): both keys are kept, and the next request falls back to the older key
+   *   when the deployment refuses the newest.
+   */
   async rotateOneonKey(registrationId: string, actor: string | null = null): Promise<void> {
     const master = this.master();
     const registration = this.activeRegistration(registrationId);
-    const current = await this.oneonSigningKey(registrationId);
     const next = await generateEd25519Key();
+    this.deps.repo.addPendingOneonKey(registrationId, next.keyId, next.publicKeyJwk, sealSecret(JSON.stringify(next.privateKeyJwk), master));
 
-    const request = await signJws({
-      privateKeyJwk: current.privateKeyJwk,
-      kid: current.keyId,
-      iss: "oneon",
-      aud: `impressorx:${registration.tenantSlug}`,
-      now: this.clock(),
-      claims: { newKeyId: next.keyId, newPublicKeyJwk: next.publicKeyJwk },
-    });
-    const res = await this.post(registration.origin, "/api/oneon/keys", { request });
-    if (res.status !== 204) throw new EnrolmentFailedError();
-    this.deps.repo.addOneonKey(registrationId, next.keyId, next.publicKeyJwk, sealSecret(JSON.stringify(next.privateKeyJwk), master), actor);
+    // Newest first. The new key is unknown to the deployment, so its request is refused and the next key is tried.
+    const candidates = this.openOneonKeys(registrationId).slice(0, MAX_KEY_ATTEMPTS);
+    let ambiguous = false;
+    for (const signer of candidates) {
+      const request = await signJws({
+        privateKeyJwk: signer.privateKeyJwk,
+        kid: signer.keyId,
+        iss: "oneon",
+        aud: `impressorx:${registration.tenantSlug}`,
+        now: this.clock(),
+        claims: { newKeyId: next.keyId, newPublicKeyJwk: JSON.stringify(next.publicKeyJwk) },
+      });
+      let res: Response;
+      try {
+        res = await this.post(registration.origin, "/api/oneon/keys", { request });
+      } catch {
+        ambiguous = true;
+        break;
+      }
+      if (res.status === 204) {
+        this.deps.repo.retireOtherOneonKeys(registrationId, next.keyId, actor);
+        return;
+      }
+      if (res.status >= 500) {
+        ambiguous = true;
+        break;
+      }
+    }
+    if (!ambiguous) this.deps.repo.deleteOneonKey(registrationId, next.keyId);
+    throw new EnrolmentFailedError();
   }
 
-  /** Fetches the deployment's key list, verifies it with a key already known, and stores it. */
+  /** Fetches the key list of a deployment, verifies it with a key already known, and stores it. */
   async refreshDeploymentKeys(registrationId: string): Promise<void> {
     const registration = this.activeRegistration(registrationId);
     const known = this.deps.repo.deploymentKeys(registrationId);
@@ -164,15 +217,17 @@ export class EnrolmentService {
     if (!Array.isArray(list) || list.length === 0) throw new EnrolmentFailedError();
     const keys = list.map((entry) => {
       const k = entry as { keyId?: unknown; publicKeyJwk?: unknown; retiresAt?: unknown };
-      if (typeof k.keyId !== "string" || typeof k.publicKeyJwk !== "object" || k.publicKeyJwk === null) throw new EnrolmentFailedError();
-      return { keyId: k.keyId, publicKeyJwk: k.publicKeyJwk as JWK, retiresAt: typeof k.retiresAt === "string" ? k.retiresAt : null };
+      const jwk = parsePublicJwk(k.publicKeyJwk);
+      if (typeof k.keyId !== "string" || !jwk) throw new EnrolmentFailedError();
+      return { keyId: k.keyId, publicKeyJwk: jwk, retiresAt: typeof k.retiresAt === "string" ? k.retiresAt : null };
     });
     this.deps.repo.replaceDeploymentKeys(registrationId, keys);
   }
 
   /**
-   * Verifies a message from a deployment with its known keys. On a signature failure the key list is refreshed once and
-   * the check repeated before the message is refused.
+   * Verifies a message from a deployment with its known keys. Only an unknown `kid` triggers a key-list refresh (at most
+   * once a minute per registration) before the check is repeated; a bad signature under a known key never reaches the
+   * network. Every failure is an EnrolmentFailedError.
    */
   async verifyFromDeployment(
     registrationId: string,
@@ -190,11 +245,25 @@ export class EnrolmentService {
         consumeJti: options.consumeJti,
       });
     };
+    let kid: unknown;
     try {
+      kid = decodeProtectedHeader(token).kid;
+    } catch {
+      throw new EnrolmentFailedError();
+    }
+    const known = this.deps.repo.deploymentKeys(registrationId).some((k) => k.keyId === kid);
+    try {
+      if (!known) {
+        const now = this.clock().getTime();
+        const last = this.lastVerifyRefresh.get(registrationId);
+        if (last === undefined || now - last >= VERIFY_REFRESH_MIN_INTERVAL_MS) {
+          this.lastVerifyRefresh.set(registrationId, now);
+          await this.refreshDeploymentKeys(registrationId);
+        }
+      }
       return await attempt();
     } catch {
-      await this.refreshDeploymentKeys(registrationId);
-      return attempt();
+      throw new EnrolmentFailedError();
     }
   }
 

@@ -4,6 +4,7 @@ export {
   signJws,
   verifyJws,
   generateEd25519Key,
+  parsePublicJwk,
   JwsError,
   JWS_LEEWAY_SECONDS,
   JWS_MAX_TTL_SECONDS,

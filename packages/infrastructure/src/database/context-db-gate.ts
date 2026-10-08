@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { ContextDb, PersonalDb, TenantDb } from "@oneon/domain";
 import { createDatabase, latestMigrationVersion, runMigrations } from "./connection.js";
@@ -105,6 +105,8 @@ export class ContextDbGate {
         .run(tenantId, latestMigrationVersion(), new Date().toISOString());
     } catch (error) {
       conn.close();
+      // Nothing half-written may stay behind: a leftover file would block the retry with tenant_file_exists.
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true });
       throw error;
     }
     return this.remember(registrationId, tenantId, conn);

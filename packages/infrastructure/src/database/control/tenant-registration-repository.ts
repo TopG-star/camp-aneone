@@ -84,8 +84,11 @@ export class TenantRegistrationRepository {
     private readonly clock: () => Date = () => new Date(),
   ) {}
 
-  /** Registration, both first keys and the audit event are written together or not at all. */
-  create(input: CreateTenantRegistrationInput): TenantRegistration {
+  /**
+   * Registration, both first keys and the audit event are written together or not at all.
+   * `inTransaction` runs before commit and sees the new rows; if it throws, everything rolls back.
+   */
+  create(input: CreateTenantRegistrationInput, inTransaction?: (registration: TenantRegistration) => void): TenantRegistration {
     const id = randomUUID();
     const now = this.clock().toISOString();
     const run = this.db.transaction(() => {
@@ -98,6 +101,7 @@ export class TenantRegistrationRepository {
       this.insertKey(id, "deployment", input.deploymentKeyId, input.deploymentPublicKeyJwk, null, now);
       this.insertKey(id, "oneon", input.oneonKeyId, input.oneonPublicKeyJwk, input.oneonPrivateKeySealed, now);
       this.insertEvent(id, "enrolled", input.enrolledBy, { origin: input.origin, tenantSlug: input.tenantSlug }, now);
+      inTransaction?.(this.findById(id)!);
     });
     run();
     return this.findById(id)!;
@@ -154,18 +158,57 @@ export class TenantRegistrationRepository {
     };
   }
 
-  /** Stores a new Oneon key; every other unretired Oneon key keeps working for the overlap period. */
-  addOneonKey(registrationId: string, keyId: string, publicKeyJwk: JWK, sealed: SealedSecret, actor: string | null = null): void {
+  /** Unretired Oneon key ids, newest first. */
+  unretiredOneonKeyIds(registrationId: string): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT key_id FROM tenant_keys WHERE tenant_registration_id = ? AND owner = 'oneon' AND retired_at IS NULL
+         ORDER BY created_at DESC, rowid DESC`,
+      )
+      .all(registrationId) as Array<{ key_id: string }>;
+    return rows.map((r) => r.key_id);
+  }
+
+  /** Unretired Oneon keys with their sealed private keys, newest first. */
+  unretiredOneonKeys(registrationId: string): OneonKey[] {
+    const rows = this.db
+      .prepare(
+        `SELECT key_id, public_key_jwk, private_key_wrapped, private_key_ciphertext, retired_at FROM tenant_keys
+         WHERE tenant_registration_id = ? AND owner = 'oneon' AND retired_at IS NULL
+         ORDER BY created_at DESC, rowid DESC`,
+      )
+      .all(registrationId) as KeyRow[];
+    return rows.map((row) => ({
+      keyId: row.key_id,
+      publicKeyJwk: JSON.parse(row.public_key_jwk) as JWK,
+      sealedPrivateKey: { wrappedKey: row.private_key_wrapped!, ciphertext: row.private_key_ciphertext! },
+    }));
+  }
+
+  /** Stores a new Oneon key before it is offered to the deployment; the other keys stay as they are. */
+  addPendingOneonKey(registrationId: string, keyId: string, publicKeyJwk: JWK, sealed: SealedSecret): void {
+    this.insertKey(registrationId, "oneon", keyId, publicKeyJwk, sealed, this.clock().toISOString());
+  }
+
+  /** The deployment accepted `keepKeyId`: every other unretired Oneon key keeps working for the overlap period. */
+  retireOtherOneonKeys(registrationId: string, keepKeyId: string, actor: string | null = null): void {
     const now = this.clock();
-    const nowIso = now.toISOString();
     const run = this.db.transaction(() => {
       this.db
-        .prepare("UPDATE tenant_keys SET retired_at = ? WHERE tenant_registration_id = ? AND owner = 'oneon' AND retired_at IS NULL")
-        .run(new Date(now.getTime() + KEY_OVERLAP_MS).toISOString(), registrationId);
-      this.insertKey(registrationId, "oneon", keyId, publicKeyJwk, sealed, nowIso);
-      this.insertEvent(registrationId, "oneon_key_rotated", actor, { keyId }, nowIso);
+        .prepare(
+          "UPDATE tenant_keys SET retired_at = ? WHERE tenant_registration_id = ? AND owner = 'oneon' AND retired_at IS NULL AND key_id <> ?",
+        )
+        .run(new Date(now.getTime() + KEY_OVERLAP_MS).toISOString(), registrationId, keepKeyId);
+      this.insertEvent(registrationId, "oneon_key_rotated", actor, { keyId: keepKeyId }, now.toISOString());
     });
     run();
+  }
+
+  /** The deployment definitely refused a pending key. */
+  deleteOneonKey(registrationId: string, keyId: string): void {
+    this.db
+      .prepare("DELETE FROM tenant_keys WHERE tenant_registration_id = ? AND owner = 'oneon' AND key_id = ? AND retired_at IS NULL")
+      .run(registrationId, keyId);
   }
 
   /** Deployment public keys that may verify a message now: unretired, or retiring but not yet expired. */

@@ -49,11 +49,16 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
       return;
     }
 
-    let registrationId: string | null = null;
     try {
-      const registration = await enrolment.enrol({ origin, tenantSlug, code, displayName, enrolledBy: req.identityId! });
-      registrationId = registration.id;
-      createTenantFile(registration.id, registration.tenantId);
+      // The tenant file is created inside the registration's transaction: if it fails, nothing is stored.
+      const registration = await enrolment.enrol({
+        origin,
+        tenantSlug,
+        enrolmentCode: code,
+        displayName,
+        enrolledBy: req.identityId!,
+        inTransaction: (r) => createTenantFile(r.id, r.tenantId),
+      });
       res.status(201).json({ registrationId: registration.id, tenantSlug: registration.tenantSlug });
     } catch (error) {
       if (error instanceof EnrolmentFailedError) {
@@ -62,8 +67,6 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
         return;
       }
       logger.error("Enrolment error", { tenantSlug, error: error instanceof Error ? error.message : String(error) });
-      // A registration without its file must not look usable.
-      if (registrationId) registrations.setStatus(registrationId, "removed", req.identityId!, "tenant file could not be created");
       res.status(500).json({ error: "Internal server error" });
     }
   });

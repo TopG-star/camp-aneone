@@ -19,7 +19,7 @@ const REDACTION_PATTERNS: [RegExp, string][] = [
   // Common secret env var values when accidentally spread into meta
   [/("?(?:api[_-]?token|api[_-]?key|secret|password|access[_-]?token|refresh[_-]?token|private[_-]?key|encryption[_-]?key)"?\s*[:=]\s*"?)([^",}\s]{8,})/gi, "$1[REDACTED]"],
   // Delegation and enrolment secrets by JSON key: grants, access tokens, enrolment codes, private keys, hand-off grants
-  [/("(?:grant|grantValue|accessToken|code|privateKey|handoff)"\s*:\s*")[^"]*/g, "$1[REDACTED]"],
+  [/("(?:grant|grantValue|accessToken|enrolmentCode|privateKey|handoff)"\s*:\s*")[^"]*/g, "$1[REDACTED]"],
   // GitHub PATs (ghp_, gho_, ghs_, github_pat_)
   [/\b(ghp_|gho_|ghs_|github_pat_)[A-Za-z0-9_]{16,}/g, "[REDACTED_GITHUB_TOKEN]"],
   // Anthropic keys (sk-ant-)

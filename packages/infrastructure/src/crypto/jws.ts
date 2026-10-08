@@ -45,7 +45,7 @@ export interface VerifyJwsOptions {
   audience: string;
   now?: Date;
   maxTtlSeconds?: number;
-  /** Returns false when the jti was already used. Called last, only for an otherwise valid message. */
+  /** Returns false when the jti was already used. Called last, only for an otherwise valid message. The expiry handed over includes the leeway, so the record outlives the message's last accepted moment. */
   consumeJti?: (jti: string, expiresAt: string) => boolean;
 }
 
@@ -84,7 +84,7 @@ export async function verifyJws(token: string, options: VerifyJwsOptions): Promi
   const nowSeconds = (options.now ?? new Date()).getTime() / 1000;
   if (issuedAt > nowSeconds + JWS_LEEWAY_SECONDS) throw new JwsError("issued in the future");
   if (expiresAt + JWS_LEEWAY_SECONDS < nowSeconds) throw new JwsError("expired");
-  if (options.consumeJti && !options.consumeJti(jti, new Date(expiresAt * 1000).toISOString())) {
+  if (options.consumeJti && !options.consumeJti(jti, new Date((expiresAt + JWS_LEEWAY_SECONDS) * 1000).toISOString())) {
     throw new JwsError("replayed");
   }
   return { kid, payload };
@@ -103,4 +103,17 @@ export async function generateEd25519Key(): Promise<GeneratedKey> {
     publicKeyJwk: await exportJWK(publicKey),
     privateKeyJwk: await exportJWK(privateKey),
   };
+}
+
+/** Parses a JWK that travels as a JSON string; null unless it is a public Ed25519 key. */
+export function parsePublicJwk(value: unknown): JWK | null {
+  if (typeof value !== "string") return null;
+  try {
+    const jwk = JSON.parse(value) as Record<string, unknown>;
+    if (typeof jwk !== "object" || jwk === null) return null;
+    if (jwk.kty !== "OKP" || jwk.crv !== "Ed25519" || typeof jwk.x !== "string" || jwk.x.length === 0 || "d" in jwk) return null;
+    return jwk as JWK;
+  } catch {
+    return null;
+  }
 }

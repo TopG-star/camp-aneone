@@ -29,7 +29,7 @@ describe("platform route", () => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  function setup(opts: { masterKey?: string | null; operator?: boolean } = {}) {
+  function setup(opts: { masterKey?: string | null; operator?: boolean; createTenantFile?: (id: string, tenantId: string) => void } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "platform-"));
     dirs.push(dir);
     const control = openControlDb(join(dir, "control.db"));
@@ -62,7 +62,7 @@ describe("platform route", () => {
         operators,
         registrations,
         enrolment,
-        createTenantFile: (id, tenantId) => void gate.createTenantFile(id, tenantId),
+        createTenantFile: opts.createTenantFile ?? ((id, tenantId) => void gate.createTenantFile(id, tenantId)),
         logger,
       }),
     );
@@ -140,5 +140,22 @@ describe("platform route", () => {
 
     expect((await request(app).post(`/api/platform/registrations/${id}/rotate-key`)).status).toBe(204);
     expect(fake.oneonKeys).toHaveLength(2);
+  });
+
+  it("leaves no registration, keys, events or file when creating the tenant file fails,", async () => {
+    let fail = true;
+    const { app, control, fake, dir } = setup({
+      createTenantFile: () => {
+        if (fail) throw new Error("disk full");
+      },
+    });
+    const first = await request(app).post("/api/platform/enrolments").send(body);
+    expect(first.status).toBe(500);
+    for (const table of ["tenant_registrations", "tenant_keys", "tenant_registration_events"]) {
+      expect(control.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
+    }
+    expect(existsSync(join(dir, "tenants"))).toBe(false);
+    expect(fake.active).toBe(true); // the code is spent; the operator needs a fresh one
+    fail = false;
   });
 });

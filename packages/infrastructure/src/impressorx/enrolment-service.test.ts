@@ -3,12 +3,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { decodeJwt } from "jose";
 import { openControlDb, type ControlDb } from "../database/control/open-control-db.js";
 import { SqliteIdentityRepository } from "../database/control/identity-repository.js";
 import { TenantRegistrationRepository } from "../database/control/tenant-registration-repository.js";
-import { EnrolmentFailedError, EnrolmentService, SigningKeyNotConfiguredError } from "./enrolment-service.js";
+import { EnrolmentFailedError, EnrolmentService, SigningKeyNotConfiguredError, type FetchLike } from "./enrolment-service.js";
 import { FakeImpressorx } from "./fake-impressorx.js";
-import { signJws } from "../crypto/jws.js";
+import { generateEd25519Key, signJws } from "../crypto/jws.js";
 
 const ORIGIN = "https://acme.example";
 const CODE = "ABCD-EFGH-JKLM";
@@ -21,7 +22,7 @@ describe("enrolment service against the fake deployment", () => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  function setup(masterKey: string | null = randomBytes(32).toString("base64")) {
+  function setup(masterKey: string | null = randomBytes(32).toString("base64"), wrap?: (inner: FetchLike) => FetchLike) {
     const dir = mkdtempSync(join(tmpdir(), "enrol-"));
     dirs.push(dir);
     const control: ControlDb = openControlDb(join(dir, "control.db"));
@@ -29,10 +30,21 @@ describe("enrolment service against the fake deployment", () => {
     const identityId = new SqliteIdentityRepository(control).createWithLogin({ kind: "google", subject: "s1" }).id;
     const repo = new TenantRegistrationRepository(control);
     const fake = new FakeImpressorx(ORIGIN, "acme", CODE);
-    const service = new EnrolmentService({ repo, oneonOrigin: "https://oneon.example", masterKeyB64: masterKey ?? undefined, fetchImpl: fake.fetch });
-    const enrol = () => service.enrol({ origin: ORIGIN, tenantSlug: "acme", code: CODE, enrolledBy: identityId });
-    return { control, repo, fake, service, enrol, identityId };
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const recording: FetchLike = (input, init) => {
+      calls.push({ url: input.toString(), body: init?.body ? JSON.parse(String(init.body)) : null });
+      return fake.fetch(input, init);
+    };
+    const fetchImpl = wrap ? wrap(recording) : recording;
+    const service = new EnrolmentService({ repo, oneonOrigin: "https://oneon.example", masterKeyB64: masterKey ?? undefined, fetchImpl });
+    const enrol = () => service.enrol({ origin: ORIGIN, tenantSlug: "acme", enrolmentCode: CODE, enrolledBy: identityId });
+    return { control, repo, fake, service, enrol, identityId, calls };
   }
+
+  const unrecordedToken = async (kid: string) => {
+    const k = await generateEd25519Key();
+    return signJws({ privateKeyJwk: k.privateKeyJwk, kid, iss: "impressorx:acme", aud: "oneon" });
+  };
 
   it("enrols, stores both keys, and seals the private key", async () => {
     const { control, repo, enrol } = setup();
@@ -41,6 +53,26 @@ describe("enrolment service against the fake deployment", () => {
     expect(repo.deploymentKeys(reg.id)).toHaveLength(1);
     const row = control.prepare("SELECT private_key_ciphertext FROM tenant_keys WHERE owner = 'oneon'").get() as { private_key_ciphertext: string };
     expect(row.private_key_ciphertext).not.toContain('"d"');
+  });
+
+  it("sends every JWK as a JSON string and the fake refuses object JWKs", async () => {
+    const { enrol, calls, repo, service } = setup();
+    const reg = await enrol();
+    const enrolClaims = decodeJwt((calls[0]!.body as { request: string }).request);
+    expect(typeof enrolClaims.oneonPublicKeyJwk).toBe("string");
+    expect(JSON.parse(enrolClaims.oneonPublicKeyJwk as string)).toMatchObject({ kty: "OKP", crv: "Ed25519" });
+
+    await service.rotateOneonKey(reg.id);
+    const rotateCall = calls.find((c) => c.url.endsWith("/api/oneon/keys") && c.body)!;
+    expect(typeof decodeJwt((rotateCall.body as { request: string }).request).newPublicKeyJwk).toBe("string");
+    expect(repo.deploymentKeys(reg.id)).toHaveLength(1);
+  });
+
+  it("refuses a reply that carries the deployment JWK as an object", async () => {
+    const { control, fake, enrol } = setup();
+    fake.replyJwkAsObject = true;
+    await expect(enrol()).rejects.toBeInstanceOf(EnrolmentFailedError);
+    expect(control.prepare("SELECT COUNT(*) AS n FROM tenant_registrations").get()).toEqual({ n: 0 });
   });
 
   it("fails clearly when the signing master key is not configured, without contacting the deployment", async () => {
@@ -66,7 +98,7 @@ describe("enrolment service against the fake deployment", () => {
 
   it("fails on a wrong code", async () => {
     const { service, identityId } = setup();
-    await expect(service.enrol({ origin: ORIGIN, tenantSlug: "acme", code: "WRONG", enrolledBy: identityId })).rejects.toBeInstanceOf(
+    await expect(service.enrol({ origin: ORIGIN, tenantSlug: "acme", enrolmentCode: "WRONG", enrolledBy: identityId })).rejects.toBeInstanceOf(
       EnrolmentFailedError,
     );
   });
@@ -81,26 +113,45 @@ describe("enrolment service against the fake deployment", () => {
     expect(second).not.toBe(first);
     expect(fake.oneonKeys.map((k) => k.keyId)).toContain(second);
     expect(fake.acceptedOneonKeyIds).toEqual([first]);
+    expect(repo.unretiredOneonKeyIds(reg.id)).toEqual([second]);
 
-    // The next rotation is signed with the new key (the fake refuses a retiring one).
     await service.rotateOneonKey(reg.id);
     expect(fake.acceptedOneonKeyIds).toEqual([first, second]);
     expect((await service.oneonSigningKey(reg.id)).keyId).toBe(repo.currentOneonKey(reg.id)!.keyId);
   });
 
-  it("rotateOneonKey stores nothing when the deployment refuses", async () => {
-    const { repo, service, enrol } = setup();
+  it("rotateOneonKey stores nothing new when the deployment refuses", async () => {
+    const { control, repo, fake, service, enrol } = setup();
     const reg = await enrol();
     const before = repo.currentOneonKey(reg.id)!.keyId;
-    const failing = new EnrolmentService({
-      repo,
-      oneonOrigin: "https://oneon.example",
-      masterKeyB64: randomBytes(32).toString("base64"),
-      fetchImpl: async () => new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
-    });
-    await expect(failing.rotateOneonKey(reg.id)).rejects.toBeInstanceOf(Error);
+    fake.refuseKeyAdds = true;
+    await expect(service.rotateOneonKey(reg.id)).rejects.toBeInstanceOf(EnrolmentFailedError);
     expect(repo.currentOneonKey(reg.id)!.keyId).toBe(before);
-    expect(service).toBeDefined();
+    expect(control.prepare("SELECT COUNT(*) AS n FROM tenant_keys WHERE owner = 'oneon'").get()).toEqual({ n: 1 });
+  });
+
+  it("rotateOneonKey recovers when the change landed at the deployment but the answer was lost", async () => {
+    let lose = false;
+    const { repo, fake, service, enrol } = setup(undefined, (inner) => async (input, init) => {
+      const res = await inner(input, init);
+      if (lose && res.status === 204 && init?.method === "POST" && input.toString().endsWith("/api/oneon/keys")) throw new Error("connection reset");
+      return res;
+    });
+    const reg = await enrol();
+    const k1 = repo.currentOneonKey(reg.id)!.keyId;
+
+    lose = true;
+    await expect(service.rotateOneonKey(reg.id)).rejects.toBeInstanceOf(EnrolmentFailedError);
+    const k2 = fake.oneonKeys[1]!.keyId; // the deployment applied it
+    expect(repo.unretiredOneonKeyIds(reg.id)).toContain(k2); // and Oneon kept it
+    expect(repo.unretiredOneonKeyIds(reg.id)).toContain(k1);
+
+    // The deployment now refuses k1 (retiring); the next rotation still works by falling back to k2.
+    lose = false;
+    await service.rotateOneonKey(reg.id);
+    expect(fake.acceptedOneonKeyIds).toEqual([k1, k2]); // k1 landed the lost change; k2 signs this one
+    const k3 = repo.currentOneonKey(reg.id)!.keyId;
+    expect(repo.unretiredOneonKeyIds(reg.id)).toEqual([k3]);
   });
 
   it("refreshDeploymentKeys accepts a list signed by a known key", async () => {
@@ -110,23 +161,51 @@ describe("enrolment service against the fake deployment", () => {
     expect(repo.deploymentKeys(reg.id)).toHaveLength(1);
   });
 
+  it("refreshDeploymentKeys learns a rotated key because the list is signed by the oldest valid key", async () => {
+    const { repo, fake, service, enrol } = setup();
+    const reg = await enrol();
+    const newKey = await fake.rotateDeploymentKey();
+    await service.refreshDeploymentKeys(reg.id);
+    expect(repo.deploymentKeys(reg.id).map((k) => k.keyId)).toContain(newKey.keyId);
+  });
+
   it("refreshDeploymentKeys refuses a list signed by an unknown key and changes nothing", async () => {
     const { repo, fake, service, enrol } = setup();
     const reg = await enrol();
     const known = repo.deploymentKeys(reg.id).map((k) => k.keyId);
-    await fake.rotateDeploymentKey(); // the newest key now signs, and Oneon has never seen it
+    fake.signListWithUnknownKey = true;
     await expect(service.refreshDeploymentKeys(reg.id)).rejects.toBeInstanceOf(EnrolmentFailedError);
     expect(repo.deploymentKeys(reg.id).map((k) => k.keyId)).toEqual(known);
   });
 
-  it("verifyFromDeployment accepts a known key and refuses an unknown one after one refresh attempt", async () => {
-    const { repo, fake, service, enrol } = setup();
+  it("verifyFromDeployment does not touch the network for a bad signature under a known kid", async () => {
+    const { repo, service, enrol, calls } = setup();
     const reg = await enrol();
-    const knownKeyId = repo.deploymentKeys(reg.id)[0]!.keyId;
-    const newKey = await fake.rotateDeploymentKey();
+    const knownKid = repo.deploymentKeys(reg.id)[0]!.keyId;
+    const before = calls.length;
+    await expect(service.verifyFromDeployment(reg.id, await unrecordedToken(knownKid), { audience: "oneon" })).rejects.toBeInstanceOf(
+      EnrolmentFailedError,
+    );
+    expect(calls.length).toBe(before);
+  });
 
-    const unknown = await signJws({ privateKeyJwk: newKey.privateKeyJwk, kid: newKey.keyId, iss: "impressorx:acme", aud: "oneon" });
-    await expect(service.verifyFromDeployment(reg.id, unknown, { audience: "oneon" })).rejects.toBeInstanceOf(EnrolmentFailedError);
-    expect(repo.deploymentKeys(reg.id).map((k) => k.keyId)).toEqual([knownKeyId]);
+  it("verifyFromDeployment refreshes for an unknown kid, at most once a minute, and always fails with EnrolmentFailedError", async () => {
+    const { service, enrol, calls } = setup();
+    const reg = await enrol();
+    const before = calls.length;
+    const token = await unrecordedToken("never-seen");
+
+    await expect(service.verifyFromDeployment(reg.id, token, { audience: "oneon" })).rejects.toBeInstanceOf(EnrolmentFailedError);
+    expect(calls.length).toBe(before + 1);
+    await expect(service.verifyFromDeployment(reg.id, token, { audience: "oneon" })).rejects.toBeInstanceOf(EnrolmentFailedError);
+    expect(calls.length).toBe(before + 1);
+  });
+
+  it("verifyFromDeployment accepts a message under a key learned by the refresh", async () => {
+    const { fake, service, enrol } = setup();
+    const reg = await enrol();
+    const newKey = await fake.rotateDeploymentKey();
+    const token = await signJws({ privateKeyJwk: newKey.privateKeyJwk, kid: newKey.keyId, iss: "impressorx:acme", aud: "oneon" });
+    expect((await service.verifyFromDeployment(reg.id, token, { audience: "oneon" })).kid).toBe(newKey.keyId);
   });
 });

@@ -80,15 +80,47 @@ describe("tenant registration and operator repositories", () => {
     ]);
   });
 
-  it("a new Oneon key becomes current and the old one retires after seven days", () => {
+  it("a pending Oneon key becomes current; retiring the others gives them seven days", () => {
     const { control, repo, clock, identityId } = setup();
     const reg = repo.create(input(identityId));
     clock.now = new Date(clock.now.getTime() + 1000);
-    repo.addOneonKey(reg.id, "o2", jwk("o2"), { wrappedKey: "w2", ciphertext: "c2" });
+    repo.addPendingOneonKey(reg.id, "o2", jwk("o2"), { wrappedKey: "w2", ciphertext: "c2" });
 
     expect(repo.currentOneonKey(reg.id)).toMatchObject({ keyId: "o2", sealedPrivateKey: { wrappedKey: "w2" } });
+    expect(repo.unretiredOneonKeyIds(reg.id)).toEqual(["o2", "o-acme"]);
+
+    repo.retireOtherOneonKeys(reg.id, "o2");
+    expect(repo.unretiredOneonKeyIds(reg.id)).toEqual(["o2"]);
     const old = control.prepare("SELECT retired_at FROM tenant_keys WHERE key_id = 'o-acme'").get() as { retired_at: string };
     expect(Date.parse(old.retired_at) - Date.parse("2026-10-08T12:00:01.000Z")).toBe(KEY_OVERLAP_MS);
+  });
+
+  it("deleteOneonKey removes only an unretired Oneon key", () => {
+    const { repo, identityId } = setup();
+    const reg = repo.create(input(identityId));
+    repo.addPendingOneonKey(reg.id, "o2", jwk("o2"), { wrappedKey: "w2", ciphertext: "c2" });
+    repo.deleteOneonKey(reg.id, "o2");
+    expect(repo.unretiredOneonKeyIds(reg.id)).toEqual(["o-acme"]);
+  });
+
+  it("create runs the in-transaction hook, and a throwing hook rolls everything back", () => {
+    const { control, repo, identityId } = setup();
+    let seen = "";
+    const reg = repo.create(input(identityId), (r) => {
+      seen = r.id;
+      expect(repo.findById(r.id)).not.toBeNull(); // visible inside the transaction
+    });
+    expect(seen).toBe(reg.id);
+
+    expect(() =>
+      repo.create(input(identityId, "other"), () => {
+        throw new Error("file failed");
+      }),
+    ).toThrow("file failed");
+    expect(repo.findBySlug("other")).toBeNull();
+    expect(control.prepare("SELECT COUNT(*) AS n FROM tenant_registrations").get()).toEqual({ n: 1 });
+    expect(control.prepare("SELECT COUNT(*) AS n FROM tenant_keys").get()).toEqual({ n: 2 });
+    expect(control.prepare("SELECT COUNT(*) AS n FROM tenant_registration_events").get()).toEqual({ n: 1 });
   });
 
   it("deploymentKeys returns unretired and still-retiring keys only", () => {

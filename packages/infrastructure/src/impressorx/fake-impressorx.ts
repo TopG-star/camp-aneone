@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { decodeJwt } from "jose";
-import { generateEd25519Key, signJws, verifyJws, type GeneratedKey, type JWK } from "../crypto/jws.js";
+import { generateEd25519Key, parsePublicJwk, signJws, verifyJws, type GeneratedKey, type JWK } from "../crypto/jws.js";
 
 /**
  * An in-memory ImpressoRx deployment that behaves like the real endpoints
@@ -11,6 +11,12 @@ export class FakeImpressorx {
   /** Test switches. */
   signReplyWithWrongKey = false;
   replyTenantSlug: string | null = null;
+  /** Reply with the deployment JWK as an object instead of a JSON string. */
+  replyJwkAsObject = false;
+  /** Answer 401 to every POST /api/oneon/keys. */
+  refuseKeyAdds = false;
+  /** Sign the key list with a key whose kid Oneon has never seen. */
+  signListWithUnknownKey = false;
 
   readonly oneonKeys: Array<{ keyId: string; publicKeyJwk: JWK; retiredAt: Date | null }> = [];
   readonly acceptedOneonKeyIds: string[] = [];
@@ -58,17 +64,20 @@ export class FakeImpressorx {
   private async enrol(init?: RequestInit): Promise<Response> {
     if (this.codeUsed) return unauthorized();
     const token = requestToken(init);
-    const unverified = decodeJwt(token) as { oneonPublicKeyJwk?: JWK; oneonKeyId?: string };
+    const unverified = decodeJwt(token) as { oneonPublicKeyJwk?: unknown; oneonKeyId?: string };
+    // Like the real endpoint: the JWK must be a JSON string holding a public Ed25519 key.
+    const oneonJwk = parsePublicJwk(unverified.oneonPublicKeyJwk);
+    if (!oneonJwk) return unauthorized();
     const { payload, kid } = await verifyJws(token, {
-      resolveKey: (k) => (k === unverified.oneonKeyId ? unverified.oneonPublicKeyJwk : null),
+      resolveKey: (k) => (k === unverified.oneonKeyId ? oneonJwk : null),
       issuer: "oneon",
       audience: this.issuer,
       now: this.clock(),
     });
-    if (payload.code !== this.code || typeof payload.nonce !== "string" || !unverified.oneonPublicKeyJwk) return unauthorized();
+    if (payload.code !== this.code || typeof payload.nonce !== "string") return unauthorized();
     if (typeof payload.oneonOrigin !== "string" || !payload.oneonOrigin.startsWith("https://")) return unauthorized();
     this.codeUsed = true;
-    this.oneonKeys.push({ keyId: kid, publicKeyJwk: unverified.oneonPublicKeyJwk, retiredAt: null });
+    this.oneonKeys.push({ keyId: kid, publicKeyJwk: oneonJwk, retiredAt: null });
     const key = await this.rotateDeploymentKey();
 
     const signer = this.signReplyWithWrongKey ? await generateEd25519Key() : key;
@@ -82,14 +91,14 @@ export class FakeImpressorx {
         nonce: payload.nonce,
         tenantSlug: this.replyTenantSlug ?? this.tenantSlug,
         deploymentKeyId: key.keyId,
-        deploymentPublicKeyJwk: key.publicKeyJwk,
+        deploymentPublicKeyJwk: this.replyJwkAsObject ? key.publicKeyJwk : JSON.stringify(key.publicKeyJwk),
       },
     });
     return json({ response });
   }
 
   private async addOneonKey(init?: RequestInit): Promise<Response> {
-    if (!this.codeUsed) return unauthorized();
+    if (!this.codeUsed || this.refuseKeyAdds) return unauthorized();
     const now = this.clock();
     const { payload, kid } = await verifyJws(requestToken(init), {
       // A key that is retiring is refused, like the real endpoint.
@@ -98,26 +107,29 @@ export class FakeImpressorx {
       audience: this.issuer,
       now,
     });
-    if (typeof payload.newKeyId !== "string" || typeof payload.newPublicKeyJwk !== "object" || !payload.newPublicKeyJwk) return unauthorized();
+    const newJwk = parsePublicJwk(payload.newPublicKeyJwk);
+    if (typeof payload.newKeyId !== "string" || !newJwk) return unauthorized();
     this.acceptedOneonKeyIds.push(kid);
     for (const key of this.oneonKeys) {
       if (!key.retiredAt) key.retiredAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
     }
-    this.oneonKeys.push({ keyId: payload.newKeyId, publicKeyJwk: payload.newPublicKeyJwk as JWK, retiredAt: null });
+    this.oneonKeys.push({ keyId: payload.newKeyId, publicKeyJwk: newJwk, retiredAt: null });
     return new Response(null, { status: 204 });
   }
 
   private async listKeys(): Promise<Response> {
     if (!this.codeUsed) return unauthorized();
     const now = this.clock();
-    const signer = [...this.deploymentKeys].reverse().find((k) => !k.retiredAt)!;
+    // The OLDEST still-valid key signs the list, so a verifier that knows only older keys can still accept it.
+    const signer = this.deploymentKeys.find((k) => !k.retiredAt || k.retiredAt > now)!;
     const keys = this.deploymentKeys
       .filter((k) => !k.retiredAt || k.retiredAt > now)
-      .map((k) => ({ keyId: k.keyId, publicKeyJwk: k.publicKeyJwk, retiresAt: k.retiredAt?.toISOString() ?? null }));
-    const usedSigner = this.signReplyWithWrongKey ? await generateEd25519Key() : signer;
+      .map((k) => ({ keyId: k.keyId, publicKeyJwk: JSON.stringify(k.publicKeyJwk), retiresAt: k.retiredAt?.toISOString() ?? null }));
+    const usedSigner = this.signReplyWithWrongKey || this.signListWithUnknownKey ? await generateEd25519Key() : signer;
+    const signerKid = this.signListWithUnknownKey ? randomUUID() : signer.keyId;
     const response = await signJws({
       privateKeyJwk: usedSigner.privateKeyJwk,
-      kid: signer.keyId,
+      kid: signerKid,
       iss: this.issuer,
       aud: "oneon",
       now,
