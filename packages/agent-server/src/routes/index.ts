@@ -25,10 +25,11 @@ import { createUsersRouter } from "./users.route.js";
 import { createMemoryRouter } from "./memory.route.js";
 import { createPlatformRouter } from "./platform.route.js";
 import { createHandoffRouter } from "./handoff.route.js";
+import { createContextsRouter } from "./contexts.route.js";
 import { createTokenAuthMiddleware } from "../middleware/auth.js";
 import { createSessionAuthMiddleware } from "../middleware/session-auth.js";
 import { requireUser } from "../middleware/require-user.js";
-import { requirePersonalContext, resolveActiveContext } from "../middleware/active-context.js";
+import { createSnapshotRefresher, requirePersonalContext, resolveActiveContext } from "../middleware/active-context.js";
 import { actorForContext, contextRepos } from "../context-wiring.js";
 import {
   LocalDocMemoryProvider,
@@ -101,6 +102,14 @@ export function registerRoutes(app: Express, container: AppContainer): void {
   // gets 403 context_unavailable, so a route added later cannot reach personal data by accident.
   const userAuth: RequestHandler[] = [sessionAuth, requireUser, requirePersonalContext];
 
+  // One refresher for the middleware and the picker's validate call, so a membership's refresh is single-flight across both.
+  const activeContextLogger = new StructuredLogger("active-context", env.LOG_LEVEL);
+  const snapshots = createSnapshotRefresher({
+    memberships: container.memberships,
+    client: container.impressorx,
+    logger: activeContextLogger,
+  });
+
   // Context-aware routes: the one active context is resolved from the session and its database opened for the request.
   // Only routes that read their repositories from contextRepos(req.contextDb) may use this chain.
   const contextAuth: RequestHandler[] = [
@@ -110,9 +119,24 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       gate: { openPersonal: container.openPersonal, openTenant: container.openTenant },
       memberships: container.memberships,
       identities: container.identityRepo,
-      logger: new StructuredLogger("active-context", env.LOG_LEVEL),
+      snapshots,
+      logger: activeContextLogger,
     }),
   ];
+
+  // The context picker: session only, because it must work even when the current context cannot open.
+  app.use(
+    "/api/contexts",
+    sessionAuth,
+    requireUser,
+    createContextsRouter({
+      memberships: container.memberships,
+      registrations: container.tenantRegistrations,
+      identities: container.identityRepo,
+      snapshots,
+      logger: activeContextLogger,
+    }),
+  );
 
   // System routes: Bearer token only (admin scripts, CI triggers)
   const systemAuth: RequestHandler[] = [tokenAuth];

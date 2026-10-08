@@ -431,4 +431,70 @@ describe("ImpressoRx client against the fake deployment", () => {
       expect(grantId).toEqual(expect.any(String));
     });
   });
+
+  describe("bound session calls", () => {
+    it("forBoundSession serves only the session, identity and membership the grant was opened for", async () => {
+      const s = await setup();
+      const { sessionId } = await s.launch();
+
+      expect(s.client.forBoundSession(sessionId, s.identityId, s.membershipId)).not.toBeNull();
+      expect(s.client.forBoundSession("other-session", s.identityId, s.membershipId)).toBeNull();
+      expect(s.client.forBoundSession(sessionId, "other-identity", s.membershipId)).toBeNull();
+      expect(s.client.forBoundSession(sessionId, s.identityId, "other-membership")).toBeNull();
+    });
+
+    it("a bound grant past its idle expiry is not usable: no calls and no active session", async () => {
+      const s = await setup();
+      const { sessionId } = await s.launch();
+      expect(s.client.hasAttendedGrant(sessionId, s.identityId, s.membershipId)).toBe(true);
+
+      s.advance(30 * 60 * 1000 + 1000);
+
+      expect(s.client.hasAttendedGrant(sessionId, s.identityId, s.membershipId)).toBe(false);
+      expect(s.client.forBoundSession(sessionId, s.identityId, s.membershipId)).toBeNull();
+    });
+
+    it("a bound grant past its absolute expiry is not usable even when its idle expiry slid", async () => {
+      const s = await setup();
+      const { grantId, sessionId } = await s.launch();
+      const calls = s.client.forBoundSession(sessionId, s.identityId, s.membershipId)!;
+      // Keep the idle window sliding with a refresh every 5 minutes for just under 12 hours.
+      for (let minutes = 0; minutes < 12 * 60 - 5; minutes += 5) {
+        s.advance(5 * 60 * 1000);
+        await calls.accessToken();
+      }
+      expect(s.client.hasAttendedGrant(sessionId, s.identityId, s.membershipId)).toBe(true);
+
+      s.advance(10 * 60 * 1000);
+
+      expect(s.grants.find(grantId)!.status).toBe("active"); // the stored grant is untouched; only its use ends
+      expect(s.client.hasAttendedGrant(sessionId, s.identityId, s.membershipId)).toBe(false);
+      expect(s.client.forBoundSession(sessionId, s.identityId, s.membershipId)).toBeNull();
+    });
+
+    it("revokeForMembership revokes every grant of the membership locally and sends nothing", async () => {
+      const s = await setup();
+      const { grantId, sessionId } = await s.launch();
+      const calls = s.client.forBoundSession(sessionId, s.identityId, s.membershipId)!;
+      const issued = await calls.issue({ kind: "action", oneonActionId: "act-1", scope: ["jobs.read"], absoluteExpiresAt: new Date(Date.now() + 86_400_000).toISOString() });
+      const requestsBefore = s.fake.tokenRequests.length;
+
+      s.client.revokeForMembership(s.membershipId, "membership_suspended");
+
+      expect(s.grants.find(grantId)).toMatchObject({ status: "revoked", revokedReason: "membership_suspended" });
+      expect(s.grants.find(issued.grantId)).toMatchObject({ status: "revoked", revokedReason: "membership_suspended" });
+      expect(s.client.forBoundSession(sessionId, s.identityId, s.membershipId)).toBeNull();
+      await expect(s.client.forGrant(grantId).accessToken()).rejects.toBeInstanceOf(ImpressoRxRefusedError);
+      expect(s.fake.tokenRequests.length).toBe(requestsBefore);
+    });
+
+    it("revokeForMembership leaves other memberships' grants alone", async () => {
+      const s = await setup();
+      const { grantId } = await s.launch();
+
+      s.client.revokeForMembership("some-other-membership", "membership_suspended");
+
+      expect(s.grants.find(grantId)!.status).toBe("active");
+    });
+  });
 });

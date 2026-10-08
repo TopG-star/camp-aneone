@@ -17,7 +17,7 @@ import {
   rawDb,
 } from "@oneon/infrastructure";
 import type { ContextDb, Logger } from "@oneon/domain";
-import { resolveActiveContext } from "../middleware/active-context.js";
+import { createSnapshotRefresher, resolveActiveContext } from "../middleware/active-context.js";
 import { contextRepos } from "../context-wiring.js";
 import { createChatRouter, type ChatRouteDeps } from "../routes/chat.route.js";
 import { createActionRegistry, createListPendingActionsTool, createShowMyAccessTool, createToolRegistry, type ModelGateway } from "@oneon/application";
@@ -49,6 +49,8 @@ function fixture(chat?: (parts: { memberships: MembershipRepository }) => Partia
       .run(registrationId, tenantId, slug, slug, `https://${slug}.example`, `${registrationId}.db`, gerry);
     gate.createTenantFile(registrationId, tenantId);
     const membership = memberships.upsertFromHandoff({ identityId, tenantRegistrationId: registrationId, externalUserId: `${slug}-staff`, role });
+    // A fresh snapshot, as a hand-off leaves it; a stale one would need ImpressoRx (see active-context.test.ts).
+    memberships.applySnapshot(membership.id, { role, permissions: [], locationIds: [], tenantStatus: "Active" });
     return { registrationId, tenantId, membershipId: membership.id };
   }
   const a = tenant("a", gerry, "Admin");
@@ -69,7 +71,7 @@ function fixture(chat?: (parts: { memberships: MembershipRepository }) => Partia
   });
   app.use(
     "/api/chat",
-    resolveActiveContext({ gate, memberships, identities, logger }),
+    resolveActiveContext({ gate, memberships, identities, snapshots: createSnapshotRefresher({ memberships, client: null, logger }), logger }),
     createChatRouter({ conversationsFor: (req) => contextRepos(req.contextDb!).conversations, logger, ...chat?.({ memberships }) }),
   );
 
@@ -320,14 +322,14 @@ describe("tenant isolation through the active context", () => {
     expect(contextRepos(dbA) === contextRepos(f.personal)).toBe(false);
   });
 
-  it("a request naming a suspended membership gets 403 context_unavailable", async () => {
+  it("a request naming a suspended membership gets 403 with the suspended message", async () => {
     const f = setup();
     f.memberships.setStatus(f.a.membershipId, "suspended");
     f.actAs({ identityId: f.gerry, membershipId: f.a.membershipId });
 
     const res = await say(f, "hello");
     expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: "context_unavailable" });
+    expect(res.body).toEqual({ error: "membership_suspended", message: "This pharmacy has switched Oneon off, or your account is inactive." });
     expect(countIn(f.gate.openTenant(f.a.registrationId))).toBe(0);
   });
 

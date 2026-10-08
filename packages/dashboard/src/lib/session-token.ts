@@ -1,3 +1,5 @@
+import { parseContextChoice, type ContextChoice } from "./context";
+
 type Token = Record<string, unknown>;
 
 interface SignIn {
@@ -33,5 +35,27 @@ export function applySignIn<T extends Token>(token: T, { account, user, profile 
   if (profile?.sub) {
     (token as Token).sub = profile.sub;
   }
+  return token;
+}
+
+/**
+ * The Auth.js `jwt` callback on `update({ activeContext })`. The requested context comes from the browser, so it is
+ * stored only after `validate` (the agent-server's check for this session) says yes; a malformed request, a refusal
+ * or a failed check leaves the token as it was. The agent-server checks the stored context again on every request.
+ */
+export async function applyContextUpdate<T extends Token>(
+  token: T,
+  requested: unknown,
+  validate: (choice: ContextChoice) => Promise<boolean>,
+): Promise<T> {
+  const choice = parseContextChoice(requested);
+  if (!choice) return token;
+  let allowed = false;
+  try {
+    allowed = await validate(choice);
+  } catch {
+    allowed = false;
+  }
+  if (allowed) (token as Token).activeContext = choice;
   return token;
 }

@@ -140,9 +140,23 @@ export class ImpressoRxClient {
     return grant ? new Handle(this, grant.id) : null;
   }
 
-  /** True while this session holds an active attended grant opened for exactly this identity and membership. */
+  /**
+   * Attended calls for the grant opened for exactly this session, identity and membership; null when there is none or it
+   * is past its local idle or absolute expiry. Use this, not forSession, wherever the session names a membership.
+   */
+  forBoundSession(sessionId: string, identityId: string, membershipId: string): SessionCalls | null {
+    const grant = this.usableBoundGrant(sessionId, identityId, membershipId);
+    return grant ? new Handle(this, grant.id) : null;
+  }
+
+  /** True while this session holds a usable attended grant (active and unexpired) opened for exactly this identity and membership. */
   hasAttendedGrant(sessionId: string, identityId: string, membershipId: string): boolean {
-    return this.deps.grants.findAttendedForSessionBound(sessionId, identityId, membershipId) !== null;
+    return this.usableBoundGrant(sessionId, identityId, membershipId) !== null;
+  }
+
+  /** Revokes every grant of the membership locally (nothing is sent), e.g. after ImpressoRx refuses it. */
+  revokeForMembership(membershipId: string, reason: string): void {
+    for (const id of this.deps.grants.revokeForMembership(membershipId, reason)) this.dropTokens(id);
   }
 
   /** Unattended calls (actions, schedules). */
@@ -337,11 +351,18 @@ export class ImpressoRxClient {
   private activeGrant(grantId: string): GrantRecord {
     const record = this.deps.grants.find(grantId);
     if (!record || record.status !== "active") throw new ImpressoRxRefusedError("Grant is not active");
-    const now = this.clock().getTime();
-    if (Date.parse(record.absoluteExpiresAt) <= now || (record.idleExpiresAt && Date.parse(record.idleExpiresAt) <= now)) {
-      throw new ImpressoRxRefusedError("Grant has expired");
-    }
+    if (this.pastExpiry(record)) throw new ImpressoRxRefusedError("Grant has expired");
     return record;
+  }
+
+  private pastExpiry(record: GrantRecord): boolean {
+    const now = this.clock().getTime();
+    return Date.parse(record.absoluteExpiresAt) <= now || (record.idleExpiresAt !== null && Date.parse(record.idleExpiresAt) <= now);
+  }
+
+  private usableBoundGrant(sessionId: string, identityId: string, membershipId: string): GrantRecord | null {
+    const grant = this.deps.grants.findAttendedForSessionBound(sessionId, identityId, membershipId);
+    return grant && !this.pastExpiry(grant) ? grant : null;
   }
 
   private registration(id: string): TenantRegistration {

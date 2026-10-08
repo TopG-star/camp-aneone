@@ -1,3 +1,5 @@
+import { isContextRefusal } from "./context";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 export class ApiError extends Error {
@@ -19,6 +21,10 @@ async function readErrorMessage(res: Response): Promise<string> {
 
   if (shouldAttemptJson(contentType)) {
     const body = await res.json().catch(() => ({}));
+    // A context that cannot open explains itself to the person (the code alone is not a message).
+    if (typeof body.message === "string" && body.message.trim().length > 0 && (isContextRefusal(body.error) || body.error === "context_unavailable")) {
+      return body.message;
+    }
     if (typeof body.error === "string" && body.error.trim().length > 0) {
       const issues: string[] = Array.isArray(body.issues)
         ? body.issues.filter((i: unknown): i is string => typeof i === "string")
@@ -93,7 +99,9 @@ export async function apiFetch<T>(
   const res = await fetch(url, { ...init, headers, credentials: "include" });
 
   if (!res.ok) {
-    if (options?.redirectOnAuth !== false || res.status === 401) {
+    // A pharmacy that cannot open (stale details, switched off) is shown to the person; signing in again would not help.
+    const contextRefusal = res.status === 403 && isContextRefusal(((await res.clone().json().catch(() => null)) as { error?: unknown } | null)?.error);
+    if (!contextRefusal && (options?.redirectOnAuth !== false || res.status === 401)) {
       maybeRedirectToSignIn(res.status);
     }
     const message = await readErrorMessage(res);

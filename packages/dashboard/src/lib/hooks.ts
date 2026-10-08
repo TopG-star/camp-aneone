@@ -3,6 +3,7 @@
 import useSWR, { type SWRConfiguration } from "swr";
 import type { UserProfileResponse } from "@oneon/contracts";
 import { apiFetch } from "@/lib/api";
+import type { ContextsResponse } from "@/lib/context";
 
 function fetcher<T>(path: string): Promise<T> {
   return apiFetch<T>(path);
@@ -153,4 +154,9 @@ export function useActionDefinitions(config?: SWRConfiguration) {
 /** Settings → AI data, and the paused-sorting notice on Today */
 export function useAiData(config?: SWRConfiguration) {
   return useSWR("/api/ai-data", fetcher, config);
+}
+
+/** The context picker: the current context and the ones this session may switch to */
+export function useContexts(config?: SWRConfiguration) {
+  return useSWR<ContextsResponse>("/api/contexts", fetcher, config);
 }

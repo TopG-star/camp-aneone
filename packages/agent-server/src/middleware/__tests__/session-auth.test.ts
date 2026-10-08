@@ -263,6 +263,49 @@ describe("Session Auth Middleware", () => {
       expect(identities.findByLogin).not.toHaveBeenCalled();
     });
 
+    describe("Google sessions that chose a pharmacy with the context picker", () => {
+      function contextApp(identities: ReturnType<typeof fakeIdentities>) {
+        const app = express();
+        app.use(cookieParser());
+        app.use(createSessionAuthMiddleware(TEST_SECRET, identities));
+        app.get("/test", (req, res) =>
+          res.json({ identityId: req.identityId ?? null, sessionId: req.sessionId ?? null, sessionContext: req.sessionContext ?? null }),
+        );
+        return app;
+      }
+      const google = { email: "alice@test.com", sub: "g-1" };
+      const known = () => fakeIdentities({ findByLogin: () => ({ id: "u1", status: "active" }) });
+
+      it("carries the chosen pharmacy as the session context, with no session id", async () => {
+        const jwe = await createSessionJWE({ ...google, activeContext: { kind: "tenant", membershipId: "m9" } });
+
+        const res = await request(contextApp(known())).get("/test").set("Cookie", cookie(jwe));
+
+        expect(res.body).toEqual({ identityId: "u1", sessionId: null, sessionContext: { kind: "tenant", membershipId: "m9" } });
+      });
+
+      it.each([
+        ["personal", { kind: "personal" }],
+        ["no context", undefined],
+        ["a tenant context without a membership id", { kind: "tenant" }],
+        ["an unknown kind", { kind: "other", membershipId: "m9" }],
+      ])("treats %s as the personal context", async (_name, activeContext) => {
+        const jwe = await createSessionJWE({ ...google, activeContext });
+
+        const res = await request(contextApp(known())).get("/test").set("Cookie", cookie(jwe));
+
+        expect(res.body).toEqual({ identityId: "u1", sessionId: null, sessionContext: null });
+      });
+
+      it("carries no context for a session that is signed out", async () => {
+        const jwe = await createSessionJWE({ ...google, activeContext: { kind: "tenant", membershipId: "m9" } });
+
+        const res = await request(contextApp(fakeIdentities())).get("/test").set("Cookie", cookie(jwe));
+
+        expect(res.body).toEqual({ identityId: null, sessionId: null, sessionContext: null });
+      });
+    });
+
     describe("hand-off sessions (provider impressorx)", () => {
       const base = {
         provider: "impressorx",
@@ -380,11 +423,11 @@ describe("Session Auth Middleware", () => {
         expect(identities.findByLogin).not.toHaveBeenCalled();
       });
 
-      it("a Google session ignores any hand-off fields it carries", async () => {
+      it("a Google session ignores the hand-off identity and session id it carries (its context is only a picker choice, checked per request)", async () => {
         const jwe = await createSessionJWE({ provider: "google", email: "a@b.com", sub: "g-1", identityId: "irx-id", sessionId: "s", activeContext: base.activeContext });
         const identities = fakeIdentities({ findByLogin: () => ({ id: "u1", status: "active" }) });
         const res = await request(handoffApp(identities, deps())).get("/test").set("Cookie", cookie(jwe));
-        expect(res.body).toMatchObject({ identityId: "u1", sessionId: null, activeContext: null });
+        expect(res.body).toMatchObject({ identityId: "u1", sessionId: null });
         expect(identities.findByLogin).toHaveBeenCalledWith("google", "g-1");
       });
     });

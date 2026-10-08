@@ -54,6 +54,7 @@ export interface SessionPayload {
   /** Hand-off sessions only. */
   identityId?: string;
   sessionId?: string;
+  /** Always set on a hand-off session; on a Google session only when the person chose a pharmacy (otherwise personal). */
   activeContext?: { kind: "tenant"; membershipId: string };
 }
 
@@ -114,12 +115,20 @@ export async function decryptSessionToken(
     if (!payload.email || typeof payload.email !== "string") {
       return null;
     }
+    // A Google session is personal unless the person chose a pharmacy with the context picker. Whatever it names is
+    // checked again on every request (resolveActiveContext), so this only carries the choice.
+    const chosen = payload.activeContext as { kind?: unknown; membershipId?: unknown } | undefined;
+    const activeContext =
+      chosen?.kind === "tenant" && typeof chosen.membershipId === "string" && chosen.membershipId
+        ? ({ kind: "tenant", membershipId: chosen.membershipId } as const)
+        : undefined;
     return {
       email: (payload.email as string).toLowerCase(),
       name: payload.name as string | undefined,
       picture: payload.picture as string | undefined,
       sub,
       provider,
+      ...(activeContext ? { activeContext } : {}),
     };
   } catch {
     return null;
@@ -260,6 +269,7 @@ export function createSessionAuthMiddleware(
       req.identityId = identity.id;
       req.userId = identity.id;
       req.userEmail = session.email;
+      if (session.activeContext) req.sessionContext = session.activeContext;
     }
 
     next();

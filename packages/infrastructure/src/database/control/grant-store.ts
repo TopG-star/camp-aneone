@@ -177,6 +177,22 @@ export class GrantStore {
       .run(reason, id);
   }
 
+  /** Revokes every active grant of the membership (all kinds) and returns their ids. */
+  revokeForMembership(membershipId: string, reason: string): string[] {
+    return this.db.transaction(() => {
+      const ids = (this.db.prepare("SELECT id FROM delegation_grants WHERE membership_id = ? AND status = 'active'").all(membershipId) as Array<{ id: string }>).map(
+        (r) => r.id,
+      );
+      this.db
+        .prepare(
+          `UPDATE delegation_grants SET status = 'revoked', revoked_reason = ?, pending_request_id = NULL, pending_since = NULL,
+                  pending_request_json = NULL WHERE membership_id = ? AND status = 'active'`,
+        )
+        .run(reason, membershipId);
+      return ids;
+    }).immediate();
+  }
+
   listForIdentity(identityId: string): GrantRecord[] {
     return (this.db.prepare("SELECT * FROM delegation_grants WHERE identity_id = ? ORDER BY created_at, id").all(identityId) as Row[]).map(toRecord);
   }

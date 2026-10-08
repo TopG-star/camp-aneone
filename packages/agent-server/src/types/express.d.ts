@@ -9,7 +9,7 @@ declare global {
       userEmail?: string;
       /** Hand-off sessions only: the dashboard-generated session id that the attended grant is bound to */
       sessionId?: string;
-      /** Hand-off sessions only: the context the person is working in */
+      /** The pharmacy the session works in: always set for a hand-off session, and for a Google session only after the person chose one (otherwise personal) */
       sessionContext?: { kind: "tenant"; membershipId: string };
       /** Set by resolveActiveContext: the context this request runs in */
       activeContext?: import("@oneon/domain").ActiveContext;

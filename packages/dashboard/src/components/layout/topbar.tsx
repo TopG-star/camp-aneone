@@ -4,6 +4,7 @@ import { Bell, Settings, LogOut, Moon, Sun, PanelLeft } from "lucide-react";
 import Link from "next/link";
 import { useSession, signOut } from "next-auth/react";
 import { CycleStatusBar } from "@/components/cycle-status-bar";
+import { ContextPicker } from "@/components/layout/context-picker";
 import { useThemeMode } from "@/components/theme-provider";
 
 interface TopbarProps {
@@ -29,6 +30,7 @@ export function Topbar({ onOpenNav }: TopbarProps) {
       </div>
 
       <div className="flex items-center gap-1.5 sm:gap-3 md:gap-4">
+        {session && <ContextPicker />}
         {session?.user?.email && (
           <span className="hidden text-label-sm meta-copy lg:block">
             {session.user.email}

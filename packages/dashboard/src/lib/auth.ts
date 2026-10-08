@@ -2,7 +2,9 @@ import NextAuth, { CredentialsSignin, type NextAuthResult } from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import Google from "next-auth/providers/google";
 import { redeemHandoff, signOutHandoff, type HandoffReason } from "./handoff";
-import { applySignIn } from "./session-token";
+import { applyContextUpdate, applySignIn } from "./session-token";
+import { validateContextChoice } from "./context-validate";
+import type { ContextChoice } from "./context";
 import { sessionCookie } from "./session-cookie";
 import { isSignInAllowed } from "./sign-in-policy";
 
@@ -29,6 +31,24 @@ const allowedEmails = (process.env.ALLOWED_EMAILS ?? "")
   .filter(Boolean);
 
 const cookie = sessionCookie();
+
+/**
+ * Asks the agent-server to validate a context switch with the requester's own session cookie. Only the Auth.js route
+ * handler calls this (the `jwt` callback on `update()`), so the incoming request is the person's own and carries
+ * their cookie; anywhere else there is no request to read and the answer is no.
+ */
+async function validateAsRequester(choice: ContextChoice): Promise<boolean> {
+  try {
+    const { headers } = await import("next/headers");
+    const incoming = await headers();
+    return validateContextChoice(choice, {
+      cookie: incoming.get("cookie") ?? "",
+      forwardedProto: incoming.get("x-forwarded-proto") ?? (cookie.useSecureCookies ? "https" : undefined),
+    });
+  } catch {
+    return false;
+  }
+}
 
 export const {
   handlers,
@@ -66,7 +86,11 @@ export const {
       if (account?.provider === "impressorx") return true;
       return isSignInAllowed(profile, allowedEmails);
     },
-    async jwt({ token, user, account, profile }) {
+    async jwt({ token, user, account, profile, trigger, session }) {
+      // session.update({ activeContext }): the browser's request is stored only once the agent-server has validated it.
+      if (trigger === "update") {
+        return applyContextUpdate(token, (session as { activeContext?: unknown } | null | undefined)?.activeContext, validateAsRequester);
+      }
       return applySignIn(token, { account, user, profile });
     },
     async session({ session, token }) {
