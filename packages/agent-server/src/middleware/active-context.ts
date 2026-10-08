@@ -2,12 +2,14 @@ import type { RequestHandler } from "express";
 import type { Logger, PersonalDb, TenantDb } from "@oneon/domain";
 import {
   ImpressoRxRefusedError,
+  ImpressoRxUnauthorizedError,
   ImpressoRxUnreachableError,
   ensureIdentityAnchor,
   type IdentityRepository,
   type ImpressoRxClient,
   type Membership,
   type MembershipRepository,
+  type TenantRegistrationRepository,
 } from "@oneon/infrastructure";
 
 const UNAVAILABLE = { error: "context_unavailable" } as const;
@@ -18,10 +20,9 @@ const SUSPENDED_MESSAGE = "This pharmacy has switched Oneon off, or your account
 const SNAPSHOT_MAX_AGE_MS = 300_000;
 
 /** Why a tenant context cannot open right now; sent as the 403 body. */
-export interface ContextRefusal {
-  error: "launch_required" | "membership_suspended";
-  message: string;
-}
+export type ContextRefusal =
+  | { error: "launch_required" | "membership_suspended"; message: string }
+  | typeof UNAVAILABLE;
 const LAUNCH_REQUIRED: ContextRefusal = {
   error: "launch_required",
   message: "Your pharmacy details are out of date. Open Oneon from ImpressoRx again to continue.",
@@ -31,6 +32,9 @@ const SUSPENDED: ContextRefusal = { error: "membership_suspended", message: SUSP
 export type RefreshResult = { ok: true } | { ok: false; refusal: ContextRefusal };
 const OK: RefreshResult = { ok: true };
 
+/** After ImpressoRx cannot be reached, the cached snapshot is used and no new refresh is tried for this long. */
+const UNREACHABLE_COOLDOWN_MS = 30_000;
+
 export interface SnapshotRefresher {
   /** Resolves ok when the membership's snapshot is fresh (refreshing it first when it is older than 5 minutes). */
   ensureFresh(input: { sessionId: string | undefined; membership: Membership }): Promise<RefreshResult>;
@@ -38,10 +42,10 @@ export interface SnapshotRefresher {
 
 export interface SnapshotRefresherDeps {
   memberships: Pick<MembershipRepository, "findById" | "setStatus">;
+  registrations: Pick<TenantRegistrationRepository, "findById">;
   /** The ImpressoRx client; null when delegation is not configured, and a stale snapshot then needs a relaunch. */
   client: {
     forBoundSession: (sessionId: string, identityId: string, membershipId: string) => { me(): Promise<unknown> } | null;
-    hasAttendedGrant: ImpressoRxClient["hasAttendedGrant"];
     revokeForMembership: ImpressoRxClient["revokeForMembership"];
   } | null;
   logger: Logger;
@@ -52,15 +56,19 @@ export interface SnapshotRefresherDeps {
  * Keeps a tenant membership's snapshot at most 5 minutes old (spec §4.6) by calling GET /api/oneon/me through the
  * attended grant bound to this session, identity and membership (the client writes the snapshot). The snapshot only
  * offers and refuses early, so:
- * - ImpressoRx unreachable: keep the cached snapshot and carry on (logged at warn).
- * - ImpressoRx refuses: the membership is suspended and every grant of it revoked locally. Only a refusal counts; a
- *   refusal that follows the grant's own local expiry or revocation is a relaunch, not a suspension.
+ * - ImpressoRx answered 401 (ImpressoRxUnauthorizedError, the contract's only refusal): the membership is suspended and
+ *   every grant of it revoked locally. Nothing else suspends: a refusal made here (a grant expired or revoked locally) or an
+ *   unexpected status (404, 400, 3xx) is ImpressoRx's malfunction or ours, not its word, so it is launch_required, logged
+ *   with its status or reason, with no side effects.
+ * - ImpressoRx unreachable: keep the cached snapshot and carry on (logged at warn), and do not try again for 30 s.
+ * - A registration that is not active is the gate's own refusal (context_unavailable), before anything is sent.
  * - No usable bound grant in this session (a Google session on a linked membership, or an expired grant): launch_required.
  * Refresh is single-flight per membership in this process: two concurrent exchanges of one grant value are theft at ImpressoRx.
  */
 export function createSnapshotRefresher(deps: SnapshotRefresherDeps): SnapshotRefresher {
   const clock = deps.clock ?? (() => new Date());
   const inflight = new Map<string, Promise<RefreshResult>>();
+  const cooldownUntil = new Map<string, number>();
 
   const suspend = (membership: Membership, why: string): RefreshResult => {
     if (deps.memberships.findById(membership.id)?.status === "active") deps.memberships.setStatus(membership.id, "suspended");
@@ -69,17 +77,23 @@ export function createSnapshotRefresher(deps: SnapshotRefresherDeps): SnapshotRe
     return { ok: false, refusal: SUSPENDED };
   };
 
-  async function refresh(membership: Membership, sessionId: string, calls: { me(): Promise<unknown> }): Promise<RefreshResult> {
+  async function refresh(membership: Membership, calls: { me(): Promise<unknown> }): Promise<RefreshResult> {
     try {
       await calls.me();
     } catch (error) {
       if (error instanceof ImpressoRxUnreachableError) {
+        cooldownUntil.set(membership.id, clock().getTime() + UNREACHABLE_COOLDOWN_MS);
         deps.logger.warn("ImpressoRx unreachable; keeping the cached membership snapshot", { membershipId: membership.id });
         return OK;
       }
+      if (error instanceof ImpressoRxUnauthorizedError) return suspend(membership, "unauthorized");
       if (error instanceof ImpressoRxRefusedError) {
-        if (!deps.client?.hasAttendedGrant(sessionId, membership.identityId, membership.id)) return { ok: false, refusal: LAUNCH_REQUIRED };
-        return suspend(membership, "refused");
+        deps.logger.warn("Membership snapshot refresh refused without a 401; keeping the membership", {
+          membershipId: membership.id,
+          status: error.status,
+          reason: error.message,
+        });
+        return { ok: false, refusal: LAUNCH_REQUIRED };
       }
       throw error;
     }
@@ -91,11 +105,18 @@ export function createSnapshotRefresher(deps: SnapshotRefresherDeps): SnapshotRe
     async ensureFresh({ sessionId, membership }) {
       // NaN (an unreadable time) counts as stale.
       if (clock().getTime() - Date.parse(membership.snapshotAt) <= SNAPSHOT_MAX_AGE_MS) return OK;
+      // The gate refuses a registration that is not active; say so now, without asking ImpressoRx or changing anything.
+      if (deps.registrations.findById(membership.tenantRegistrationId)?.status !== "active") {
+        deps.logger.warn("Membership snapshot not refreshed: the registration is not active", { membershipId: membership.id });
+        return { ok: false, refusal: UNAVAILABLE };
+      }
       const calls = sessionId && deps.client ? deps.client.forBoundSession(sessionId, membership.identityId, membership.id) : null;
-      if (!sessionId || !calls) return { ok: false, refusal: LAUNCH_REQUIRED };
+      if (!calls) return { ok: false, refusal: LAUNCH_REQUIRED };
+      if ((cooldownUntil.get(membership.id) ?? 0) > clock().getTime()) return OK;
+      cooldownUntil.delete(membership.id);
       let flight = inflight.get(membership.id);
       if (!flight) {
-        flight = refresh(membership, sessionId, calls).finally(() => inflight.delete(membership.id));
+        flight = refresh(membership, calls).finally(() => inflight.delete(membership.id));
         inflight.set(membership.id, flight);
       }
       return flight;
@@ -116,7 +137,7 @@ export interface ActiveContextDeps {
  * session (never from the request body, query or path): a hand-off session names a membership, a Google session is
  * personal unless the person chose a pharmacy. A tenant needs an active membership owned by the signed-in identity, a
  * snapshot no older than 5 minutes (refreshed here when it is) and an openable file; personal needs a Google login.
- * A suspended membership, or one ImpressoRx refuses, is 403 membership_suspended with the spec §6.4 message; a stale
+ * A suspended membership, or one ImpressoRx refuses with a 401, is 403 membership_suspended with the spec §6.4 message; a stale
  * snapshot that cannot be refreshed from this session is 403 launch_required. Anything else, including a gate refusal
  * or an unexpected error, is 403 context_unavailable.
  * Mount after session auth and requireUser; the handle is valid for this request only.

@@ -5,13 +5,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 import type { Logger, PersonalDb, TenantDb } from "@oneon/domain";
+import { randomBytes } from "node:crypto";
 import {
+  EnrolmentService,
+  FakeImpressorx,
   ImpressoRxRefusedError,
+  ImpressoRxUnauthorizedError,
   ImpressoRxUnreachableError,
   MembershipRepository,
   SqliteIdentityRepository,
   TenantRefusedError,
+  TenantRegistrationRepository,
   createDatabase,
+  createImpressoRxClient,
   openControlDb,
   runMigrations,
   type MembershipSnapshot,
@@ -107,7 +113,7 @@ describe("snapshot refresh (spec 4.6: at least every 5 minutes while a session i
 
   const SNAPSHOT: MembershipSnapshot = { userId: "staff-1", role: "Manager", permissions: ["jobs.read"], locationIds: ["l1"], tokenVersion: 1, tenantStatus: "Active" };
 
-  function setup(opts: { bound?: boolean; usableAfterFailure?: boolean; session?: boolean; client?: "none" } = {}) {
+  function setup(opts: { bound?: boolean; session?: boolean; client?: "none" } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "active-context-"));
     dirs.push(dir);
     const control = openControlDb(join(dir, "control.db"));
@@ -135,7 +141,6 @@ describe("snapshot refresh (spec 4.6: at least every 5 minutes while a session i
     const me = vi.fn(() => meImpl());
     const client = {
       forBoundSession: vi.fn(() => (opts.bound === false ? null : { me })),
-      hasAttendedGrant: vi.fn(() => opts.usableAfterFailure ?? true),
       revokeForMembership: vi.fn(),
     };
     const log = logger();
@@ -153,13 +158,13 @@ describe("snapshot refresh (spec 4.6: at least every 5 minutes while a session i
         gate: { openPersonal: () => ({}) as PersonalDb, openTenant },
         memberships,
         identities: { hasLogin: () => false },
-        snapshots: createSnapshotRefresher({ memberships, client: opts.client === "none" ? null : client, logger: log, clock }),
+        snapshots: createSnapshotRefresher({ memberships, registrations: new TenantRegistrationRepository(control), client: opts.client === "none" ? null : client, logger: log, clock }),
         logger: log,
       }),
     );
     a.get("/", (req, res) => res.json({ ok: true, context: req.activeContext?.kind }));
     return {
-      app: a, advance, memberships, membership, identityId, me, client, log, openTenant,
+      app: a, advance, memberships, membership, identityId, me, client, log, openTenant, control,
       setMe: (impl: () => Promise<MembershipSnapshot>) => (meImpl = impl),
       snapshotAt: () => memberships.findById(membership.id)!.snapshotAt,
     };
@@ -196,7 +201,7 @@ describe("snapshot refresh (spec 4.6: at least every 5 minutes while a session i
   it("a refused refresh suspends the membership, revokes its grants and returns 403", async () => {
     const s = setup();
     s.setMe(async () => {
-      throw new ImpressoRxRefusedError();
+      throw new ImpressoRxUnauthorizedError();
     });
     s.advance(301_000);
 
@@ -258,10 +263,13 @@ describe("snapshot refresh (spec 4.6: at least every 5 minutes while a session i
     expect((await request(s.app).get("/")).status).toBe(200);
   });
 
-  it("a refusal that follows the grant's own expiry asks for a relaunch and does not suspend", async () => {
-    const s = setup({ usableAfterFailure: false });
+  it.each([
+    ["a refusal made locally", new ImpressoRxRefusedError("Grant has expired"), "Grant has expired"],
+    ["an unexpected status", new ImpressoRxRefusedError("ImpressoRx answered 404", 404), "ImpressoRx answered 404"],
+  ])("%s asks for a relaunch, suspends nothing and logs why", async (_name, refusal, reason) => {
+    const s = setup();
     s.setMe(async () => {
-      throw new ImpressoRxRefusedError("Grant has expired");
+      throw refusal;
     });
     s.advance(301_000);
 
@@ -271,6 +279,56 @@ describe("snapshot refresh (spec 4.6: at least every 5 minutes while a session i
     expect(res.body.error).toBe("launch_required");
     expect(s.memberships.findById(s.membership.id)!.status).toBe("active");
     expect(s.client.revokeForMembership).not.toHaveBeenCalled();
+    expect(s.log.warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ membershipId: s.membership.id, status: refusal.status, reason }));
+  });
+
+  it("an inactive registration is the gate's own refusal, with no call to ImpressoRx and no side effect", async () => {
+    const s = setup();
+    s.control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = 'reg-1'").run();
+    s.advance(301_000);
+
+    const res = await request(s.app).get("/");
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "context_unavailable" });
+    expect(s.client.forBoundSession).not.toHaveBeenCalled();
+    expect(s.me).not.toHaveBeenCalled();
+    expect(s.memberships.findById(s.membership.id)!.status).toBe("active");
+    expect(s.client.revokeForMembership).not.toHaveBeenCalled();
+  });
+
+  it("after an unreachable refresh, no new refresh is tried for 30 seconds", async () => {
+    const s = setup();
+    s.setMe(async () => {
+      throw new ImpressoRxUnreachableError();
+    });
+    const before = s.snapshotAt();
+    s.advance(301_000);
+
+    expect((await request(s.app).get("/")).status).toBe(200);
+    expect(s.me).toHaveBeenCalledTimes(1);
+
+    s.advance(29_000);
+    expect((await request(s.app).get("/")).status).toBe(200);
+    expect((await request(s.app).get("/")).status).toBe(200);
+    expect(s.me).toHaveBeenCalledTimes(1); // still inside the cooldown: the cached snapshot is kept
+    expect(s.snapshotAt()).toBe(before);
+
+    s.advance(1_000);
+    expect((await request(s.app).get("/")).status).toBe(200);
+    expect(s.me).toHaveBeenCalledTimes(2); // the cooldown is over
+  });
+
+  it("the cooldown does not hide a missing grant", async () => {
+    const s = setup();
+    s.setMe(async () => {
+      throw new ImpressoRxUnreachableError();
+    });
+    s.advance(301_000);
+    await request(s.app).get("/");
+
+    s.client.forBoundSession.mockReturnValueOnce(null);
+    expect((await request(s.app).get("/")).body.error).toBe("launch_required"); // inside the cooldown, but this session has no usable grant
   });
 
   it("a snapshot that reports the tenant not serviceable suspends the membership and kills its grants", async () => {
@@ -337,7 +395,7 @@ describe("snapshot refresh (spec 4.6: at least every 5 minutes while a session i
     s.setMe(
       () =>
         new Promise<MembershipSnapshot>((_resolve, reject) => {
-          fail = () => reject(new ImpressoRxRefusedError());
+          fail = () => reject(new ImpressoRxUnauthorizedError());
         }),
     );
     s.advance(301_000);
@@ -350,5 +408,138 @@ describe("snapshot refresh (spec 4.6: at least every 5 minutes while a session i
     expect(replies.map((r) => r.body.error)).toEqual(["membership_suspended", "membership_suspended"]);
     expect(s.me).toHaveBeenCalledTimes(1);
     expect(s.client.revokeForMembership).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("snapshot refresh against the fake deployment (what ImpressoRx really sends)", () => {
+  const dirs: string[] = [];
+  const closers: Array<() => void> = [];
+  afterEach(() => {
+    for (const close of closers.splice(0)) close();
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+  const ORIGIN = "https://acme.example";
+
+  async function setup() {
+    const dir = mkdtempSync(join(tmpdir(), "active-context-fake-"));
+    dirs.push(dir);
+    const control = openControlDb(join(dir, "control.db"));
+    closers.push(() => control.close());
+    let now = Date.now();
+    const clock = () => new Date(now);
+    const advance = (ms: number) => {
+      now += ms;
+    };
+    const identityId = new SqliteIdentityRepository(control).createWithLogin({ kind: "impressorx", subject: "reg:staff-1" }).id;
+    const registrations = new TenantRegistrationRepository(control);
+    const fake = new FakeImpressorx(ORIGIN, "acme", "ABCD-EFGH-JKLM", clock);
+    const sent: string[] = [];
+    const fetchImpl = (input: string | URL, init?: RequestInit) => {
+      sent.push(new URL(input.toString()).pathname);
+      return fake.fetch(input, init);
+    };
+    const enrolment = new EnrolmentService({ repo: registrations, oneonOrigin: "https://oneon.example", masterKeyB64: randomBytes(32).toString("base64"), fetchImpl, clock });
+    const registration = await enrolment.enrol({ origin: ORIGIN, tenantSlug: "acme", enrolmentCode: "ABCD-EFGH-JKLM", enrolledBy: identityId });
+    const memberships = new MembershipRepository(control, clock);
+    const membership = memberships.upsertFromHandoff({ identityId, tenantRegistrationId: registration.id, externalUserId: "staff-1", role: "Manager" });
+    const log = logger();
+    const client = createImpressoRxClient({
+      control,
+      grantMasterKeyB64: randomBytes(32).toString("base64"),
+      enrolment,
+      onSnapshot: (id, snapshot) => memberships.applySnapshot(id, snapshot),
+      fetchImpl,
+      logger: log,
+      clock,
+    });
+    const { grantId } = await client.exchangeHandoff(registration.id, await fake.mintHandoff("staff-1"), "s1", identityId, membership.id, "staff-1");
+    sent.length = 0;
+
+    const a = express();
+    a.use((req, _res, next) => {
+      req.identityId = identityId;
+      req.userId = identityId;
+      req.sessionId = "s1";
+      req.sessionContext = { kind: "tenant", membershipId: membership.id };
+      next();
+    });
+    a.use(
+      resolveActiveContext({
+        gate: { openPersonal: () => ({}) as PersonalDb, openTenant: () => tenantDb() },
+        memberships,
+        identities: { hasLogin: () => false },
+        snapshots: createSnapshotRefresher({ memberships, registrations, client, logger: log, clock }),
+        logger: log,
+      }),
+    );
+    a.get("/", (_req, res) => res.json({ ok: true }));
+    const grantStatuses = () => control.prepare("SELECT status, revoked_reason FROM delegation_grants").all() as Array<{ status: string; revoked_reason: string | null }>;
+    return { app: a, fake, advance, control, membership, memberships, grantId, sent, log, grantStatuses };
+  }
+
+  it("a real 401 on the token exchange suspends the membership and revokes its grants locally", async () => {
+    const s = await setup();
+    s.fake.grants.get(s.grantId)!.status = "revoked"; // ImpressoRx no longer honours the grant
+    s.advance(301_000);
+
+    const res = await request(s.app).get("/");
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "membership_suspended", message: SUSPENDED_MESSAGE });
+    expect(s.memberships.findById(s.membership.id)!.status).toBe("suspended");
+    expect(s.grantStatuses()).toEqual([{ status: "revoked", revoked_reason: "membership_suspended" }]);
+  });
+
+  it("a real 401 from GET /me suspends the membership too", async () => {
+    const s = await setup();
+    s.fake.grants.get(s.grantId)!.status = "revoked";
+    s.control.prepare("UPDATE memberships SET snapshot_at = ? WHERE id = ?").run(new Date(0).toISOString(), s.membership.id); // stale, but the cached access token is still good
+
+    const res = await request(s.app).get("/");
+
+    expect(s.sent).toEqual(["/api/oneon/me"]);
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("membership_suspended");
+    expect(s.memberships.findById(s.membership.id)!.status).toBe("suspended");
+    expect(s.grantStatuses()).toEqual([{ status: "revoked", revoked_reason: "membership_suspended" }]);
+  });
+
+  it("an operator-suspended registration does not suspend the membership and sends nothing to ImpressoRx", async () => {
+    const s = await setup();
+    s.control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator'").run();
+    s.advance(301_000);
+
+    const res = await request(s.app).get("/");
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "context_unavailable" });
+    expect(s.sent).toEqual([]);
+    expect(s.memberships.findById(s.membership.id)!.status).toBe("active");
+    expect(s.grantStatuses()).toEqual([{ status: "active", revoked_reason: null }]);
+  });
+
+  it.each([404, 400, 302])("a %i from GET /me asks for a relaunch, suspends nothing and logs the status", async (status) => {
+    const s = await setup();
+    s.fake.meStatus = status;
+    s.advance(301_000);
+
+    const res = await request(s.app).get("/");
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("launch_required");
+    expect(s.memberships.findById(s.membership.id)!.status).toBe("active");
+    expect(s.grantStatuses()).toEqual([{ status: "active", revoked_reason: null }]);
+    expect(s.log.warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ membershipId: s.membership.id, status }));
+  });
+
+  it("a healthy ImpressoRx refreshes the snapshot through the bound grant", async () => {
+    const s = await setup();
+    const before = s.memberships.findById(s.membership.id)!.snapshotAt;
+    s.advance(301_000);
+
+    expect((await request(s.app).get("/")).status).toBe(200);
+
+    expect(s.memberships.findById(s.membership.id)!.snapshotAt).not.toBe(before);
+    expect(s.sent).toContain("/api/oneon/me");
   });
 });

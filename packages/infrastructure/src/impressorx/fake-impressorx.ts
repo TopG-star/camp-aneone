@@ -44,6 +44,8 @@ export class FakeImpressorx {
   unavailable = false;
   /** Fail token, me, revoke and tRPC calls at the network level (the fetch rejects). */
   networkFailure = false;
+  /** Answer GET /me with this status once its token checks out (a misbehaving deployment: 404, 400, 302). */
+  meStatus: number | null = null;
   /** Apply the next token request, then drop the response (the fetch rejects). One-shot. */
   loseNextTokenResponse = false;
   /** Whether grantType "issue" is allowed. */
@@ -384,6 +386,7 @@ export class FakeImpressorx {
   private async me(init?: RequestInit): Promise<Response> {
     const grant = await this.bearerGrant(init);
     if (!grant) return unauthorized();
+    if (this.meStatus !== null) return new Response(null, { status: this.meStatus });
     return json({ ...this.snapshotFor(grant.userId), name: grant.userId, oneonStatus: "active" });
   }
 

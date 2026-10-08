@@ -90,7 +90,7 @@ describe("contexts route", () => {
         memberships,
         registrations: new TenantRegistrationRepository(control),
         identities,
-        snapshots: createSnapshotRefresher({ memberships, client: null, logger }),
+        snapshots: createSnapshotRefresher({ memberships, registrations: new TenantRegistrationRepository(control), client: null, logger }),
         logger,
       }),
     );

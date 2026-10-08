@@ -10,7 +10,14 @@ import { TenantRegistrationRepository } from "../database/control/tenant-registr
 import { GrantStore } from "../database/control/grant-store.js";
 import { EnrolmentService, type FetchLike } from "./enrolment-service.js";
 import { FakeImpressorx } from "./fake-impressorx.js";
-import { createImpressoRxClient, ImpressoRxClient, ImpressoRxRefusedError, ImpressoRxUnreachableError, type MembershipSnapshot } from "./client.js";
+import {
+  createImpressoRxClient,
+  ImpressoRxClient,
+  ImpressoRxRefusedError,
+  ImpressoRxUnauthorizedError,
+  ImpressoRxUnreachableError,
+  type MembershipSnapshot,
+} from "./client.js";
 import { generateEd25519Key } from "../crypto/jws.js";
 import { openSecret, sealSecret } from "../crypto/envelope.js";
 
@@ -495,6 +502,65 @@ describe("ImpressoRx client against the fake deployment", () => {
       s.client.revokeForMembership("some-other-membership", "membership_suspended");
 
       expect(s.grants.find(grantId)!.status).toBe("active");
+    });
+  });
+
+  describe("which refusals ImpressoRx itself sent", () => {
+    const bound = (s: Awaited<ReturnType<typeof setup>>, sessionId: string) => s.client.forBoundSession(sessionId, s.identityId, s.membershipId)!;
+
+    it("a 401 on the token exchange is ImpressoRx's own refusal", async () => {
+      const s = await setup();
+      const { grantId, sessionId } = await s.launch();
+      s.fake.grants.get(grantId)!.status = "revoked";
+      expireTokens(s);
+
+      const refusal = await bound(s, sessionId).me().catch((e: unknown) => e);
+
+      expect(refusal).toBeInstanceOf(ImpressoRxUnauthorizedError);
+      expect(refusal).toBeInstanceOf(ImpressoRxRefusedError); // existing callers still see a refusal
+    });
+
+    it("a 401 from GET /me is ImpressoRx's own refusal", async () => {
+      const s = await setup();
+      const { grantId, sessionId } = await s.launch();
+      s.fake.grants.get(grantId)!.status = "revoked"; // the cached access token is still inside its life: /me itself says 401
+
+      await expect(bound(s, sessionId).me()).rejects.toBeInstanceOf(ImpressoRxUnauthorizedError);
+    });
+
+    it.each([404, 400, 302])("a %i from GET /me is a refusal, but not one that revokes anything", async (status) => {
+      const s = await setup();
+      const { sessionId } = await s.launch();
+      s.fake.meStatus = status;
+
+      const refusal = await bound(s, sessionId).me().catch((e: unknown) => e);
+
+      expect(refusal).toBeInstanceOf(ImpressoRxRefusedError);
+      expect(refusal).not.toBeInstanceOf(ImpressoRxUnauthorizedError);
+      expect(refusal).toMatchObject({ status });
+    });
+
+    it("refusals made locally are not ImpressoRx's: an inactive registration, a revoked grant, an expired grant", async () => {
+      const s = await setup();
+      const { grantId, sessionId } = await s.launch();
+      const calls = bound(s, sessionId);
+
+      s.control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = ?").run(s.registration.id);
+      const registration = await calls.me().catch((e: unknown) => e);
+      expect(registration).toBeInstanceOf(ImpressoRxRefusedError);
+      expect(registration).not.toBeInstanceOf(ImpressoRxUnauthorizedError);
+      expect(registration).toMatchObject({ message: "Registration is not active" });
+      s.control.prepare("UPDATE tenant_registrations SET status = 'active' WHERE id = ?").run(s.registration.id);
+
+      s.advance(31 * 60 * 1000);
+      const expired = await calls.me().catch((e: unknown) => e);
+      expect(expired).toBeInstanceOf(ImpressoRxRefusedError);
+      expect(expired).not.toBeInstanceOf(ImpressoRxUnauthorizedError);
+
+      s.client.revokeForMembership(s.membershipId, "test");
+      const revoked = await s.client.forGrant(grantId).me().catch((e: unknown) => e);
+      expect(revoked).toBeInstanceOf(ImpressoRxRefusedError);
+      expect(revoked).not.toBeInstanceOf(ImpressoRxUnauthorizedError);
     });
   });
 });

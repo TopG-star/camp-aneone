@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { contextChoice, contextLabel, contextValue, isContextRefusal, parseContextChoice, pickerOptions, pickerVisible, type ContextOption } from "./context";
+import { choiceApplied, contextChoice, contextLabel, contextValue, isContextRefusal, parseContextChoice, pickerOptions, pickerVisible, type ContextOption } from "./context";
 
 const personal: ContextOption = { kind: "personal" };
 const acme: ContextOption = { kind: "tenant", membershipId: "m1", tenantName: "Acme Pharmacy", role: "Admin" };
@@ -30,6 +30,21 @@ describe("pickerVisible", () => {
     expect(pickerVisible({ active: personal, available: [personal, acme] })).toBe(true);
     expect(pickerVisible({ active: acme, available: [acme] })).toBe(true); // a hand-off session shows where it is working
     expect(pickerVisible({ active: acme, available: [] })).toBe(true); // a suspended pharmacy is still shown as current
+  });
+});
+
+describe("choiceApplied (did session.update() take the switch?)", () => {
+  it("is true when the session now holds the requested context; a session with no context is personal", () => {
+    expect(choiceApplied({ kind: "tenant", membershipId: "m1" }, { kind: "tenant", membershipId: "m1" })).toBe(true);
+    expect(choiceApplied({ kind: "personal" }, { kind: "personal" })).toBe(true);
+    expect(choiceApplied(undefined, { kind: "personal" })).toBe(true);
+  });
+
+  it("is false when validation refused the switch and the session kept its old context", () => {
+    expect(choiceApplied({ kind: "tenant", membershipId: "m1" }, { kind: "personal" })).toBe(false);
+    expect(choiceApplied(undefined, { kind: "tenant", membershipId: "m1" })).toBe(false);
+    expect(choiceApplied({ kind: "tenant", membershipId: "m2" }, { kind: "tenant", membershipId: "m1" })).toBe(false);
+    expect(choiceApplied("garbage", { kind: "tenant", membershipId: "m1" })).toBe(false);
   });
 });
 

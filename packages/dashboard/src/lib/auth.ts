@@ -4,7 +4,7 @@ import Google from "next-auth/providers/google";
 import { redeemHandoff, signOutHandoff, type HandoffReason } from "./handoff";
 import { applyContextUpdate, applySignIn } from "./session-token";
 import { validateContextChoice } from "./context-validate";
-import type { ContextChoice } from "./context";
+import { parseContextChoice, type ContextChoice } from "./context";
 import { sessionCookie } from "./session-cookie";
 import { isSignInAllowed } from "./sign-in-policy";
 
@@ -14,6 +14,10 @@ declare module "next-auth" {
     identityId?: string;
     membershipId?: string;
     sessionId?: string;
+  }
+  interface Session {
+    /** The context the session holds now; absent for personal. Lets update() tell whether a switch was accepted. */
+    activeContext?: ContextChoice;
   }
 }
 
@@ -35,15 +39,17 @@ const cookie = sessionCookie();
 /**
  * Asks the agent-server to validate a context switch with the requester's own session cookie. Only the Auth.js route
  * handler calls this (the `jwt` callback on `update()`), so the incoming request is the person's own and carries
- * their cookie; anywhere else there is no request to read and the answer is no.
+ * their cookie; anywhere else there is no request to read and the answer is no. Only the session cookie this deployment
+ * uses is replayed, and the protocol comes from the cookie configuration, not from the request.
  */
 async function validateAsRequester(choice: ContextChoice): Promise<boolean> {
   try {
     const { headers } = await import("next/headers");
     const incoming = await headers();
     return validateContextChoice(choice, {
-      cookie: incoming.get("cookie") ?? "",
-      forwardedProto: incoming.get("x-forwarded-proto") ?? (cookie.useSecureCookies ? "https" : undefined),
+      cookieHeader: incoming.get("cookie") ?? "",
+      sessionCookieName: cookie.name,
+      secure: cookie.useSecureCookies,
     });
   } catch {
     return false;
@@ -100,6 +106,8 @@ export const {
       if (session.user && token.sub) {
         session.user.sub = token.sub;
       }
+      const activeContext = parseContextChoice(token.activeContext);
+      if (activeContext) session.activeContext = activeContext;
       return session;
     },
   },

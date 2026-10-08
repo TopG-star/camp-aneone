@@ -5,7 +5,7 @@ import { useSession } from "next-auth/react";
 import { Building2, User } from "lucide-react";
 import { ApiError, apiFetch } from "@/lib/api";
 import { useContexts } from "@/lib/hooks";
-import { contextChoice, contextLabel, contextValue, pickerOptions, pickerVisible } from "@/lib/context";
+import { choiceApplied, contextChoice, contextLabel, contextValue, pickerOptions, pickerVisible } from "@/lib/context";
 
 /**
  * Switches between the personal context and the pharmacies this session may work in. Choosing one asks the agent-server
@@ -31,7 +31,13 @@ export function ContextPicker() {
     try {
       const choice = contextChoice(option);
       await apiFetch("/api/contexts/validate", { method: "POST", body: JSON.stringify(choice) }, { redirectOnAuth: false });
-      await update({ activeContext: choice });
+      const updated = await update({ activeContext: choice });
+      // The session callback re-validates on the server; if it refused, the session still holds the old context.
+      if (!updated || !choiceApplied(updated.activeContext, choice)) {
+        setError("Your session didn't accept the switch, so you are still in the same context. Please try again.");
+        setSwitching(false);
+        return;
+      }
       window.location.assign("/chat");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Couldn't switch context");

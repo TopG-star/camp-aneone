@@ -43,6 +43,16 @@ export function pickerVisible(response: ContextsResponse): boolean {
   return pickerOptions(response).some((o) => o.kind === "tenant");
 }
 
+/**
+ * Whether the context a session now holds (`session.activeContext` after `update()`) is the one that was requested.
+ * A session with no context is personal. False means the switch was refused and the session kept its old context.
+ */
+export function choiceApplied(current: unknown, wanted: ContextChoice): boolean {
+  const held = current === undefined ? ({ kind: "personal" } as const) : parseContextChoice(current);
+  if (!held) return false;
+  return held.kind === wanted.kind && (held.kind === "personal" || (wanted.kind === "tenant" && held.membershipId === wanted.membershipId));
+}
+
 /** Only the two shapes the agent-server validates; anything else, and any extra field, is dropped. */
 export function parseContextChoice(value: unknown): ContextChoice | null {
   if (typeof value !== "object" || value === null) return null;

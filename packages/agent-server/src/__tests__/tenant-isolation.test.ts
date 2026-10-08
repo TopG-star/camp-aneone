@@ -13,6 +13,7 @@ import {
   SqliteLegacyActionRepository,
   MembershipRepository,
   SqliteIdentityRepository,
+  TenantRegistrationRepository,
   openControlDb,
   rawDb,
 } from "@oneon/infrastructure";
@@ -71,7 +72,7 @@ function fixture(chat?: (parts: { memberships: MembershipRepository }) => Partia
   });
   app.use(
     "/api/chat",
-    resolveActiveContext({ gate, memberships, identities, snapshots: createSnapshotRefresher({ memberships, client: null, logger }), logger }),
+    resolveActiveContext({ gate, memberships, identities, snapshots: createSnapshotRefresher({ memberships, registrations: new TenantRegistrationRepository(control), client: null, logger }), logger }),
     createChatRouter({ conversationsFor: (req) => contextRepos(req.contextDb!).conversations, logger, ...chat?.({ memberships }) }),
   );
 

@@ -27,6 +27,17 @@ export class ImpressoRxRefusedError extends Error {
   }
 }
 
+/**
+ * ImpressoRx itself answered 401, which is the contract's only refusal (an unknown or revoked grant, a deactivated user,
+ * a disabled client). Every other ImpressoRxRefusedError is not ImpressoRx's word: a local state (inactive registration,
+ * grant revoked or expired here) or an unexpected status (404, 400, 3xx). Callers that must tell them apart test for this class.
+ */
+export class ImpressoRxUnauthorizedError extends ImpressoRxRefusedError {
+  constructor(message = "ImpressoRx answered 401") {
+    super(message, 401);
+  }
+}
+
 /** Network failure, timeout or 5xx: infrastructure, never a revocation. */
 export class ImpressoRxUnreachableError extends Error {
   constructor(message = "ImpressoRx is unreachable") {
@@ -408,6 +419,7 @@ export class ImpressoRxClient {
   private async signedPost(registration: TenantRegistration, path: string, claims: Record<string, unknown>, retry: boolean, since?: number): Promise<Response> {
     const keys = this.deps.enrolment.oneonSigningKeys(registration.id);
     const started = since ?? this.clock().getTime();
+    let unauthorized = false;
     for (const key of keys) {
       for (let attempt = 1; ; attempt++) {
         const request = await signJws({
@@ -433,7 +445,10 @@ export class ImpressoRxClient {
         }
         const status = res?.status ?? null;
         if (res && (status === 200 || status === 204)) return res;
-        if (status === 401) break;
+        if (status === 401) {
+          unauthorized = true;
+          break;
+        }
         if (status !== null && status < 500 && status !== 429) throw new ImpressoRxRefusedError(`ImpressoRx answered ${status}`, status);
         const elapsed = this.clock().getTime() - started;
         if (!retry || attempt >= MAX_ATTEMPTS || elapsed + RETRY_DELAY_MS * attempt + RETRY_MARGIN_MS >= RETRY_WINDOW_MS) {
@@ -444,7 +459,7 @@ export class ImpressoRxClient {
       }
     }
     this.deps.logger?.warn("ImpressoRx refused a signed request", { path });
-    throw new ImpressoRxRefusedError();
+    throw unauthorized ? new ImpressoRxUnauthorizedError("ImpressoRx refused the request") : new ImpressoRxRefusedError();
   }
 
   private async bearerFetch(url: string, token: string, init: { method: "GET" | "POST"; body?: string; contentType?: boolean }): Promise<Response> {
@@ -464,6 +479,7 @@ export class ImpressoRxClient {
   private throwForStatus(status: number): void {
     if (status >= 200 && status < 300) return;
     if (status >= 500 || status === 429) throw new ImpressoRxUnreachableError();
+    if (status === 401) throw new ImpressoRxUnauthorizedError();
     throw new ImpressoRxRefusedError(`ImpressoRx answered ${status}`, status);
   }
 }

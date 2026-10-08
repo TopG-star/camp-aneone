@@ -11,6 +11,7 @@ export {
   ImpressoRxClient,
   createImpressoRxClient,
   ImpressoRxRefusedError,
+  ImpressoRxUnauthorizedError,
   ImpressoRxUnreachableError,
   type ImpressoRxClientDeps,
   type GrantCalls,

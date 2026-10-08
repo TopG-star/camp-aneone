@@ -106,6 +106,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
   const activeContextLogger = new StructuredLogger("active-context", env.LOG_LEVEL);
   const snapshots = createSnapshotRefresher({
     memberships: container.memberships,
+    registrations: container.tenantRegistrations,
     client: container.impressorx,
     logger: activeContextLogger,
   });
