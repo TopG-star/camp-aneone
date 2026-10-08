@@ -23,13 +23,28 @@ CREATE TABLE tenant_registrations (
   tenant_slug            TEXT NOT NULL UNIQUE,
   display_name           TEXT NOT NULL,
   origin                 TEXT NOT NULL,
-  deployment_public_keys TEXT NOT NULL,
-  oneon_key_id           TEXT NOT NULL,
   file_name              TEXT NOT NULL,
   status                 TEXT NOT NULL CHECK (status IN ('active', 'suspended_by_operator', 'disabled_by_tenant', 'removed')),
   enrolled_by            TEXT NOT NULL REFERENCES identities (id),
   enrolled_at            TEXT NOT NULL
 );
+
+CREATE TABLE tenant_keys (
+  id                      TEXT PRIMARY KEY,
+  tenant_registration_id  TEXT NOT NULL REFERENCES tenant_registrations (id),
+  owner                   TEXT NOT NULL CHECK (owner IN ('oneon', 'deployment')),
+  key_id                  TEXT NOT NULL UNIQUE,
+  public_key_jwk          TEXT NOT NULL,
+  private_key_wrapped     TEXT,
+  private_key_ciphertext  TEXT,
+  created_at              TEXT NOT NULL,
+  retired_at              TEXT,
+  CHECK (
+    (owner = 'deployment' AND private_key_wrapped IS NULL AND private_key_ciphertext IS NULL) OR
+    (owner = 'oneon' AND private_key_wrapped IS NOT NULL AND private_key_ciphertext IS NOT NULL)
+  )
+);
+CREATE INDEX idx_tenant_keys_registration ON tenant_keys (tenant_registration_id, owner);
 
 CREATE TABLE tenant_registration_events (
   id                     TEXT PRIMARY KEY,
@@ -110,7 +125,7 @@ CREATE INDEX idx_delegation_grants_membership ON delegation_grants (membership_i
 CREATE TABLE tenant_ai_limit_versions (
   id                     TEXT PRIMARY KEY,
   tenant_registration_id TEXT NOT NULL REFERENCES tenant_registrations (id),
-  max_class              TEXT NOT NULL CHECK (max_class IN ('D1', 'D2')),
+  max_class              TEXT NOT NULL CHECK (max_class IN ('D0', 'D1', 'D2')),
   set_by                 TEXT NOT NULL REFERENCES identities (id),
   live_check_ref         TEXT,
   evidence_json          TEXT,

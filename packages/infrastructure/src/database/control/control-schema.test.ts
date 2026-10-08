@@ -8,7 +8,7 @@ const TABLES = [
   "identities", "login_identities", "memberships", "platform_operators",
   "channel_identities", "identity_link_events", "tenant_registrations",
   "tenant_registration_events", "delegation_grants", "tenant_ai_limit_versions",
-  "tenant_rollups", "used_handoff_jti",
+  "tenant_rollups", "used_handoff_jti", "tenant_keys",
 ];
 
 const NOW = "2026-10-08T00:00:00.000Z";
@@ -34,8 +34,8 @@ describe("control database schema", () => {
     db.prepare("INSERT INTO identities (id, status, created_at) VALUES ('i1', 'active', ?)").run(NOW);
     db.prepare(
       `INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin,
-         deployment_public_keys, oneon_key_id, file_name, status, enrolled_by, enrolled_at)
-       VALUES ('r1', 't1', 'acme', 'Acme', 'https://acme.example', '[]', 'k1', 't1.db', 'active', 'i1', ?)`,
+         file_name, status, enrolled_by, enrolled_at)
+       VALUES ('r1', 't1', 'acme', 'Acme', 'https://acme.example', 't1.db', 'active', 'i1', ?)`,
     ).run(NOW);
   }
 
@@ -80,5 +80,25 @@ describe("control database schema", () => {
     const jti = db.prepare("INSERT INTO used_handoff_jti (jti, expires_at, used_at) VALUES ('j1', ?, ?)");
     jti.run(NOW, NOW);
     expect(() => jti.run(NOW, NOW)).toThrow(/UNIQUE constraint failed/);
+  });
+
+  it("tenant_max_class accepts D0, D1, D2 and rejects D3", () => {
+    const db = open();
+    seed(db);
+    const insert = db.prepare("INSERT INTO tenant_ai_limit_versions (id, tenant_registration_id, max_class, set_by, created_at) VALUES (?, 'r1', ?, 'i1', ?)");
+    for (const c of ["D0", "D1", "D2"]) insert.run(`v-${c}`, c, NOW);
+    expect(() => insert.run("v-D3", "D3", NOW)).toThrow(/CHECK constraint failed/);
+  });
+
+  it("tenant_keys ties private key material to the oneon owner", () => {
+    const db = open();
+    seed(db);
+    const insert = db.prepare("INSERT INTO tenant_keys (id, tenant_registration_id, owner, key_id, public_key_jwk, private_key_wrapped, private_key_ciphertext, created_at) VALUES (?, 'r1', ?, ?, '{}', ?, ?, ?)");
+    insert.run("k1", "oneon", "kid-1", "w", "c", NOW);
+    insert.run("k2", "deployment", "kid-2", null, null, NOW);
+    expect(() => insert.run("k3", "deployment", "kid-3", "w", "c", NOW)).toThrow(/CHECK constraint failed/);
+    expect(() => insert.run("k4", "oneon", "kid-4", null, null, NOW)).toThrow(/CHECK constraint failed/);
+    expect(() => insert.run("k5", "oneon", "kid-4", "w", null, NOW)).toThrow(/CHECK constraint failed/);
+    expect(() => insert.run("k6", "oneon", "kid-1", "w", "c", NOW)).toThrow(/UNIQUE constraint failed/);
   });
 });
