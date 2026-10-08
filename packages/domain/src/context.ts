@@ -10,3 +10,8 @@ export function assertRowTenant(db: ContextDb, rowTenantId: string | null): void
     throw new Error("tenant_mismatch");
   }
 }
+
+/** The context a request runs in. `tenantId` is the tenant the handle's rows carry (TenantDb.tenantId). */
+export type ActiveContext =
+  | { kind: "personal"; identityId: string }
+  | { kind: "tenant"; identityId: string; membershipId: string; tenantId: string };

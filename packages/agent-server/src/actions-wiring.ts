@@ -6,6 +6,7 @@ import {
   type ActionConfigRepository,
   type ActionInstanceRepository,
   type CalendarReader,
+  type ContextDb,
   type CalendarWriter,
   type Deadline,
   type LegacyActionRepository,
@@ -28,16 +29,15 @@ import {
 import {
   GCalHttpClient,
   GoogleCalendarAdapter,
-  SqliteActionConfigRepository,
-  SqliteActionInstanceRepository,
-  SqliteLegacyActionRepository,
   TTLCache,
   runActionDriftCheck,
   type TokenProvider,
 } from "@oneon/infrastructure";
+import { contextRepos } from "./context-wiring.js";
 
 export interface ActionsWiringDeps {
-  db: Database.Database;
+  /** The personal handle: the orchestrator and the startup tasks run on the personal context only. */
+  context: ContextDb;
   publicUrl: string;
   calendarId: string;
   calendarCacheTtlMs: number;
@@ -68,9 +68,7 @@ export interface ActionsModule {
 /** The only place outside infrastructure that holds a CalendarWriter (spec §5, Task 15 test). */
 export function createActionsModule(deps: ActionsWiringDeps): ActionsModule {
   const registry = createActionRegistry(createActionDefinitions());
-  const instanceRepo = new SqliteActionInstanceRepository(deps.db);
-  const configRepo = new SqliteActionConfigRepository(deps.db);
-  const legacyRepo = new SqliteLegacyActionRepository(deps.db);
+  const { actionInstances: instanceRepo, actionConfigs: configRepo, legacyActions: legacyRepo } = contextRepos(deps.context);
   const calendars = new Map<string, GoogleCalendarAdapter>();
 
   function calendarFor(userId: string): GoogleCalendarAdapter | null {

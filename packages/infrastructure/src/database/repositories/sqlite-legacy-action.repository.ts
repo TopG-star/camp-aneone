@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
-import type { LegacyActionRepository, LegacyActionRow } from "@oneon/domain";
+import type { ContextDb, LegacyActionRepository, LegacyActionRow } from "@oneon/domain";
+import { rawDb } from "../context-db-gate.js";
 
 interface Row {
   id: string;
@@ -34,10 +35,14 @@ const NOT_IMPORTED = `FROM action_log_legacy l
   WHERE l.user_id = ? AND m.legacy_id IS NULL`;
 
 export class SqliteLegacyActionRepository implements LegacyActionRepository {
+  private readonly db: Database.Database;
+
   constructor(
-    private readonly db: Database.Database,
+    context: ContextDb,
     private readonly clock: () => Date = () => new Date(),
-  ) {}
+  ) {
+    this.db = rawDb(context);
+  }
 
   listForUser(userId: string, options: { limit: number; offset: number }): LegacyActionRow[] {
     const rows = this.db

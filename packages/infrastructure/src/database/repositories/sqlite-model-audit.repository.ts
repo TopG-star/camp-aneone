@@ -1,4 +1,6 @@
 import type Database from "better-sqlite3";
+import { assertRowTenant, type ContextDb } from "@oneon/domain";
+import { rawDb } from "../context-db-gate.js";
 import type { ModelAuditRepository, ModelDecisionRecord, ModelOutcomeRecord } from "@oneon/application";
 
 type Row = {
@@ -84,7 +86,15 @@ function mapOutcome(r: Row): ModelOutcomeRecord | null {
 }
 
 export class SqliteModelAuditRepository implements ModelAuditRepository {
-  constructor(private readonly db: Database.Database) {}
+  private readonly db: Database.Database;
+
+  constructor(private readonly context: ContextDb) {
+    this.db = rawDb(context);
+  }
+
+  private tenantId(): string | null {
+    return this.context.kind === "tenant" ? this.context.tenantId : null;
+  }
 
   recordDecision(r: ModelDecisionRecord): void {
     this.db
@@ -95,7 +105,7 @@ export class SqliteModelAuditRepository implements ModelAuditRepository {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        r.id, r.callId, r.createdAt, r.contextKind, r.identityId, r.tenantId, r.membershipId, r.purpose, r.channel, r.provider, r.model,
+        r.id, r.callId, r.createdAt, r.contextKind, r.identityId, this.tenantId(), r.membershipId, r.purpose, r.channel, r.provider, r.model,
         r.effectiveLimit, JSON.stringify(r.layers), r.decision, r.denyReason, JSON.stringify(r.released), JSON.stringify(r.withheld),
         r.placeholderCount, r.scannerHits.D3, r.scannerHits.D4, r.alert ? 1 : 0, r.policyFingerprint, r.inputFingerprint, r.keyVersion,
       );
@@ -105,10 +115,10 @@ export class SqliteModelAuditRepository implements ModelAuditRepository {
     this.db
       .prepare(
         `INSERT INTO model_call_outcomes (call_id, created_at, status, block_reason, attempts, latency_ms, input_tokens, output_tokens, checks_json,
-           output_fingerprint, key_version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           output_fingerprint, key_version, tenant_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(r.callId, r.createdAt, r.status, r.blockReason, r.attempts, r.latencyMs, r.inputTokens, r.outputTokens, JSON.stringify(r.checks), r.outputFingerprint, r.keyVersion);
+      .run(r.callId, r.createdAt, r.status, r.blockReason, r.attempts, r.latencyMs, r.inputTokens, r.outputTokens, JSON.stringify(r.checks), r.outputFingerprint, r.keyVersion, this.tenantId());
   }
 
   listRecentForIdentity(identityId: string, limit: number): Array<{ decision: ModelDecisionRecord; outcome: ModelOutcomeRecord | null }> {
@@ -120,6 +130,9 @@ export class SqliteModelAuditRepository implements ModelAuditRepository {
          WHERE d.identity_id = ? ORDER BY d.created_at DESC, d.rowid DESC LIMIT ?`,
       )
       .all(identityId, limit) as Row[];
-    return rows.map((r) => ({ decision: mapDecision(r), outcome: mapOutcome(r) }));
+    return rows.map((r) => {
+      assertRowTenant(this.context, r.tenant_id);
+      return { decision: mapDecision(r), outcome: mapOutcome(r) };
+    });
   }
 }

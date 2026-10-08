@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import {
+  assertRowTenant,
   ActionNotFoundError,
   LifecycleTransitionError,
   TransitionConflictError,
@@ -9,6 +10,7 @@ import {
   type ActionInstance,
   type ActionInstanceRepository,
   type ActorRef,
+  type ContextDb,
   type CreateInstanceResult,
   type InstanceListFilter,
   type InstancePatch,
@@ -17,6 +19,7 @@ import {
   type NewActionInstance,
   type TransitionRequest,
 } from "@oneon/domain";
+import { rawDb } from "../context-db-gate.js";
 
 interface InstanceRow {
   id: string;
@@ -52,6 +55,7 @@ interface InstanceRow {
 
 interface EventRow {
   id: string;
+  tenant_id: string | null;
   action_id: string;
   seq: number;
   from_status: LifecycleStatus | null;
@@ -121,10 +125,28 @@ function mapEvent(r: EventRow): ActionEvent {
 }
 
 export class SqliteActionInstanceRepository implements ActionInstanceRepository {
+  private readonly db: Database.Database;
+
   constructor(
-    private readonly db: Database.Database,
+    private readonly context: ContextDb,
     private readonly clock: () => Date = () => new Date(),
-  ) {}
+  ) {
+    this.db = rawDb(context);
+  }
+
+  private tenantId(): string | null {
+    return this.context.kind === "tenant" ? this.context.tenantId : null;
+  }
+
+  private instance(row: InstanceRow): ActionInstance {
+    assertRowTenant(this.context, row.tenant_id);
+    return mapInstance(row);
+  }
+
+  private event(row: EventRow): ActionEvent {
+    assertRowTenant(this.context, row.tenant_id);
+    return mapEvent(row);
+  }
 
   create(instance: NewActionInstance, actor: ActorRef, data: JsonObject = {}): CreateInstanceResult {
     return this.db.transaction((): CreateInstanceResult => {
@@ -133,7 +155,7 @@ export class SqliteActionInstanceRepository implements ActionInstanceRepository 
           "SELECT * FROM action_instances WHERE scope = ? AND owner_id = ? AND action_type = ? AND idempotency_key = ?",
         )
         .get(instance.scope, instance.ownerId, instance.actionType, instance.idempotencyKey) as InstanceRow | undefined;
-      if (existing) return { instance: mapInstance(existing), created: false };
+      if (existing) return { instance: this.instance(existing), created: false };
 
       const now = this.clock().toISOString();
       this.db
@@ -149,7 +171,7 @@ export class SqliteActionInstanceRepository implements ActionInstanceRepository 
           instance.scope,
           instance.ownerId,
           instance.userId,
-          instance.tenantId,
+          this.tenantId(),
           JSON.stringify(instance.locationIds),
           instance.actionType,
           instance.definitionVersion,
@@ -173,7 +195,7 @@ export class SqliteActionInstanceRepository implements ActionInstanceRepository 
     const row = this.db
       .prepare("SELECT * FROM action_instances WHERE id = ? AND owner_id = ?")
       .get(id, ownerId) as InstanceRow | undefined;
-    return row ? mapInstance(row) : null;
+    return row ? this.instance(row) : null;
   }
 
   list(ownerId: string, filter: InstanceListFilter = {}): ActionInstance[] {
@@ -181,7 +203,7 @@ export class SqliteActionInstanceRepository implements ActionInstanceRepository 
     const rows = this.db
       .prepare(`SELECT * FROM action_instances WHERE ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
       .all(...params, filter.limit ?? 50, filter.offset ?? 0) as InstanceRow[];
-    return rows.map(mapInstance);
+    return rows.map((r) => this.instance(r));
   }
 
   count(ownerId: string, filter: Omit<InstanceListFilter, "limit" | "offset"> = {}): number {
@@ -201,7 +223,7 @@ export class SqliteActionInstanceRepository implements ActionInstanceRepository 
          ORDER BY e.seq`,
       )
       .all(ownerId, actionId) as EventRow[];
-    return rows.map(mapEvent);
+    return rows.map((r) => this.event(r));
   }
 
   appendTransition(request: TransitionRequest): ActionInstance {
@@ -210,6 +232,7 @@ export class SqliteActionInstanceRepository implements ActionInstanceRepository 
         | InstanceRow
         | undefined;
       if (!row) throw new ActionNotFoundError(request.actionId);
+      assertRowTenant(this.context, row.tenant_id);
       if (row.status !== request.expectedStatus) {
         throw new TransitionConflictError(request.actionId, request.expectedStatus, row.status);
       }
@@ -271,15 +294,15 @@ export class SqliteActionInstanceRepository implements ActionInstanceRepository 
   ): void {
     this.db
       .prepare(
-        `INSERT INTO action_events (id, action_id, seq, from_status, to_status, actor_json, data_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO action_events (id, action_id, seq, from_status, to_status, actor_json, data_json, created_at, tenant_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(randomUUID(), actionId, seq, from, to, JSON.stringify(actor), JSON.stringify(data), at);
+      .run(randomUUID(), actionId, seq, from, to, JSON.stringify(actor), JSON.stringify(data), at, this.tenantId());
   }
 
   private mustFind(id: string): ActionInstance {
     const row = this.db.prepare("SELECT * FROM action_instances WHERE id = ?").get(id) as InstanceRow | undefined;
     if (!row) throw new ActionNotFoundError(id);
-    return mapInstance(row);
+    return this.instance(row);
   }
 }

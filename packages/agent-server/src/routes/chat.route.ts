@@ -16,7 +16,8 @@ import {
 } from "@oneon/application";
 
 export interface ChatRouteDeps {
-  conversationRepo: ConversationRepository;
+  /** The request's conversations: from contextRepos(req.contextDb), so a tenant's turns stay in its own file. */
+  conversationsFor: (req: Request) => ConversationRepository;
   logger: Logger;
   inboundItemRepo?: Pick<InboundItemRepository, "count"> | null;
   classificationRepo?: Pick<ClassificationRepository, "count" | "findAll"> | null;
@@ -30,7 +31,7 @@ export interface ChatRouteDeps {
 export function createChatRouter(deps: ChatRouteDeps): Router {
   const router = Router();
   const {
-    conversationRepo,
+    conversationsFor,
     logger,
     userProfileRepo,
     inboundItemRepo,
@@ -57,10 +58,13 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
 
     // ── 2. Resolve user profile preferences ───────────────
     const userId = req.userId!;
+    // A tenant context reads and writes only its own file. The personal profile, personal data, tools and the
+    // personal-context model gateway are not available there yet, so none of them is passed.
+    const inTenant = req.contextDb?.kind === "tenant";
     let profile = null;
 
     try {
-      profile = userProfileRepo?.findByUserId(userId) ?? null;
+      profile = inTenant ? null : (userProfileRepo?.findByUserId(userId) ?? null);
     } catch (error) {
       logger.error("Chat route: failed to load user profile", {
         userId,
@@ -71,7 +75,7 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
     }
 
     // ── 3. Delegate to use case ───────────────────────────
-    const stats = buildChatStats({
+    const stats = inTenant ? null : buildChatStats({
       inboundItemRepo,
       classificationRepo,
       deadlineRepo,
@@ -82,10 +86,10 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
 
     sendChatMessage(
       {
-        conversationRepo,
+        conversationRepo: conversationsFor(req),
         logger,
-        modelGateway,
-        toolRegistry,
+        modelGateway: inTenant ? null : modelGateway,
+        toolRegistry: inTenant ? null : toolRegistry,
         stats,
       },
       {

@@ -20,6 +20,8 @@ export interface IdentityRepository {
   findByLogin(kind: LoginKind, subject: string): Identity | null;
   createWithLogin(input: { kind: LoginKind; subject: string; email?: string; id?: string }): Identity;
   findById(id: string): Identity | null;
+  /** True when the identity has a login of this kind (the personal context needs a Google one). */
+  hasLogin(identityId: string, kind: LoginKind): boolean;
   /** One-time migration: swaps the pending "email:<email>" marker for the real Google sub. The only email lookup (spec §4.2). */
   attachGoogleSubByEmailOnce(email: string, sub: string): Identity | null;
   linkLogin(identityId: string, loginId: string, actor: string): void;
@@ -72,6 +74,10 @@ export class SqliteIdentityRepository implements IdentityRepository {
         .run(randomUUID(), id, input.kind, input.subject, input.email ?? null, now);
     })();
     return { id, status: "active" };
+  }
+
+  hasLogin(identityId: string, kind: LoginKind): boolean {
+    return this.db.prepare("SELECT 1 FROM login_identities WHERE identity_id = ? AND kind = ? LIMIT 1").get(identityId, kind) !== undefined;
   }
 
   attachGoogleSubByEmailOnce(email: string, sub: string): Identity | null {

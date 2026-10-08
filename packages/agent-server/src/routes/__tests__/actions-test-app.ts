@@ -1,3 +1,4 @@
+import type { PersonalDb } from "@oneon/domain";
 import express from "express";
 import type Database from "better-sqlite3";
 import {
@@ -81,9 +82,9 @@ export function buildActionsTestApp(options: { createDelayMs?: number } = {}): A
   };
 
   const registry = createActionRegistry(createActionDefinitions());
-  const instanceRepo = new SqliteActionInstanceRepository(db);
-  const configRepo = new SqliteActionConfigRepository(db);
-  const legacyRepo = new SqliteLegacyActionRepository(db);
+  const instanceRepo = new SqliteActionInstanceRepository(asPersonal(db));
+  const configRepo = new SqliteActionConfigRepository(asPersonal(db));
+  const legacyRepo = new SqliteLegacyActionRepository(asPersonal(db));
   const orchestrator = createActionOrchestrator({
     registry,
     repo: instanceRepo,
@@ -114,4 +115,8 @@ export function buildActionsTestApp(options: { createDelayMs?: number } = {}): A
   app.use("/api/action-definitions", createActionDefinitionsRouter({ registry, configRepo, logger: testLogger }));
 
   return { app, db, orchestrator, instanceRepo, configRepo, events, deadlines, warnings, legacyRepo };
+}
+
+function asPersonal(raw: unknown): PersonalDb {
+  return { kind: "personal", raw, __brand: "PersonalDb" };
 }

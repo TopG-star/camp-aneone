@@ -1,3 +1,4 @@
+import type { PersonalDb } from "@oneon/domain";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import express from "express";
 import request from "supertest";
@@ -14,7 +15,7 @@ let gateway: ModelGateway;
 let dbRef: Database.Database;
 
 function mount(overrides: Map<ProviderId, ProviderOverride>, db: Database.Database, routingWarnings: Array<{ role: "standard" | "reasoning" | "shadow"; provider: ProviderId }> = []) {
-  const audit = new SqliteModelAuditRepository(db);
+  const audit = new SqliteModelAuditRepository(asPersonal(db));
   const provider: ModelProvider = { id: "deepseek", complete: async () => ({ text: "{}" }) };
   const routing = { standard: "deepseek" as const, reasoning: "deepseek" as const };
   gateway = createModelGateway({
@@ -117,3 +118,7 @@ describe("AI data API", () => {
     expect(none.body.routingWarnings).toEqual([]);
   });
 });
+
+function asPersonal(raw: unknown): PersonalDb {
+  return { kind: "personal", raw, __brand: "PersonalDb" };
+}

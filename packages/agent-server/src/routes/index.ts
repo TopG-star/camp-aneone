@@ -28,6 +28,8 @@ import { createHandoffRouter } from "./handoff.route.js";
 import { createTokenAuthMiddleware } from "../middleware/auth.js";
 import { createSessionAuthMiddleware } from "../middleware/session-auth.js";
 import { requireUser } from "../middleware/require-user.js";
+import { requirePersonalContext, resolveActiveContext } from "../middleware/active-context.js";
+import { contextRepos } from "../context-wiring.js";
 import {
   LocalDocMemoryProvider,
   StructuredLogger,
@@ -94,8 +96,21 @@ export function registerRoutes(app: Express, container: AppContainer): void {
   );
   const tokenAuth = createTokenAuthMiddleware(env.API_TOKEN);
 
-  // Browser routes: session cookie + require userId
-  const userAuth: RequestHandler[] = [sessionAuth, requireUser];
+  // Browser routes: session cookie + require userId. The default chain is personal-only: a hand-off (tenant) session
+  // gets 403 context_unavailable, so a route added later cannot reach personal data by accident.
+  const userAuth: RequestHandler[] = [sessionAuth, requireUser, requirePersonalContext];
+
+  // Context-aware routes: the one active context is resolved from the session and its database opened for the request.
+  // Only routes that read their repositories from contextRepos(req.contextDb) may use this chain.
+  const contextAuth: RequestHandler[] = [
+    sessionAuth,
+    requireUser,
+    resolveActiveContext({
+      gate: { openPersonal: container.openPersonal, openTenant: container.openTenant },
+      memberships: container.memberships,
+      identities: container.identityRepo,
+    }),
+  ];
 
   // System routes: Bearer token only (admin scripts, CI triggers)
   const systemAuth: RequestHandler[] = [tokenAuth];
@@ -350,9 +365,9 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     app.use(
       "/api/chat",
       chatLimiter,
-      ...userAuth,
+      ...contextAuth,
       createChatRouter({
-        conversationRepo: container.conversationRepo,
+        conversationsFor: (req) => contextRepos(req.contextDb!).conversations,
         logger: chatLogger,
         inboundItemRepo: container.inboundItemRepo,
         classificationRepo: container.classificationRepo,
@@ -609,6 +624,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       "/api/oauth",
       oauthLimiter,
       sessionAuth,
+      requirePersonalContext,
       createOAuthRouter({
         userRepo: container.userRepo,
         oauthTokenRepo: container.oauthTokenRepo,

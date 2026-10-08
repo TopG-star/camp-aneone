@@ -45,11 +45,13 @@ function createMockLogger(): Logger {
   };
 }
 
-function buildApp(deps: ChatRouteDeps, userId = "user-A"): express.Express {
+type TestDeps = Omit<ChatRouteDeps, "conversationsFor"> & { conversationRepo: ConversationRepository };
+
+function buildApp({ conversationRepo, ...deps }: TestDeps, userId = "user-A"): express.Express {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => { req.userId = userId; next(); });
-  app.use("/api/chat", createChatRouter(deps));
+  app.use("/api/chat", createChatRouter({ ...deps, conversationsFor: () => conversationRepo }));
   return app;
 }
 
@@ -244,7 +246,7 @@ describe("POST /api/chat", () => {
         logger,
         // Cast here so we can drive RED first before adding route dep typing.
         userProfileRepo,
-      } as ChatRouteDeps,
+      } as TestDeps,
     );
 
     await request(app)

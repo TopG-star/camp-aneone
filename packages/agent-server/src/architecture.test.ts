@@ -189,4 +189,19 @@ describe("architecture", { timeout: TIMEOUT_MS }, () => {
       .filter((p) => !isTest(p) && !/^infrastructure\/src\/llm\//.test(p) && p !== "agent-server/src/model-wiring.ts");
     expect(offenders).toEqual([]);
   });
+
+  it("no route reads a tenant or registration id from the request (I1)", () => {
+    // The context comes from the session only. Any req.body / req.query / req.params access that names a tenant is a hole.
+    const ID = String.raw`\b(?:tenantId|tenant_id|registrationId)\b`;
+    const REQ = String.raw`\breq\s*\.\s*(?:body|query|params)\b`;
+    const reads = new RegExp(
+      [`${REQ}[^;\\n]*${ID}`, `${ID}[^;\\n]*${REQ}`, String.raw`\{[^}]*${ID}[^}]*\}\s*=\s*${REQ}`].join("|"),
+    );
+    const offenders = sources
+      .filter((f) => f.path.startsWith("agent-server/src/routes/") && !isTest(f.path))
+      .filter((f) => reads.test(f.text))
+      .map((f) => f.path);
+    expect(offenders).toEqual([]);
+  });
 });
+

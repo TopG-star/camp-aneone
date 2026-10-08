@@ -1,11 +1,13 @@
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import type {
+  ContextDb,
   ActionConfigHistoryEntry,
   ActionConfigRecord,
   ActionConfigRepository,
   ActionScope,
 } from "@oneon/domain";
+import { rawDb } from "../context-db-gate.js";
 
 interface ConfigRow {
   scope: ActionScope;
@@ -37,10 +39,14 @@ const mapConfig = (r: ConfigRow): ActionConfigRecord => ({
 });
 
 export class SqliteActionConfigRepository implements ActionConfigRepository {
+  private readonly db: Database.Database;
+
   constructor(
-    private readonly db: Database.Database,
+    context: ContextDb,
     private readonly clock: () => Date = () => new Date(),
-  ) {}
+  ) {
+    this.db = rawDb(context);
+  }
 
   get(scope: ActionScope, ownerId: string, actionType: string): ActionConfigRecord | null {
     const row = this.db

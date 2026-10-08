@@ -293,7 +293,7 @@ describe("Session Auth Middleware", () => {
             userId: req.userId ?? null,
             identityId: req.identityId ?? null,
             sessionId: req.sessionId ?? null,
-            activeContext: req.activeContext ?? null,
+            activeContext: req.sessionContext ?? null,
             userEmail: req.userEmail ?? null,
           }),
         );

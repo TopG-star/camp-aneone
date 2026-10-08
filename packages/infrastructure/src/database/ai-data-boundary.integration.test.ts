@@ -1,3 +1,4 @@
+import type { PersonalDb } from "@oneon/domain";
 import { describe, it, expect, beforeEach } from "vitest";
 import type Database from "better-sqlite3";
 import { createDatabase, runMigrations } from "./connection.js";
@@ -40,7 +41,7 @@ const decision = (callId: string, overrides = {}) => ({
 
 describe("SqliteModelAuditRepository", () => {
   it("stores decisions and outcomes and lists them newest first", () => {
-    const repo = new SqliteModelAuditRepository(db);
+    const repo = new SqliteModelAuditRepository(asPersonal(db));
     repo.recordDecision(decision("c1"));
     repo.recordDecision(decision("c2", { decision: "deny", denyReason: "required_part_withheld", inputFingerprint: null }));
     repo.recordOutcome({ callId: "c1", createdAt: "2026-10-03T10:00:05.000Z", status: "answered", blockReason: null, attempts: 1, latencyMs: 900, inputTokens: null, outputTokens: null, checks: { O1: "pass", O2: "pass", O3: "pass", O4: "pass" }, outputFingerprint: "o".repeat(64), keyVersion: 1 });
@@ -50,13 +51,13 @@ describe("SqliteModelAuditRepository", () => {
     expect(recent[1].outcome).toMatchObject({ status: "answered", attempts: 1 });
   });
   it("is append-only", () => {
-    const repo = new SqliteModelAuditRepository(db);
+    const repo = new SqliteModelAuditRepository(asPersonal(db));
     repo.recordDecision(decision("c1"));
     expect(() => db.prepare("UPDATE model_call_decisions SET purpose = 'x'").run()).toThrow("model_call_decisions is append-only");
     expect(() => db.prepare("DELETE FROM model_call_decisions").run()).toThrow("model_call_decisions is append-only");
   });
   it("keeps outcomes append-only too", () => {
-    const repo = new SqliteModelAuditRepository(db);
+    const repo = new SqliteModelAuditRepository(asPersonal(db));
     repo.recordDecision(decision("c1"));
     repo.recordOutcome({ callId: "c1", createdAt: "2026-10-03T10:00:05.000Z", status: "failed", blockReason: null, attempts: 1, latencyMs: 1, inputTokens: null, outputTokens: null, checks: { O1: "pass", O2: "pass", O3: "pass", O4: "pass" }, outputFingerprint: null, keyVersion: 1 });
     expect(() => db.prepare("UPDATE model_call_outcomes SET attempts = 2").run()).toThrow("model_call_outcomes is append-only");
@@ -82,3 +83,7 @@ describe("SqliteAiDataChoiceRepository", () => {
     expect(() => repo.record({ identityId: "u1", provider: "deepseek", maxClass: "D3" as never, decidedOn: null, note: null, confirmedAt: "x" })).toThrow();
   });
 });
+
+function asPersonal(raw: unknown): PersonalDb {
+  return { kind: "personal", raw, __brand: "PersonalDb" };
+}

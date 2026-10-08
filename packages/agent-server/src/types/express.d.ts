@@ -10,7 +10,11 @@ declare global {
       /** Hand-off sessions only: the dashboard-generated session id that the attended grant is bound to */
       sessionId?: string;
       /** Hand-off sessions only: the context the person is working in */
-      activeContext?: { kind: "tenant"; membershipId: string };
+      sessionContext?: { kind: "tenant"; membershipId: string };
+      /** Set by resolveActiveContext: the context this request runs in */
+      activeContext?: import("@oneon/domain").ActiveContext;
+      /** Set by resolveActiveContext: the active context's database, valid for this request only */
+      contextDb?: import("@oneon/domain").ContextDb;
     }
   }
 }

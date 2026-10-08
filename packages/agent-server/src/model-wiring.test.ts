@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@oneon/infrastructure";
+import type { PersonalDb } from "@oneon/domain";
 import { OverrideConfigError, createToolRegistry, createListGitHubPRsTool } from "@oneon/application";
 import { loadEnv } from "./config/env.js";
 import { createModelWiring } from "./model-wiring.js";
@@ -14,10 +15,10 @@ function baseEnv() {
   vi.stubEnv("CONTROL_DATABASE_PATH", ":memory:");
   vi.stubEnv("LOG_LEVEL", "error");
 }
-function db() {
+function db(): PersonalDb {
   const d = new Database(":memory:");
   runMigrations(d);
-  return d;
+  return { kind: "personal", raw: d, __brand: "PersonalDb" };
 }
 
 describe("createModelWiring", () => {
@@ -25,7 +26,7 @@ describe("createModelWiring", () => {
 
   it("has no gateway when no provider key is configured", () => {
     baseEnv();
-    expect(createModelWiring(loadEnv(), { db: db(), logger }).gateway).toBeNull();
+    expect(createModelWiring(loadEnv(), { context: db(), logger }).gateway).toBeNull();
   });
 
   it("routes from the existing LLM variables", () => {
@@ -35,7 +36,7 @@ describe("createModelWiring", () => {
     vi.stubEnv("DEEPSEEK_CLASSIFIER_MODEL", "flash");
     vi.stubEnv("DEEPSEEK_SYNTHESIS_MODEL", "pro");
     vi.stubEnv("MODEL_AUDIT_HMAC_KEY", "x".repeat(32));
-    const wiring = createModelWiring(loadEnv(), { db: db(), logger });
+    const wiring = createModelWiring(loadEnv(), { context: db(), logger });
     expect(wiring.gateway).not.toBeNull();
     expect(wiring.routing).toEqual({ standard: "deepseek", reasoning: "deepseek" });
     expect(wiring.configuredProviders).toEqual(["deepseek"]);
@@ -44,7 +45,7 @@ describe("createModelWiring", () => {
   it("warns that the standard provider has no key when there is no gateway", () => {
     baseEnv();
     vi.stubEnv("LLM_PROVIDER", "anthropic");
-    const wiring = createModelWiring(loadEnv(), { db: db(), logger });
+    const wiring = createModelWiring(loadEnv(), { context: db(), logger });
     expect(wiring.gateway).toBeNull();
     expect(wiring.routingWarnings).toEqual([{ role: "standard", provider: "anthropic" }]);
   });
@@ -53,7 +54,7 @@ describe("createModelWiring", () => {
     deepseekOnly();
     vi.stubEnv("LLM_REASONING_PROVIDER_PREMIUM", "anthropic");
     vi.stubEnv("LLM_SHADOW_PROVIDER", "anthropic");
-    const wiring = createModelWiring(loadEnv(), { db: db(), logger });
+    const wiring = createModelWiring(loadEnv(), { context: db(), logger });
     expect(wiring.routingWarnings).toEqual([
       { role: "reasoning", provider: "anthropic" },
       { role: "shadow", provider: "anthropic" },
@@ -62,12 +63,12 @@ describe("createModelWiring", () => {
 
   it("has no warnings when every routed provider has a key", () => {
     deepseekOnly();
-    expect(createModelWiring(loadEnv(), { db: db(), logger }).routingWarnings).toEqual([]);
+    expect(createModelWiring(loadEnv(), { context: db(), logger }).routingWarnings).toEqual([]);
   });
 
   it("builds the gateway's authored vocabulary from the real tool registry", () => {
     deepseekOnly();
-    const wiring = createModelWiring(loadEnv(), { db: db(), logger });
+    const wiring = createModelWiring(loadEnv(), { context: db(), logger });
     expect(wiring.toolVocabulary()).toBe("");
     const registry = createToolRegistry();
     registry.register(createListGitHubPRsTool({}));
@@ -83,7 +84,7 @@ describe("createModelWiring", () => {
     vi.stubEnv("DEEPSEEK_SYNTHESIS_MODEL", "pro");
     vi.stubEnv("MODEL_AUDIT_HMAC_KEY", "x".repeat(32));
     vi.stubEnv("MODEL_PROVIDER_OVERRIDES", "deepsek:suspended");
-    expect(() => createModelWiring(loadEnv(), { db: db(), logger })).toThrow(OverrideConfigError);
+    expect(() => createModelWiring(loadEnv(), { context: db(), logger })).toThrow(OverrideConfigError);
   });
 
   function deepseekOnly() {
@@ -99,7 +100,7 @@ describe("createModelWiring", () => {
     deepseekOnly();
     vi.stubEnv("LLM_REASONING_PROVIDER_PREMIUM", "anthropic");
     logger.warn.mockClear();
-    const wiring = createModelWiring(loadEnv(), { db: db(), logger });
+    const wiring = createModelWiring(loadEnv(), { context: db(), logger });
     expect(wiring.gateway).not.toBeNull();
     expect(logger.warn).toHaveBeenCalledWith(
       "Model gateway: routed provider has no key; its calls will be denied",
@@ -111,7 +112,7 @@ describe("createModelWiring", () => {
     deepseekOnly();
     vi.stubEnv("LLM_SHADOW_PROVIDER", "anthropic");
     logger.warn.mockClear();
-    const wiring = createModelWiring(loadEnv(), { db: db(), logger });
+    const wiring = createModelWiring(loadEnv(), { context: db(), logger });
     expect(wiring.gateway).not.toBeNull();
     expect(logger.warn).toHaveBeenCalledWith(
       "Model gateway: routed provider has no key; its calls will be denied",

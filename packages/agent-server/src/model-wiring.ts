@@ -1,5 +1,5 @@
-import type Database from "better-sqlite3";
-import type { Logger } from "@oneon/domain";
+import { contextRepos } from "./context-wiring.js";
+import type { ContextDb, Logger } from "@oneon/domain";
 import {
   createModelGateway,
   Fingerprinter,
@@ -11,16 +11,16 @@ import {
   type ModelRouting,
   type ProviderId,
 } from "@oneon/application";
-import { AnthropicProvider, DeepSeekProvider, SqliteAiDataChoiceRepository, SqliteModelAuditRepository } from "@oneon/infrastructure";
+import { AnthropicProvider, DeepSeekProvider, SqliteAiDataChoiceRepository, rawDb } from "@oneon/infrastructure";
 import type { Env } from "./config/env.js";
 
 /** The only place provider clients are constructed (architecture test, Task 16). */
 /** The vocabulary the gateway exempts from its restored-value checks: every registered tool's name and description. */
 export const toolVocabulary = (tools: Array<{ name: string; description: string }>): string => tools.map((t) => `${t.name}: ${t.description}`).join("\n");
 
-export function createModelWiring(env: Env, deps: { db: Database.Database; logger: Logger }) {
-  const choices: AiDataChoiceRepository = new SqliteAiDataChoiceRepository(deps.db);
-  const audit: ModelAuditRepository = new SqliteModelAuditRepository(deps.db);
+export function createModelWiring(env: Env, deps: { context: ContextDb; logger: Logger }) {
+  const choices: AiDataChoiceRepository = new SqliteAiDataChoiceRepository(rawDb(deps.context));
+  const audit: ModelAuditRepository = contextRepos(deps.context).modelAudit;
   const breaker = { failureThreshold: env.CB_FAILURE_THRESHOLD, resetTimeoutMs: env.CB_RESET_TIMEOUT_MS };
   const providers: Partial<Record<ProviderId, ModelProvider>> = {};
   if (env.DEEPSEEK_API_KEY) providers.deepseek = new DeepSeekProvider({ apiKey: env.DEEPSEEK_API_KEY, circuitBreaker: breaker, logger: deps.logger });

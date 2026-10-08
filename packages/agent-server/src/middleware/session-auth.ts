@@ -182,7 +182,7 @@ export interface HandoffSessionChecks {
  *
  * The session's `provider` decides how it resolves. A hand-off session (provider "impressorx") is resolved by its
  * identityId, never as a Google sub, and must still have an active membership of that identity and an active attended
- * grant for its sessionId; it also sets req.sessionId and req.activeContext.
+ * grant for its sessionId; it also sets req.sessionId and req.sessionContext.
  *
  * Cookie names:
  *   Production (HTTPS): __Secure-authjs.session-token
@@ -228,7 +228,7 @@ export function createSessionAuthMiddleware(
         req.identityId = handoffIdentityId;
         req.userId = handoffIdentityId;
         req.sessionId = session.sessionId;
-        req.activeContext = session.activeContext;
+        req.sessionContext = session.activeContext;
       }
       return next();
     }

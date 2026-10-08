@@ -1,3 +1,4 @@
+import type { PersonalDb } from "@oneon/domain";
 import { describe, it, expect, beforeEach } from "vitest";
 import type Database from "better-sqlite3";
 import type { Logger, NewActionInstance } from "@oneon/domain";
@@ -41,7 +42,7 @@ beforeEach(() => {
   db = createDatabase(":memory:");
   runMigrations(db);
   db.prepare("INSERT INTO users (id, email) VALUES (?, ?), (?, ?)").run("user-A", "a@test.com", "user-B", "b@test.com");
-  repo = new SqliteActionInstanceRepository(db, () => new Date("2026-10-01T12:00:00.000Z"));
+  repo = new SqliteActionInstanceRepository(asPersonal(db), () => new Date("2026-10-01T12:00:00.000Z"));
 });
 
 describe("migration 014", () => {
@@ -170,7 +171,7 @@ describe("runActionDriftCheck", () => {
 
 describe("SqliteActionConfigRepository", () => {
   it("saves config and appends history that cannot be edited", () => {
-    const config = new SqliteActionConfigRepository(db, () => new Date("2026-10-02T09:00:00.000Z"));
+    const config = new SqliteActionConfigRepository(asPersonal(db), () => new Date("2026-10-02T09:00:00.000Z"));
     config.save({ scope: "personal", ownerId: "user-A", actionType: "create_reminder", configJson: '{"approval":{"mode":"auto"}}', changedBy: "user-A" });
     config.save({ scope: "personal", ownerId: "user-A", actionType: "create_reminder", configJson: '{"approval":{"mode":"always"}}', changedBy: "user-A" });
     expect(config.get("personal", "user-A", "create_reminder")).toMatchObject({ configJson: '{"approval":{"mode":"always"}}', updatedBy: "user-A" });
@@ -192,7 +193,7 @@ describe("SqliteLegacyActionRepository", () => {
        VALUES ('l1','item-1','archive','approval_required','proposed','user-A','2026-09-01T00:00:00Z'),
               ('l2','item-2','notify','auto','executed','user-A','2026-09-02T00:00:00Z')`,
     ).run();
-    const legacy = new SqliteLegacyActionRepository(db);
+    const legacy = new SqliteLegacyActionRepository(asPersonal(db));
     expect(legacy.listUnimportedProposed("user-A").map((r) => r.id)).toEqual(["l1"]);
     repo.create(newInstance({ id: "act-9", actionType: "archive", idempotencyKey: "email:item-1" }), USER);
     legacy.recordImport("l1", "act-9");
@@ -207,9 +208,13 @@ describe("SqliteLegacyActionRepository", () => {
        VALUES ('n1','item-1','archive','approval_required','proposed',NULL,'2026-09-01T00:00:00Z'),
               ('u1','item-2','archive','approval_required','proposed','user-A','2026-09-01T00:00:00Z')`,
     ).run();
-    const legacy = new SqliteLegacyActionRepository(db);
+    const legacy = new SqliteLegacyActionRepository(asPersonal(db));
     expect(legacy.listUnimportedProposed("user-A").map((r) => r.id)).toEqual(["u1"]);
     expect(legacy.listUnimportedProposed("").map((r) => r.id)).toEqual([]);
     expect(legacy.listForUser("user-A", { limit: 10, offset: 0 }).map((r) => r.id)).toEqual(["u1"]);
   });
 });
+
+function asPersonal(raw: unknown): PersonalDb {
+  return { kind: "personal", raw, __brand: "PersonalDb" };
+}

@@ -45,7 +45,6 @@ import {
   SqliteClassificationFeedbackRepository,
   SqliteDeadlineRepository,
   SqliteNotificationRepository,
-  SqliteConversationRepository,
   SqlitePreferenceRepository,
   SqlitePushSubscriptionRepository,
   SqliteBankStatementRepository,
@@ -81,6 +80,7 @@ import { dirname } from "node:path";
 import type { BackgroundLoop } from "./background-loop.js";
 import { createActionsModule, type ActionsModule } from "./actions-wiring.js";
 import { createModelWiring } from "./model-wiring.js";
+import { contextRepos } from "./context-wiring.js";
 import type { AiDataChoiceRepository, ModelAuditRepository, ModelGateway, ModelRouting, ProviderId, ProviderOverride } from "@oneon/application";
 
 export interface AppContainer {
@@ -111,6 +111,8 @@ export interface AppContainer {
   handoffJti: UsedHandoffJti;
   /** The sole holder of delegation grants; null until ONEON_GRANT_MASTER_KEY is set. */
   impressorx: ImpressoRxClient | null;
+  /** The personal database handle (the same one the personal repositories were built from). */
+  openPersonal: () => import("@oneon/domain").PersonalDb;
   /** Opens a tenant's database through the gate (refuses when the registration is not active). */
   openTenant: (registrationId: string) => import("@oneon/domain").TenantDb;
   /** Creates a new tenant's database file (enrolment only). */
@@ -200,7 +202,7 @@ export function createContainer(env: Env): AppContainer {
   if (!impressorx) logger.warn("ImpressoRx hand-off: disabled (missing ONEON_GRANT_MASTER_KEY)");
   logger.info("Database ready", { path: env.DATABASE_PATH });
 
-  const modelWiring = createModelWiring(env, { db, logger });
+  const modelWiring = createModelWiring(env, { context: personal, logger });
 
   // ── Repositories ──────────────────────────────────────────
   const inboundItemRepo = new SqliteInboundItemRepository(db);
@@ -209,7 +211,7 @@ export function createContainer(env: Env): AppContainer {
     new SqliteClassificationFeedbackRepository(db);
   const deadlineRepo = new SqliteDeadlineRepository(db);
   const notificationRepo = new SqliteNotificationRepository(db);
-  const conversationRepo = new SqliteConversationRepository(db);
+  const conversationRepo = contextRepos(personal).conversations;
   const preferenceRepo = new SqlitePreferenceRepository(db);
   const pushSubscriptionRepo = new SqlitePushSubscriptionRepository(db);
   const bankStatementRepo = new SqliteBankStatementRepository(db);
@@ -437,7 +439,7 @@ export function createContainer(env: Env): AppContainer {
   };
 
   const actions = createActionsModule({
-    db,
+    context: personal,
     publicUrl: env.PUBLIC_URL,
     calendarId: env.CALENDAR_ID,
     calendarCacheTtlMs: env.CALENDAR_CACHE_TTL_MS,
@@ -494,6 +496,7 @@ export function createContainer(env: Env): AppContainer {
     memberships,
     handoffJti,
     impressorx,
+    openPersonal: () => personal,
     openTenant: (registrationId) => gate.openTenant(registrationId),
     createTenantFile: (registrationId, tenantId) => void gate.createTenantFile(registrationId, tenantId),
     ensureIdentity: (user) => void ensureIdentityForUser(control, user),

@@ -68,7 +68,7 @@ describe("per-user calendar adapter", () => {
     runMigrations(db);
     const createGoogleTokenProvider = vi.fn((userId: string) => ({ getAccessToken: async () => `tok-${userId}` }));
     const actions = createActionsModule({
-      db,
+      context: { kind: "personal", raw: db, __brand: "PersonalDb" },
       publicUrl: "https://oneon.test",
       calendarId: "primary",
       calendarCacheTtlMs: 60_000,

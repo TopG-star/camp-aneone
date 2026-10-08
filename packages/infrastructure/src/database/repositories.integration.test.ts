@@ -1,3 +1,4 @@
+import type { PersonalDb } from "@oneon/domain";
 import Database from "better-sqlite3";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -715,7 +716,9 @@ describe("SqliteConversationRepository", () => {
 
   beforeEach(() => {
     db = createTestDb();
-    repo = new SqliteConversationRepository(db);
+    // The hand-built schema stops at migration 012; the repository stamps the column migration 016 adds.
+    db.exec("ALTER TABLE conversations ADD COLUMN tenant_id TEXT");
+    repo = new SqliteConversationRepository(asPersonal(db));
   });
 
   it("appends and retrieves messages", () => {
@@ -809,3 +812,7 @@ describe("SqlitePreferenceRepository", () => {
     expect(repo.get("theme")).toBeNull();
   });
 });
+
+function asPersonal(raw: unknown): PersonalDb {
+  return { kind: "personal", raw, __brand: "PersonalDb" };
+}
