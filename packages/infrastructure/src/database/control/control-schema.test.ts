@@ -8,7 +8,7 @@ const TABLES = [
   "identities", "login_identities", "memberships", "platform_operators",
   "channel_identities", "identity_link_events", "tenant_registrations",
   "tenant_registration_events", "delegation_grants", "tenant_ai_limit_versions",
-  "tenant_rollups", "used_handoff_jti", "tenant_keys",
+  "tenant_rollups", "used_handoff_jti", "tenant_keys", "link_intents",
 ];
 
 const NOW = "2026-10-08T00:00:00.000Z";

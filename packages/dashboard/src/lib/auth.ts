@@ -18,6 +18,8 @@ declare module "next-auth" {
   interface Session {
     /** The context the session holds now; absent for personal. Lets update() tell whether a switch was accepted. */
     activeContext?: ContextChoice;
+    /** Which sign-in produced the session; /auth/link/complete needs it to tell a Google login from a hand-off. */
+    provider?: "google" | "impressorx";
   }
 }
 
@@ -108,6 +110,7 @@ export const {
       }
       const activeContext = parseContextChoice(token.activeContext);
       if (activeContext) session.activeContext = activeContext;
+      session.provider = token.provider === "impressorx" ? "impressorx" : "google";
       return session;
     },
   },

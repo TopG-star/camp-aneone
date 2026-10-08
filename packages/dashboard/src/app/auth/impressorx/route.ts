@@ -23,7 +23,9 @@ export async function POST(req: Request) {
     // Signing in builds a new session token, so any existing cookie is replaced and nothing of the previous person is
     // linked to this one. The session id is generated in authorize. The Origin header is checked against the deployment.
     await signIn("impressorx", { handoff, origin: req.headers.get("origin") ?? "", redirect: false, redirectTo: "/" });
-    return see("/");
+    // A cross-site POST carries no Lax cookie, so a link in progress (spec §4.5) is finished one redirect later, where it does.
+    // With none in progress that page goes straight on to the dashboard.
+    return see("/auth/link/complete");
   } catch (error) {
     // A rejected hand-off makes signIn throw the CredentialsSignin from authorize; its code is the reason.
     // Never echo the hand-off or anything else.

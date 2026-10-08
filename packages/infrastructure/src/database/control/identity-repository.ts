@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import type { TenantDb } from "@oneon/domain";
+import { ensureIdentityAnchor, rawDb } from "../context-db-gate.js";
 import type { ControlDb } from "./open-control-db.js";
 
 export type LoginKind = "google" | "impressorx";
@@ -25,7 +27,26 @@ export interface IdentityRepository {
   /** One-time migration: swaps the pending "email:<email>" marker for the real Google sub. The only email lookup (spec §4.2). */
   attachGoogleSubByEmailOnce(email: string, sub: string): Identity | null;
   linkLogin(identityId: string, loginId: string, actor: string): void;
+  /** Adds a new login to an identity and records the link. Returns the login's id. Throws on a duplicate (kind, subject). */
+  attachLogin(identityId: string, login: { kind: LoginKind; subject: string; email?: string }, actor: string): string;
+  /**
+   * Merges `fromId` into `toId` (spec §4.5): its login identities and memberships move to `toId`, its tenant-file rows
+   * (conversations, actions) are re-owned, its grants are revoked and it is disabled with `merged_into`. Tenant files first,
+   * one at a time and idempotently; then one control transaction. Any failure throws and leaves the control database as it was.
+   */
+  mergeInto(fromId: string, toId: string, actor: string): void;
+  /** Detaches an ImpressoRx login and its memberships into a new identity. Throws UnlinkRefusedError when it may not. */
+  unlink(identityId: string, loginIdentityId: string, actor: string): { identityId: string };
   listMemberships(identityId: string): Membership[];
+}
+
+export type UnlinkRefusal = "login_not_found" | "not_detachable" | "last_login";
+
+export class UnlinkRefusedError extends Error {
+  constructor(readonly reason: UnlinkRefusal) {
+    super(reason);
+    this.name = "UnlinkRefusedError";
+  }
 }
 
 const MARKER_PREFIX = "email:";
@@ -44,7 +65,11 @@ type MembershipRow = {
 };
 
 export class SqliteIdentityRepository implements IdentityRepository {
-  constructor(private readonly db: ControlDb) {}
+  /** `openTenant` is the gate's: a merge needs it to re-own the rows in each pharmacy file. */
+  constructor(
+    private readonly db: ControlDb,
+    private readonly openTenant?: (registrationId: string) => TenantDb,
+  ) {}
 
   findByLogin(kind: LoginKind, subject: string): Identity | null {
     // "email:" is the backfill marker namespace (pending, unverified): never a real provider subject.
@@ -106,6 +131,124 @@ export class SqliteIdentityRepository implements IdentityRepository {
         )
         .run(randomUUID(), identityId, loginId, actor, new Date().toISOString());
     })();
+  }
+
+  attachLogin(identityId: string, login: { kind: LoginKind; subject: string; email?: string }, actor: string): string {
+    // "email:" is the pending-marker namespace, never a real subject (see findByLogin).
+    if (login.subject.startsWith(MARKER_PREFIX)) throw new Error("not a provider subject");
+    const loginId = randomUUID();
+    const now = new Date().toISOString();
+    this.db.transaction(() => {
+      this.db
+        .prepare("INSERT INTO login_identities (id, identity_id, kind, subject, email, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(loginId, identityId, login.kind, login.subject, login.email ?? null, now);
+      this.recordLinkEvent({ identityId, loginId, event: "link", actor, now });
+    })();
+    return loginId;
+  }
+
+  mergeInto(fromId: string, toId: string, actor: string): void {
+    if (fromId === toId) throw new Error("cannot merge an identity into itself");
+    if (this.findById(fromId)?.status !== "active" || this.findById(toId)?.status !== "active") {
+      throw new Error("both identities must exist and be active");
+    }
+
+    // 1. The pharmacy files, one at a time, each in its own transaction. The updates are idempotent, so a merge that
+    //    failed part-way and is tried again simply finds the earlier files already done.
+    const registrationIds = this.registrationIdsOf(fromId);
+    for (const registrationId of registrationIds) {
+      if (!this.openTenant) throw new Error("merging needs the tenant gate");
+      const tenant = this.openTenant(registrationId);
+      const raw = rawDb(tenant);
+      raw.transaction(() => {
+        ensureIdentityAnchor(tenant, toId);
+        raw.prepare("UPDATE conversations SET user_id = ? WHERE user_id = ?").run(toId, fromId);
+        raw.prepare("UPDATE action_instances SET user_id = ? WHERE user_id = ?").run(toId, fromId);
+        raw.prepare("UPDATE action_instances SET initiator_user_id = ? WHERE initiator_user_id = ?").run(toId, fromId);
+      })();
+    }
+
+    // 2. One control transaction: either all of it happens or none. Append-only rows (action_events, model_call_*) keep
+    //    the old identity id as history.
+    this.db.transaction(() => {
+      if (this.findById(fromId)?.status !== "active" || this.findById(toId)?.status !== "active") {
+        throw new Error("an identity changed during the merge");
+      }
+      // A membership that appeared after step 1 has a file we have not re-owned: start over rather than skip it.
+      if (this.registrationIdsOf(fromId).some((id) => !registrationIds.includes(id))) {
+        throw new Error("memberships changed during the merge");
+      }
+      const logins = this.db.prepare("SELECT id FROM login_identities WHERE identity_id = ? ORDER BY created_at, id").all(fromId) as Array<{ id: string }>;
+      this.db.prepare("UPDATE login_identities SET identity_id = ? WHERE identity_id = ?").run(toId, fromId);
+      this.db.prepare("UPDATE memberships SET identity_id = ? WHERE identity_id = ?").run(toId, fromId);
+      this.db.prepare("UPDATE identities SET status = 'disabled', merged_into = ? WHERE id = ?").run(toId, fromId);
+      const now = new Date().toISOString();
+      for (const login of logins) {
+        this.recordLinkEvent({ identityId: toId, loginId: login.id, event: "link", actor, now, detail: { mergedFrom: fromId } });
+      }
+      this.revokeGrants("identity_id = ?", fromId, "identity_merged");
+    }).immediate();
+  }
+
+  unlink(identityId: string, loginIdentityId: string, actor: string): { identityId: string } {
+    return this.db.transaction((): { identityId: string } => {
+      const login = this.db
+        .prepare("SELECT id, kind, subject FROM login_identities WHERE id = ? AND identity_id = ?")
+        .get(loginIdentityId, identityId) as { id: string; kind: LoginKind; subject: string } | undefined;
+      if (!login) throw new UnlinkRefusedError("login_not_found");
+      if (login.kind !== "impressorx") throw new UnlinkRefusedError("not_detachable");
+      const remaining = this.db.prepare("SELECT COUNT(*) AS n FROM login_identities WHERE identity_id = ?").get(identityId) as { n: number };
+      if (remaining.n < 2) throw new UnlinkRefusedError("last_login");
+
+      const newId = randomUUID();
+      const now = new Date().toISOString();
+      this.db.prepare("INSERT INTO identities (id, status, created_at) VALUES (?, 'active', ?)").run(newId, now);
+      this.db.prepare("UPDATE login_identities SET identity_id = ? WHERE id = ?").run(newId, login.id);
+      // An ImpressoRx subject is "<registration id>:<staff user id>"; the membership it opened is the one that goes with it.
+      const separator = login.subject.indexOf(":");
+      const membershipIds =
+        separator < 1
+          ? []
+          : (
+              this.db
+                .prepare("SELECT id FROM memberships WHERE identity_id = ? AND tenant_registration_id = ? AND external_user_id = ? ORDER BY id")
+                .all(identityId, login.subject.slice(0, separator), login.subject.slice(separator + 1)) as Array<{ id: string }>
+            ).map((m) => m.id);
+      for (const membershipId of membershipIds) {
+        this.db.prepare("UPDATE memberships SET identity_id = ? WHERE id = ?").run(newId, membershipId);
+        this.revokeGrants("membership_id = ?", membershipId, "identity_unlinked");
+      }
+      // Earlier conversations stay with the identity they were created under (spec §16.6): no tenant file is touched.
+      this.recordLinkEvent({ identityId, loginId: login.id, event: "unlink", actor, now, detail: { newIdentityId: newId, membershipIds } });
+      return { identityId: newId };
+    }).immediate();
+  }
+
+  private registrationIdsOf(identityId: string): string[] {
+    return (
+      this.db.prepare("SELECT DISTINCT tenant_registration_id AS id FROM memberships WHERE identity_id = ? ORDER BY id").all(identityId) as Array<{ id: string }>
+    ).map((r) => r.id);
+  }
+
+  private recordLinkEvent(e: { identityId: string; loginId: string; event: "link" | "unlink"; actor: string; now: string; detail?: object }): void {
+    this.db
+      .prepare(
+        "INSERT INTO identity_link_events (id, identity_id, login_identity_id, event, actor_identity_id, detail_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(randomUUID(), e.identityId, e.loginId, e.event, e.actor, e.detail ? JSON.stringify(e.detail) : null, e.now);
+  }
+
+  /**
+   * Revokes the active grants matching `where`. This is GrantStore's revoke, written out here because a merge or unlink
+   * must revoke in the same control transaction as the move, and only the ImpressoRx client may import the grant store (I4).
+   */
+  private revokeGrants(where: "identity_id = ?" | "membership_id = ?", value: string, reason: string): void {
+    this.db
+      .prepare(
+        `UPDATE delegation_grants SET status = 'revoked', revoked_reason = ?, pending_request_id = NULL, pending_since = NULL,
+                pending_request_json = NULL WHERE ${where} AND status = 'active'`,
+      )
+      .run(reason, value);
   }
 
   listMemberships(identityId: string): Membership[] {

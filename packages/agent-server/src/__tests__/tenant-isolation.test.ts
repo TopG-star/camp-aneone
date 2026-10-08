@@ -425,12 +425,16 @@ describe("personal routes refuse a tenant session", () => {
     "/api/platform/enrolments",
   ];
 
-  it.each(PERSONAL_GETS)("GET %s gets 403 context_unavailable for a tenant session", async (path) => {
+  // The context-aware routes resolve the session's membership (the test's "m1" does not exist, so they cannot open it);
+  // every other route is personal-only and says so.
+  const CONTEXT_AWARE = ["/api/actions", "/api/action-definitions"];
+
+  it.each(PERSONAL_GETS)("GET %s gets 403 for a tenant session", async (path) => {
     const { app, container } = build(true);
     try {
       const res = await request(app).get(path);
       expect(res.status).toBe(403);
-      expect(res.body).toEqual({ error: "context_unavailable" });
+      expect(res.body).toEqual({ error: CONTEXT_AWARE.includes(path) ? "context_unavailable" : "personal_context_required" });
     } finally {
       container.shutdown();
     }
@@ -443,6 +447,27 @@ describe("personal routes refuse a tenant session", () => {
         const res = await request(app).get(path);
         expect(res.status, path).not.toBe(403);
       }
+    } finally {
+      container.shutdown();
+    }
+  });
+
+  it("the identity link routes are not personal-only (a hand-off session starts a link), and the link itself takes the service token", async () => {
+    const { app, container } = build(true);
+    try {
+      container.identityRepo.createWithLogin({ kind: "impressorx", subject: "reg:user", id: "an-identity" });
+
+      const intent = await request(app).post("/api/identity/link-intent").send({});
+      expect(intent.status).toBe(200);
+      expect(intent.body).toMatchObject({ next: "google" });
+
+      const login = { kind: "google", subject: "s", email: "a@b.com" };
+      const noToken = await request(app).post("/api/identity/link").send({ linkIntentId: "x", secret: "y", login });
+      expect(noToken.status).toBe(401);
+      // A session alone is not enough for the link call, and the token alone is not a session for the others.
+      const withToken = await request(app).post("/api/identity/link").set("Authorization", "Bearer test-api-token").send({ linkIntentId: "x", secret: "y", login });
+      expect(withToken.status).toBe(409);
+      expect(withToken.body).toEqual({ error: "link_expired" });
     } finally {
       container.shutdown();
     }

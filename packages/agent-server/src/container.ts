@@ -37,7 +37,9 @@ import {
   rawDb,
   backfillIdentities,
   ensureIdentityForUser,
+  ensureIdentityAnchor,
   SqliteIdentityRepository,
+  LinkIntentRepository,
   type IdentityRepository,
   SqliteInboundItemRepository,
   SqliteClassificationRepository,
@@ -102,6 +104,8 @@ export interface AppContainer {
   bankStatementParserRegistry: BankStatementParserRegistry;
   userRepo: UserRepository | null;
   identityRepo: IdentityRepository;
+  /** Link intents (spec §4.5), bound to a secret the browser keeps. */
+  linkIntents: LinkIntentRepository;
   platformOperators: PlatformOperatorRepository;
   tenantRegistrations: TenantRegistrationRepository;
   enrolment: EnrolmentService;
@@ -116,6 +120,8 @@ export interface AppContainer {
   /** Creates a new tenant's database file (enrolment only). */
   createTenantFile: (registrationId: string, tenantId: string) => void;
   ensureIdentity: (user: { id: string; email: string }) => void;
+  /** Makes sure an identity has its row in the personal database (linking a Google login to an existing identity needs it). */
+  ensurePersonalUser: (user: { id: string; email: string }) => void;
   userProfileRepo: UserProfileRepository;
   oauthTokenRepo: OAuthTokenRepository | null;
   personalMemoryNoteRepo: PersonalMemoryNoteRepository;
@@ -182,7 +188,9 @@ export function createContainer(env: Env): AppContainer {
   const db = rawDb(personal);
   const backfilled = backfillIdentities(personal, control);
   if (backfilled > 0) logger.info("Identities backfilled", { count: backfilled });
-  const identityRepo = new SqliteIdentityRepository(control);
+  // A merge re-owns rows in the pharmacy files, so the repository opens them through the gate.
+  const identityRepo = new SqliteIdentityRepository(control, (registrationId) => gate.openTenant(registrationId));
+  const linkIntents = new LinkIntentRepository(control);
   const platformOperators = new PlatformOperatorRepository(control);
   const tenantRegistrations = new TenantRegistrationRepository(control);
   const enrolment = new EnrolmentService({
@@ -491,6 +499,7 @@ export function createContainer(env: Env): AppContainer {
     bankStatementParserRegistry,
     userRepo,
     identityRepo,
+    linkIntents,
     platformOperators,
     tenantRegistrations,
     enrolment,
@@ -501,6 +510,11 @@ export function createContainer(env: Env): AppContainer {
     openTenant: (registrationId) => gate.openTenant(registrationId),
     createTenantFile: (registrationId, tenantId) => void gate.createTenantFile(registrationId, tenantId),
     ensureIdentity: (user) => void ensureIdentityForUser(control, user),
+    ensurePersonalUser: (user) => {
+      // Without the OAuth key there is no user repository: the anchor row (the same one tenant files use) is what the foreign keys need.
+      if (userRepo) userRepo.upsert(user);
+      else ensureIdentityAnchor(personal, user.id);
+    },
     userProfileRepo,
     oauthTokenRepo,
     personalMemoryNoteRepo,

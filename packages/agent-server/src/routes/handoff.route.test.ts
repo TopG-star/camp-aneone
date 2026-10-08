@@ -42,7 +42,7 @@ describe("hand-off redemption", () => {
     let now = Date.now();
     const clock = () => new Date(now);
 
-    const identities = new SqliteIdentityRepository(control);
+    const identities = new SqliteIdentityRepository(control, (id) => gate.openTenant(id));
     const operatorId = identities.createWithLogin({ kind: "google", subject: "op" }).id;
     const registrations = new TenantRegistrationRepository(control);
     const memberships = new MembershipRepository(control);
@@ -90,7 +90,7 @@ describe("hand-off redemption", () => {
         .send({ handoff, sessionId, ...(origin === null ? {} : { origin }) });
       return { res, sessionId };
     };
-    return { app, control, gate, client, fake, registration, registrations, redeem, logger, advance: (ms: number) => (now += ms) };
+    return { app, control, gate, client, fake, registration, registrations, identities, redeem, logger, advance: (ms: number) => (now += ms) };
   }
 
   it("first hand-off creates an identity and membership, and an anchor row in the tenant file", async () => {
@@ -127,6 +127,26 @@ describe("hand-off redemption", () => {
     expect(second.body).toEqual(first.body);
     expect(control.prepare("SELECT COUNT(*) AS n FROM memberships").get()).toEqual({ n: 1 });
     expect(control.prepare("SELECT COUNT(*) AS n FROM login_identities WHERE kind = 'impressorx'").get()).toEqual({ n: 1 });
+  });
+
+  it("after a merge, the next hand-off finds the membership under the merged identity and opens its session there", async () => {
+    const { control, gate, registration, identities, fake, redeem } = await setup();
+    const first = (await redeem(await fake.mintHandoff("staff-1"))).res;
+    const google = identities.createWithLogin({ kind: "google", subject: "g-sub", email: "g@x.com" });
+    identities.mergeInto(first.body.identityId, google.id, google.id);
+    // The merge revoked the old identity's attended grant: its session is over.
+    expect(control.prepare("SELECT identity_id, status FROM delegation_grants").all()).toEqual([{ identity_id: first.body.identityId, status: "revoked" }]);
+
+    const second = (await redeem(await fake.mintHandoff("staff-1"))).res;
+
+    expect(second.status).toBe(200);
+    expect(second.body).toEqual({ identityId: google.id, membershipId: first.body.membershipId });
+    expect(control.prepare("SELECT COUNT(*) AS n FROM memberships").get()).toEqual({ n: 1 });
+    expect(control.prepare("SELECT identity_id FROM memberships WHERE id = ?").get(first.body.membershipId)).toEqual({ identity_id: google.id });
+    expect(control.prepare("SELECT identity_id, membership_id, status FROM delegation_grants WHERE status = 'active'").all()).toEqual([
+      { identity_id: google.id, membership_id: first.body.membershipId, status: "active" },
+    ]);
+    expect(rawDb(gate.openTenant(registration.id)).prepare("SELECT id FROM users WHERE id = ?").get(google.id)).toEqual({ id: google.id });
   });
 
   it("after an email change in ImpressoRx, the same identity is used (email is never a key)", async () => {

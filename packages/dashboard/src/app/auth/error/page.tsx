@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { AlertTriangle } from "lucide-react";
 import { HANDOFF_MESSAGES, isHandoffReason } from "@/lib/handoff";
+import { LINK_MESSAGES, isLinkReason } from "@/lib/link-intent";
 
 function ErrorContent() {
   const params = useSearchParams();
@@ -18,7 +19,12 @@ function ErrorContent() {
     Default: "An authentication error occurred.",
   };
 
-  const message = isHandoffReason(reason) ? HANDOFF_MESSAGES[reason] : (messages[error ?? ""] ?? messages.Default);
+  // Set by /auth/link/complete when linking two accounts did not go through (spec §4.5).
+  const message = isHandoffReason(reason)
+    ? HANDOFF_MESSAGES[reason]
+    : isLinkReason(reason)
+      ? LINK_MESSAGES[reason]
+      : (messages[error ?? ""] ?? messages.Default);
 
   return (
     <div className="auth-shell motion-page-enter">
@@ -27,7 +33,7 @@ function ErrorContent() {
         <div className="state-content state-content-center gap-1">
           <p className="page-eyebrow">Authentication</p>
           <h1 className="page-title">
-            {isHandoffReason(reason) ? "Can't open Oneon" : "Access Denied"}
+            {isHandoffReason(reason) ? "Can't open Oneon" : isLinkReason(reason) ? "Can't link accounts" : "Access Denied"}
           </h1>
           <p className="state-subtext">
             {message}

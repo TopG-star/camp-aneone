@@ -197,10 +197,12 @@ export function resolveActiveContext(deps: ActiveContextDeps): RequestHandler {
  * personal repositories, so a hand-off session is refused here. This is the default chain for browser routes
  * (userAuth); only a route that resolves its own context may use another chain, so a route added later is
  * personal-only until it opts in. Requests without a session pass, for the route's own auth to answer.
+ * The answer is 403 personal_context_required: the session works in a pharmacy (a hand-off, or a Google session that chose
+ * one), and the person can switch to Personal, so the dashboard shows that instead of sending them to sign in.
  */
 export const requirePersonalContext: RequestHandler = (req, res, next) => {
   if (req.sessionContext || req.sessionId) {
-    res.status(403).json(UNAVAILABLE);
+    res.status(403).json({ error: "personal_context_required" });
     return;
   }
   next();

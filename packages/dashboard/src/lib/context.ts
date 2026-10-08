@@ -21,6 +21,13 @@ export function isContextRefusal(code: unknown): boolean {
   return typeof code === "string" && CONTEXT_REFUSALS.has(code);
 }
 
+/**
+ * The 403 of a personal-only route when the session works in a pharmacy. The person only has to switch context, so it
+ * carries no message of its own and does not mean "sign in again" either.
+ */
+export const PERSONAL_CONTEXT_REQUIRED = "personal_context_required";
+export const PERSONAL_CONTEXT_MESSAGE = "Switch to Personal to use this.";
+
 export function contextLabel(option: ContextOption): string {
   return option.kind === "personal" ? "Personal" : `${option.tenantName} · ${option.role}`;
 }

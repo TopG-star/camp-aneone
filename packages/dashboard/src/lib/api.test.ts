@@ -77,3 +77,11 @@ describe("apiFetch context refusals", () => {
     expect(assign).toHaveBeenCalledOnce();
   });
 });
+
+describe("apiFetch personal-only routes", () => {
+  it("tells the person to switch to Personal and does not send them to sign-in", async () => {
+    const assign = stubBrowser(403, { error: "personal_context_required" });
+    await expect(apiFetch("/x")).rejects.toMatchObject({ status: 403, message: "Switch to Personal to use this." });
+    expect(assign).not.toHaveBeenCalled();
+  });
+});

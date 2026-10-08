@@ -26,6 +26,7 @@ import { createMemoryRouter } from "./memory.route.js";
 import { createPlatformRouter } from "./platform.route.js";
 import { createHandoffRouter } from "./handoff.route.js";
 import { createContextsRouter } from "./contexts.route.js";
+import { createIdentityLinkRouter, createIdentitySessionRouter } from "./identity-link.route.js";
 import { createTokenAuthMiddleware } from "../middleware/auth.js";
 import { createSessionAuthMiddleware } from "../middleware/session-auth.js";
 import { requireUser } from "../middleware/require-user.js";
@@ -99,7 +100,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
   const tokenAuth = createTokenAuthMiddleware(env.API_TOKEN);
 
   // Browser routes: session cookie + require userId. The default chain is personal-only: a hand-off (tenant) session
-  // gets 403 context_unavailable, so a route added later cannot reach personal data by accident.
+  // gets 403 personal_context_required, so a route added later cannot reach personal data by accident.
   const userAuth: RequestHandler[] = [sessionAuth, requireUser, requirePersonalContext];
 
   // One refresher for the middleware and the picker's validate call, so a membership's refresh is single-flight across both.
@@ -497,6 +498,18 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       logger: new StructuredLogger("handoff", env.LOG_LEVEL),
     }),
   );
+
+  // ── Identity linking (spec §4.5) ──────────────────────────
+  // The link call is the dashboard's server side (service token). Opening an intent and unlinking are the person's own
+  // session, in whichever context it holds, so they are not personal-only (a hand-off session starts a link).
+  const identityLink = {
+    identities: container.identityRepo,
+    intents: container.linkIntents,
+    ensurePersonalUser: container.ensurePersonalUser,
+    logger: new StructuredLogger("identity-link", env.LOG_LEVEL),
+  };
+  app.use("/api/identity/link", ...systemAuth, createIdentityLinkRouter(identityLink));
+  app.use("/api/identity", sessionAuth, requireUser, createIdentitySessionRouter(identityLink));
 
   // ── Platform console (operators only) ─────────────────────
   const platformLogger = new StructuredLogger("platform", env.LOG_LEVEL);

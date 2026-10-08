@@ -22,7 +22,7 @@ import {
   runMigrations,
   type MembershipSnapshot,
 } from "@oneon/infrastructure";
-import { createSnapshotRefresher, resolveActiveContext } from "../active-context.js";
+import { createSnapshotRefresher, requirePersonalContext, resolveActiveContext } from "../active-context.js";
 
 const SUSPENDED_MESSAGE = "This pharmacy has switched Oneon off, or your account is inactive.";
 
@@ -541,5 +541,33 @@ describe("snapshot refresh against the fake deployment (what ImpressoRx really s
 
     expect(s.memberships.findById(s.membership.id)!.snapshotAt).not.toBe(before);
     expect(s.sent).toContain("/api/oneon/me");
+  });
+});
+
+describe("requirePersonalContext", () => {
+  function guarded(session: { sessionContext?: { kind: "tenant"; membershipId: string }; sessionId?: string }) {
+    const a = express();
+    a.use((req, _res, next) => {
+      Object.assign(req, session);
+      next();
+    });
+    a.get("/", requirePersonalContext, (_req, res) => res.json({ ok: true }));
+    return a;
+  }
+
+  it("answers a tenant context with 403 personal_context_required, for a hand-off session and for a Google session that chose a pharmacy", async () => {
+    for (const session of [
+      { sessionId: "s1", sessionContext: { kind: "tenant" as const, membershipId: "m1" } },
+      { sessionContext: { kind: "tenant" as const, membershipId: "m1" } },
+      { sessionId: "s1" },
+    ]) {
+      const res = await request(guarded(session)).get("/");
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ error: "personal_context_required" });
+    }
+  });
+
+  it("lets a personal context, or a request without a session, through", async () => {
+    expect((await request(guarded({})).get("/")).body).toEqual({ ok: true });
   });
 });

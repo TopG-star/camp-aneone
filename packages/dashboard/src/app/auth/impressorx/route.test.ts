@@ -38,14 +38,14 @@ describe("/auth/impressorx", () => {
     expect(signIn).not.toHaveBeenCalled();
   });
 
-  it("signs in with the hand-off and the request Origin (no caller-chosen session id), then goes to the dashboard", async () => {
+  it("signs in with the hand-off and the request Origin (no caller-chosen session id), then to the link step, which carries on to the dashboard", async () => {
     signIn.mockResolvedValue("https://oneon.example/");
 
     const res = await POST(form({ handoff: "the-jws", sessionId: "chosen-by-caller" }));
 
     expect(signIn).toHaveBeenCalledWith("impressorx", { handoff: "the-jws", origin: "https://acme.example", redirect: false, redirectTo: "/" });
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe("/");
+    expect(res.headers.get("location")).toBe("/auth/link/complete");
   });
 
   it.each(["expired", "generic", "membership_suspended"])("sends a %s rejection to the error page with its reason", async (code) => {
