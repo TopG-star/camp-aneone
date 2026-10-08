@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ContextDbGate,
   ensureIdentityAnchor,
+  SqliteActionConfigRepository,
+  SqliteLegacyActionRepository,
   MembershipRepository,
   SqliteIdentityRepository,
   openControlDb,
@@ -65,7 +67,7 @@ function fixture() {
   });
   app.use(
     "/api/chat",
-    resolveActiveContext({ gate, memberships, identities }),
+    resolveActiveContext({ gate, memberships, identities, logger }),
     createChatRouter({ conversationsFor: (req) => contextRepos(req.contextDb!).conversations, logger }),
   );
 
@@ -161,11 +163,73 @@ describe("tenant isolation through the active context", () => {
     expect(() => repo.findById(f.a.tenantId, "act-1")).toThrow("tenant_mismatch");
   });
 
+  it("a tenant_mismatch inside a request is logged at error level with the code, tenant and source, then answers 500", async () => {
+    const f = setup();
+    const dbA = f.gate.openTenant(f.a.registrationId);
+    ensureIdentityAnchor(dbA, f.gerry);
+    rawDb(dbA)
+      .prepare("INSERT INTO conversations (id, conversation_id, role, content, user_id, tenant_id) VALUES ('x', 'shared-id', 'user', 'SECRET-CONTENT', ?, ?)")
+      .run(f.gerry, f.b.tenantId);
+    f.actAs({ identityId: f.gerry, membershipId: f.a.membershipId });
+    vi.mocked(logger.error).mockClear();
+
+    const res = await say(f, "hello");
+
+    expect(res.status).toBe(500);
+    const call = vi.mocked(logger.error).mock.calls.find(([, meta]) => (meta as { code?: string } | undefined)?.code === "tenant_mismatch");
+    expect(call?.[1]).toMatchObject({ code: "tenant_mismatch", tenantId: f.a.tenantId, source: "conversations" });
+    expect(JSON.stringify(call)).not.toContain("SECRET-CONTENT");
+  });
+
+  it("action configs: a tenant file holds only its own tenant scope, the personal file only personal", () => {
+    const f = setup();
+    const dbA = f.gate.openTenant(f.a.registrationId);
+    const inA = new SqliteActionConfigRepository(dbA);
+    const inPersonal = new SqliteActionConfigRepository(f.personal);
+    const save = (scope: "personal" | "tenant", ownerId: string) => ({ scope, ownerId, actionType: "notify", configJson: "{}", changedBy: f.gerry });
+
+    expect(inA.save(save("tenant", f.a.tenantId)).ownerId).toBe(f.a.tenantId);
+    expect(() => inA.save(save("personal", f.gerry))).toThrow("tenant_mismatch");
+    expect(() => inA.save(save("tenant", f.b.tenantId))).toThrow("tenant_mismatch");
+    expect(() => inA.get("tenant", f.b.tenantId, "notify")).toThrow("tenant_mismatch");
+    expect(() => inA.list("personal", f.gerry)).toThrow("tenant_mismatch");
+    expect(() => inA.history("tenant", f.b.tenantId, "notify", 5)).toThrow("tenant_mismatch");
+
+    expect(inPersonal.save(save("personal", f.gerry)).scope).toBe("personal");
+    expect(() => inPersonal.save(save("tenant", f.a.tenantId))).toThrow("tenant_mismatch");
+    expect(() => inPersonal.get("tenant", f.a.tenantId, "notify")).toThrow("tenant_mismatch");
+    expect(() => inPersonal.list("tenant", f.a.tenantId)).toThrow("tenant_mismatch");
+  });
+
+  it("legacy actions are personal-only", () => {
+    const f = setup();
+    expect(() => new SqliteLegacyActionRepository(f.gate.openTenant(f.a.registrationId))).toThrow();
+    expect(() => new SqliteLegacyActionRepository(f.personal)).not.toThrow();
+  });
+
+  it("model audit refuses a decision whose tenant differs from the handle", () => {
+    const f = setup();
+    const decision = (tenantId: string | null) =>
+      ({
+        id: randomUUID(), callId: randomUUID(), createdAt: "2026-10-08T10:00:00Z", contextKind: tenantId ? "tenant" : "personal",
+        identityId: f.gerry, tenantId, membershipId: null, purpose: "chat", channel: null, provider: "anthropic", model: null,
+        effectiveLimit: null, layers: [], decision: "deny", denyReason: null, released: [], withheld: [], placeholderCount: 0,
+        scannerHits: { D3: 0, D4: 0 }, alert: false, policyFingerprint: "p", inputFingerprint: null, keyVersion: 1,
+      }) as never;
+    const inA = contextRepos(f.gate.openTenant(f.a.registrationId)).modelAudit;
+    const inPersonal = contextRepos(f.personal).modelAudit;
+
+    expect(() => inA.recordDecision(decision(f.b.tenantId))).toThrow("tenant_mismatch");
+    expect(() => inA.recordDecision(decision(null))).toThrow("tenant_mismatch");
+    expect(() => inPersonal.recordDecision(decision(f.a.tenantId))).toThrow("tenant_mismatch");
+    expect(() => inPersonal.recordDecision(decision(null))).not.toThrow();
+  });
+
   it("memoizes the repositories per handle", () => {
     const f = setup();
     const dbA = f.gate.openTenant(f.a.registrationId);
-    expect(contextRepos(dbA)).toBe(contextRepos(dbA));
-    expect(contextRepos(dbA)).not.toBe(contextRepos(f.personal));
+    expect(contextRepos(dbA) === contextRepos(dbA)).toBe(true);
+    expect(contextRepos(dbA) === contextRepos(f.personal)).toBe(false);
   });
 
   it("a request naming a suspended membership gets 403 context_unavailable", async () => {

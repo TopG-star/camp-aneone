@@ -109,6 +109,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       gate: { openPersonal: container.openPersonal, openTenant: container.openTenant },
       memberships: container.memberships,
       identities: container.identityRepo,
+      logger: new StructuredLogger("active-context", env.LOG_LEVEL),
     }),
   ];
 

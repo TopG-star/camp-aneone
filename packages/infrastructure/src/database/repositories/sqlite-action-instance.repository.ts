@@ -139,12 +139,12 @@ export class SqliteActionInstanceRepository implements ActionInstanceRepository 
   }
 
   private instance(row: InstanceRow): ActionInstance {
-    assertRowTenant(this.context, row.tenant_id);
+    assertRowTenant(this.context, row.tenant_id, "action_instances");
     return mapInstance(row);
   }
 
   private event(row: EventRow): ActionEvent {
-    assertRowTenant(this.context, row.tenant_id);
+    assertRowTenant(this.context, row.tenant_id, "action_events");
     return mapEvent(row);
   }
 
@@ -232,7 +232,7 @@ export class SqliteActionInstanceRepository implements ActionInstanceRepository 
         | InstanceRow
         | undefined;
       if (!row) throw new ActionNotFoundError(request.actionId);
-      assertRowTenant(this.context, row.tenant_id);
+      assertRowTenant(this.context, row.tenant_id, "action_instances");
       if (row.status !== request.expectedStatus) {
         throw new TransitionConflictError(request.actionId, request.expectedStatus, row.status);
       }

@@ -29,11 +29,15 @@ const memo = new WeakMap<ContextDb, ContextRepositories>();
 export function contextRepos(db: ContextDb): ContextRepositories {
   let repos = memo.get(db);
   if (!repos) {
+    let legacy: LegacyActionRepository | undefined;
     repos = {
       conversations: new SqliteConversationRepository(db),
       actionInstances: new SqliteActionInstanceRepository(db),
       actionConfigs: new SqliteActionConfigRepository(db),
-      legacyActions: new SqliteLegacyActionRepository(db),
+      // Personal-only: built on first use, and constructing it for a tenant handle throws.
+      get legacyActions() {
+        return (legacy ??= new SqliteLegacyActionRepository(db));
+      },
       modelAudit: new SqliteModelAuditRepository(db),
     };
     memo.set(db, repos);

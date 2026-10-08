@@ -5,7 +5,6 @@ import type {
   ClassificationFeedbackRepository,
   DeadlineRepository,
   NotificationRepository,
-  ConversationRepository,
   PreferenceRepository,
   PushSubscriptionRepository,
   BankStatementRepository,
@@ -80,7 +79,6 @@ import { dirname } from "node:path";
 import type { BackgroundLoop } from "./background-loop.js";
 import { createActionsModule, type ActionsModule } from "./actions-wiring.js";
 import { createModelWiring } from "./model-wiring.js";
-import { contextRepos } from "./context-wiring.js";
 import type { AiDataChoiceRepository, ModelAuditRepository, ModelGateway, ModelRouting, ProviderId, ProviderOverride } from "@oneon/application";
 
 export interface AppContainer {
@@ -96,7 +94,6 @@ export interface AppContainer {
   classificationFeedbackRepo: ClassificationFeedbackRepository;
   deadlineRepo: DeadlineRepository;
   notificationRepo: NotificationRepository;
-  conversationRepo: ConversationRepository;
   preferenceRepo: PreferenceRepository;
   pushSubscriptionRepo: PushSubscriptionRepository;
   bankStatementRepo: BankStatementRepository;
@@ -211,7 +208,6 @@ export function createContainer(env: Env): AppContainer {
     new SqliteClassificationFeedbackRepository(db);
   const deadlineRepo = new SqliteDeadlineRepository(db);
   const notificationRepo = new SqliteNotificationRepository(db);
-  const conversationRepo = contextRepos(personal).conversations;
   const preferenceRepo = new SqlitePreferenceRepository(db);
   const pushSubscriptionRepo = new SqlitePushSubscriptionRepository(db);
   const bankStatementRepo = new SqliteBankStatementRepository(db);
@@ -482,7 +478,6 @@ export function createContainer(env: Env): AppContainer {
     classificationFeedbackRepo,
     deadlineRepo,
     notificationRepo,
-    conversationRepo,
     preferenceRepo,
     pushSubscriptionRepo,
     bankStatementRepo,

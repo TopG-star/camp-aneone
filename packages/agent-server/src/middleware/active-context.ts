@@ -1,5 +1,5 @@
 import type { RequestHandler } from "express";
-import type { PersonalDb, TenantDb } from "@oneon/domain";
+import type { Logger, PersonalDb, TenantDb } from "@oneon/domain";
 import { ensureIdentityAnchor, type IdentityRepository, type MembershipRepository } from "@oneon/infrastructure";
 
 const UNAVAILABLE = { error: "context_unavailable" } as const;
@@ -8,6 +8,7 @@ export interface ActiveContextDeps {
   gate: { openPersonal(): PersonalDb; openTenant(registrationId: string): TenantDb };
   memberships: Pick<MembershipRepository, "findById">;
   identities: Pick<IdentityRepository, "hasLogin">;
+  logger: Logger;
 }
 
 /**
@@ -35,7 +36,7 @@ export function resolveActiveContext(deps: ActiveContextDeps): RequestHandler {
         const db = deps.gate.openTenant(membership.tenantRegistrationId);
         // The file's foreign keys reference users(id), so the identity needs its anchor row before it writes here.
         ensureIdentityAnchor(db, identityId);
-        req.activeContext = { kind: "tenant", identityId, membershipId: membership.id, tenantId: db.tenantId };
+        req.activeContext = { kind: "tenant", identityId, membershipId: membership.id, registrationId: membership.tenantRegistrationId, tenantId: db.tenantId };
         req.contextDb = db;
         next();
         return;
@@ -47,7 +48,12 @@ export function resolveActiveContext(deps: ActiveContextDeps): RequestHandler {
       req.activeContext = { kind: "personal", identityId };
       req.contextDb = deps.gate.openPersonal();
       next();
-    } catch {
+    } catch (error) {
+      // Operators need the cause (gate refusal, locked file, a bug); the client only ever sees context_unavailable.
+      deps.logger.warn("Active context unavailable", {
+        error: error instanceof Error ? (error as { code?: string }).code ?? error.message : String(error),
+        membershipId: req.sessionContext?.membershipId,
+      });
       res.status(403).json(UNAVAILABLE);
     }
   };

@@ -97,6 +97,8 @@ export class SqliteModelAuditRepository implements ModelAuditRepository {
   }
 
   recordDecision(r: ModelDecisionRecord): void {
+    // A record naming another context is refused, never re-stamped.
+    assertRowTenant(this.context, r.tenantId, "model_call_decisions");
     this.db
       .prepare(
         `INSERT INTO model_call_decisions (id, call_id, created_at, context_kind, identity_id, tenant_id, membership_id, purpose, channel, provider, model,
@@ -131,7 +133,7 @@ export class SqliteModelAuditRepository implements ModelAuditRepository {
       )
       .all(identityId, limit) as Row[];
     return rows.map((r) => {
-      assertRowTenant(this.context, r.tenant_id);
+      assertRowTenant(this.context, r.tenant_id, "model_call_decisions");
       return { decision: mapDecision(r), outcome: mapOutcome(r) };
     });
   }

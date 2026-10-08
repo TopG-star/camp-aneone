@@ -41,6 +41,8 @@ export class SqliteLegacyActionRepository implements LegacyActionRepository {
     context: ContextDb,
     private readonly clock: () => Date = () => new Date(),
   ) {
+    // The pre-framework action log exists only in the personal file; a tenant has nothing to read or import.
+    if (context.kind !== "personal") throw new Error("legacy actions are personal-only");
     this.db = rawDb(context);
   }
 

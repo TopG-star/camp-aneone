@@ -60,7 +60,7 @@ export class SqliteConversationRepository implements ConversationRepository {
   }
 
   private mapRow(row: RawConversation): ConversationMessage {
-    assertRowTenant(this.context, row.tenant_id);
+    assertRowTenant(this.context, row.tenant_id, "conversations");
     return mapRowUnchecked(row);
   }
 

@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from "express";
+import { TenantMismatchError } from "@oneon/domain";
 import type {
   ConversationRepository,
   UserProfileRepository,
@@ -118,9 +119,14 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
         });
       })
       .catch((error) => {
-        logger.error("Chat route: failed to process message", {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        if (error instanceof TenantMismatchError) {
+          // Spec 8.4 operator alert: a row of another context was found. No row content is logged.
+          logger.error("Tenant mismatch", { code: error.code, tenantId: error.expectedTenantId, source: error.source });
+        } else {
+          logger.error("Chat route: failed to process message", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
         res.status(500).json({ error: "Internal server error" });
       });
   });
