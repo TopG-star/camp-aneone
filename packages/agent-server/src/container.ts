@@ -27,6 +27,9 @@ import type {
 
 import {
   openControlDb,
+  PlatformOperatorRepository,
+  TenantRegistrationRepository,
+  EnrolmentService,
   ContextDbGate,
   rawDb,
   backfillIdentities,
@@ -97,6 +100,11 @@ export interface AppContainer {
   bankStatementParserRegistry: BankStatementParserRegistry;
   userRepo: UserRepository | null;
   identityRepo: IdentityRepository;
+  platformOperators: PlatformOperatorRepository;
+  tenantRegistrations: TenantRegistrationRepository;
+  enrolment: EnrolmentService;
+  /** Creates a new tenant's database file (enrolment only). */
+  createTenantFile: (registrationId: string, tenantId: string) => void;
   ensureIdentity: (user: { id: string; email: string }) => void;
   userProfileRepo: UserProfileRepository;
   oauthTokenRepo: OAuthTokenRepository | null;
@@ -161,6 +169,13 @@ export function createContainer(env: Env): AppContainer {
   const backfilled = backfillIdentities(personal, control);
   if (backfilled > 0) logger.info("Identities backfilled", { count: backfilled });
   const identityRepo = new SqliteIdentityRepository(control);
+  const platformOperators = new PlatformOperatorRepository(control);
+  const tenantRegistrations = new TenantRegistrationRepository(control);
+  const enrolment = new EnrolmentService({
+    repo: tenantRegistrations,
+    oneonOrigin: env.PUBLIC_URL,
+    masterKeyB64: env.ONEON_SIGNING_KEY_MASTER_KEY,
+  });
   logger.info("Database ready", { path: env.DATABASE_PATH });
 
   const modelWiring = createModelWiring(env, { db, logger });
@@ -451,6 +466,10 @@ export function createContainer(env: Env): AppContainer {
     bankStatementParserRegistry,
     userRepo,
     identityRepo,
+    platformOperators,
+    tenantRegistrations,
+    enrolment,
+    createTenantFile: (registrationId, tenantId) => void gate.createTenantFile(registrationId, tenantId),
     ensureIdentity: (user) => void ensureIdentityForUser(control, user),
     userProfileRepo,
     oauthTokenRepo,

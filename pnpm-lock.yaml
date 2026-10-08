@@ -234,6 +234,9 @@ importers:
       google-auth-library:
         specifier: ^10.6.2
         version: 10.6.2
+      jose:
+        specifier: ^6.2.2
+        version: 6.2.2
       web-push:
         specifier: ^3.6.7
         version: 3.6.7

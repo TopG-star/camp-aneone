@@ -23,6 +23,7 @@ import { createIntegrationsRouter } from "./integrations.route.js";
 import { createPushSubscriptionsRouter } from "./push-subscriptions.route.js";
 import { createUsersRouter } from "./users.route.js";
 import { createMemoryRouter } from "./memory.route.js";
+import { createPlatformRouter } from "./platform.route.js";
 import { createTokenAuthMiddleware } from "../middleware/auth.js";
 import { createSessionAuthMiddleware } from "../middleware/session-auth.js";
 import { requireUser } from "../middleware/require-user.js";
@@ -423,6 +424,20 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     );
     memoryLogger.info("Memory routes registered at /api/memory");
   }
+
+  // ── Platform console (operators only) ─────────────────────
+  const platformLogger = new StructuredLogger("platform", env.LOG_LEVEL);
+  app.use(
+    "/api/platform",
+    ...userAuth,
+    createPlatformRouter({
+      operators: container.platformOperators,
+      registrations: container.tenantRegistrations,
+      enrolment: container.enrolment,
+      createTenantFile: container.createTenantFile,
+      logger: platformLogger,
+    }),
+  );
 
   // ── Finance Statement Intake (read-only) ────────────────
   if (env.FEATURE_FINANCE_STATEMENT_INTAKE) {

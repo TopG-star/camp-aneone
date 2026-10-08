@@ -1,0 +1,245 @@
+import { randomUUID } from "node:crypto";
+import type { ControlDb } from "./open-control-db.js";
+import type { JWK } from "../../crypto/jws.js";
+import type { SealedSecret } from "../../crypto/envelope.js";
+
+export type TenantRegistrationStatus = "active" | "suspended_by_operator" | "disabled_by_tenant" | "removed";
+
+export interface TenantRegistration {
+  id: string;
+  tenantId: string;
+  tenantSlug: string;
+  displayName: string;
+  origin: string;
+  fileName: string;
+  status: TenantRegistrationStatus;
+  enrolledBy: string;
+  enrolledAt: string;
+}
+
+export interface OneonKey {
+  keyId: string;
+  publicKeyJwk: JWK;
+  sealedPrivateKey: SealedSecret;
+}
+
+export interface DeploymentKey {
+  keyId: string;
+  publicKeyJwk: JWK;
+  retiredAt: string | null;
+}
+
+export interface CreateTenantRegistrationInput {
+  tenantSlug: string;
+  displayName: string;
+  origin: string;
+  deploymentKeyId: string;
+  deploymentPublicKeyJwk: JWK;
+  oneonKeyId: string;
+  oneonPublicKeyJwk: JWK;
+  oneonPrivateKeySealed: SealedSecret;
+  enrolledBy: string;
+}
+
+/** A retiring key stays valid for this long (spec §5.4). */
+export const KEY_OVERLAP_MS = 7 * 24 * 60 * 60 * 1000;
+
+type RegistrationRow = {
+  id: string;
+  tenant_id: string;
+  tenant_slug: string;
+  display_name: string;
+  origin: string;
+  file_name: string;
+  status: TenantRegistrationStatus;
+  enrolled_by: string;
+  enrolled_at: string;
+};
+
+type KeyRow = {
+  key_id: string;
+  public_key_jwk: string;
+  private_key_wrapped: string | null;
+  private_key_ciphertext: string | null;
+  retired_at: string | null;
+};
+
+function toRegistration(row: RegistrationRow): TenantRegistration {
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    tenantSlug: row.tenant_slug,
+    displayName: row.display_name,
+    origin: row.origin,
+    fileName: row.file_name,
+    status: row.status,
+    enrolledBy: row.enrolled_by,
+    enrolledAt: row.enrolled_at,
+  };
+}
+
+export class TenantRegistrationRepository {
+  constructor(
+    private readonly db: ControlDb,
+    private readonly clock: () => Date = () => new Date(),
+  ) {}
+
+  /** Registration, both first keys and the audit event are written together or not at all. */
+  create(input: CreateTenantRegistrationInput): TenantRegistration {
+    const id = randomUUID();
+    const now = this.clock().toISOString();
+    const run = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+        )
+        .run(id, id, input.tenantSlug, input.displayName, input.origin, `${id}.db`, input.enrolledBy, now);
+      this.insertKey(id, "deployment", input.deploymentKeyId, input.deploymentPublicKeyJwk, null, now);
+      this.insertKey(id, "oneon", input.oneonKeyId, input.oneonPublicKeyJwk, input.oneonPrivateKeySealed, now);
+      this.insertEvent(id, "enrolled", input.enrolledBy, { origin: input.origin, tenantSlug: input.tenantSlug }, now);
+    });
+    run();
+    return this.findById(id)!;
+  }
+
+  findById(id: string): TenantRegistration | null {
+    const row = this.db.prepare("SELECT * FROM tenant_registrations WHERE id = ?").get(id) as RegistrationRow | undefined;
+    return row ? toRegistration(row) : null;
+  }
+
+  findBySlug(slug: string): TenantRegistration | null {
+    const row = this.db.prepare("SELECT * FROM tenant_registrations WHERE tenant_slug = ?").get(slug) as RegistrationRow | undefined;
+    return row ? toRegistration(row) : null;
+  }
+
+  /** `iss` is "impressorx:<slug>". */
+  findByIssuer(iss: string): TenantRegistration | null {
+    const prefix = "impressorx:";
+    return iss.startsWith(prefix) ? this.findBySlug(iss.slice(prefix.length)) : null;
+  }
+
+  listActive(): TenantRegistration[] {
+    const rows = this.db
+      .prepare("SELECT * FROM tenant_registrations WHERE status = 'active' ORDER BY enrolled_at, id")
+      .all() as RegistrationRow[];
+    return rows.map(toRegistration);
+  }
+
+  setStatus(id: string, status: TenantRegistrationStatus, actor: string | null, reason: string): void {
+    const now = this.clock().toISOString();
+    const run = this.db.transaction(() => {
+      const previous = this.db.prepare("SELECT status FROM tenant_registrations WHERE id = ?").get(id) as { status: string } | undefined;
+      if (!previous) throw new Error("Unknown tenant registration");
+      this.db.prepare("UPDATE tenant_registrations SET status = ? WHERE id = ?").run(status, id);
+      this.insertEvent(id, "status_changed", actor, { from: previous.status, to: status, reason }, now);
+    });
+    run();
+  }
+
+  /** Oneon's newest unretired signing key (still sealed). */
+  currentOneonKey(registrationId: string): OneonKey | null {
+    const row = this.db
+      .prepare(
+        `SELECT key_id, public_key_jwk, private_key_wrapped, private_key_ciphertext, retired_at FROM tenant_keys
+         WHERE tenant_registration_id = ? AND owner = 'oneon' AND retired_at IS NULL
+         ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get(registrationId) as KeyRow | undefined;
+    if (!row) return null;
+    return {
+      keyId: row.key_id,
+      publicKeyJwk: JSON.parse(row.public_key_jwk) as JWK,
+      sealedPrivateKey: { wrappedKey: row.private_key_wrapped!, ciphertext: row.private_key_ciphertext! },
+    };
+  }
+
+  /** Stores a new Oneon key; every other unretired Oneon key keeps working for the overlap period. */
+  addOneonKey(registrationId: string, keyId: string, publicKeyJwk: JWK, sealed: SealedSecret, actor: string | null = null): void {
+    const now = this.clock();
+    const nowIso = now.toISOString();
+    const run = this.db.transaction(() => {
+      this.db
+        .prepare("UPDATE tenant_keys SET retired_at = ? WHERE tenant_registration_id = ? AND owner = 'oneon' AND retired_at IS NULL")
+        .run(new Date(now.getTime() + KEY_OVERLAP_MS).toISOString(), registrationId);
+      this.insertKey(registrationId, "oneon", keyId, publicKeyJwk, sealed, nowIso);
+      this.insertEvent(registrationId, "oneon_key_rotated", actor, { keyId }, nowIso);
+    });
+    run();
+  }
+
+  /** Deployment public keys that may verify a message now: unretired, or retiring but not yet expired. */
+  deploymentKeys(registrationId: string): DeploymentKey[] {
+    const rows = this.db
+      .prepare(
+        `SELECT key_id, public_key_jwk, retired_at FROM tenant_keys
+         WHERE tenant_registration_id = ? AND owner = 'deployment' AND (retired_at IS NULL OR retired_at > ?)
+         ORDER BY created_at, rowid`,
+      )
+      .all(registrationId, this.clock().toISOString()) as KeyRow[];
+    return rows.map((row) => ({ keyId: row.key_id, publicKeyJwk: JSON.parse(row.public_key_jwk) as JWK, retiredAt: row.retired_at }));
+  }
+
+  addDeploymentKey(registrationId: string, keyId: string, publicKeyJwk: JWK, retiredAt: string | null = null): void {
+    this.insertKey(registrationId, "deployment", keyId, publicKeyJwk, null, this.clock().toISOString(), retiredAt);
+  }
+
+  /** Makes the stored deployment keys match the deployment's own list; keys it no longer lists are retired now. */
+  replaceDeploymentKeys(registrationId: string, keys: Array<{ keyId: string; publicKeyJwk: JWK; retiresAt: string | null }>): void {
+    const nowIso = this.clock().toISOString();
+    const run = this.db.transaction(() => {
+      const known = new Set(
+        (
+          this.db.prepare("SELECT key_id FROM tenant_keys WHERE tenant_registration_id = ? AND owner = 'deployment'").all(registrationId) as Array<{
+            key_id: string;
+          }>
+        ).map((r) => r.key_id),
+      );
+      for (const key of keys) {
+        if (known.has(key.keyId)) {
+          this.db
+            .prepare("UPDATE tenant_keys SET retired_at = ? WHERE key_id = ? AND tenant_registration_id = ? AND owner = 'deployment'")
+            .run(key.retiresAt, key.keyId, registrationId);
+        } else {
+          this.insertKey(registrationId, "deployment", key.keyId, key.publicKeyJwk, null, nowIso, key.retiresAt);
+        }
+      }
+      const listed = new Set(keys.map((k) => k.keyId));
+      for (const keyId of known) {
+        if (!listed.has(keyId)) {
+          this.db
+            .prepare("UPDATE tenant_keys SET retired_at = ? WHERE key_id = ? AND tenant_registration_id = ? AND retired_at IS NULL")
+            .run(nowIso, keyId, registrationId);
+        }
+      }
+      this.insertEvent(registrationId, "deployment_keys_refreshed", null, { keyIds: keys.map((k) => k.keyId) }, nowIso);
+    });
+    run();
+  }
+
+  private insertKey(
+    registrationId: string,
+    owner: "oneon" | "deployment",
+    keyId: string,
+    publicKeyJwk: JWK,
+    sealed: SealedSecret | null,
+    createdAt: string,
+    retiredAt: string | null = null,
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO tenant_keys (id, tenant_registration_id, owner, key_id, public_key_jwk, private_key_wrapped, private_key_ciphertext, created_at, retired_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(randomUUID(), registrationId, owner, keyId, JSON.stringify(publicKeyJwk), sealed?.wrappedKey ?? null, sealed?.ciphertext ?? null, createdAt, retiredAt);
+  }
+
+  private insertEvent(registrationId: string, event: string, actor: string | null, detail: object, createdAt: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO tenant_registration_events (id, tenant_registration_id, event, actor_identity_id, detail_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(randomUUID(), registrationId, event, actor, JSON.stringify(detail), createdAt);
+  }
+}

@@ -46,4 +46,12 @@ describe("redactSecrets", () => {
   it("handles empty string", () => {
     expect(redactSecrets("")).toBe("");
   });
+
+  it("redacts delegation and enrolment secrets by key", () => {
+    for (const key of ["grant", "grantValue", "accessToken", "code", "privateKey", "handoff"]) {
+      const result = redactSecrets(JSON.stringify({ [key]: "s3cret", other: "keep" }));
+      expect(result).not.toContain("s3cret");
+      expect(result).toContain("keep");
+    }
+  });
 });

@@ -312,6 +312,16 @@ void runActionStartupTasks(container, logger).catch((error: unknown) =>
   logger.error("Action startup tasks failed", { error: error instanceof Error ? error.message : String(error) }),
 );
 
+// Nightly: refresh every enrolled deployment's public keys (spec §5.4). Only when signing keys can be opened at all.
+if (env.ONEON_SIGNING_KEY_MASTER_KEY) {
+  const nightly = setInterval(() => {
+    void container.enrolment
+      .refreshAll((registrationId) => logger.warn("Deployment key refresh failed", { registrationId }))
+      .catch((error: unknown) => logger.error("Deployment key refresh crashed", { error: error instanceof Error ? error.message : String(error) }));
+  }, 24 * 60 * 60 * 1000);
+  nightly.unref();
+}
+
 server = app.listen(env.PORT, () => {
   logger.info(`Server ready on port ${env.PORT}`);
   if (backgroundLoop) {

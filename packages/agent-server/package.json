@@ -8,6 +8,7 @@
     "build": "tsc",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
+    "grant-operator": "tsx scripts/grant-operator.ts",
     "test": "vitest run",
     "test:unit": "vitest run",
     "typecheck": "tsc --noEmit",

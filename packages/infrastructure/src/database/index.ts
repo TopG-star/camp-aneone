@@ -8,3 +8,5 @@ export { runActionDriftCheck } from "./action-drift-check.js";
 export { SqliteIdentityRepository, type IdentityRepository, type Identity, type Membership, type LoginKind } from "./control/identity-repository.js";
 export { backfillIdentities } from "./control/backfill-identities.js";
 export { ensureIdentityForUser } from "./control/ensure-identity.js";
+export { TenantRegistrationRepository, KEY_OVERLAP_MS, type TenantRegistration, type TenantRegistrationStatus, type OneonKey, type DeploymentKey, type CreateTenantRegistrationInput } from "./control/tenant-registration-repository.js";
+export { PlatformOperatorRepository } from "./control/platform-operator-repository.js";
