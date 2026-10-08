@@ -263,6 +263,125 @@ describe("Session Auth Middleware", () => {
       expect(identities.findByLogin).not.toHaveBeenCalled();
     });
 
+    describe("hand-off sessions (provider impressorx)", () => {
+      const base = {
+        provider: "impressorx",
+        identityId: "irx-id",
+        sessionId: "sess-1",
+        activeContext: { kind: "tenant", membershipId: "m1" },
+      };
+      const activeMembership = { id: "m1", identityId: "irx-id", status: "active" as const };
+
+      function handoffApp(
+        identities: ReturnType<typeof fakeIdentities>,
+        checks: ReturnType<typeof deps> | undefined,
+        upsertUser?: (user: { id: string; email: string }) => { id: string },
+      ) {
+        const app = express();
+        app.use(cookieParser());
+        app.use(
+          createSessionAuthMiddleware(
+            TEST_SECRET,
+            identities,
+            upsertUser,
+            undefined,
+            checks && { memberships: checks.memberships, identities: { findById: checks.findIdentity }, hasActiveSession: checks.hasActiveSession },
+          ),
+        );
+        app.get("/test", (req, res) =>
+          res.json({
+            userId: req.userId ?? null,
+            identityId: req.identityId ?? null,
+            sessionId: req.sessionId ?? null,
+            activeContext: req.activeContext ?? null,
+            userEmail: req.userEmail ?? null,
+          }),
+        );
+        return app;
+      }
+      const deps = (over: { membership?: unknown; sessionActive?: boolean; identity?: Identity | null } = {}) => ({
+        memberships: { findById: vi.fn(() => ("membership" in over ? over.membership : activeMembership) as never) },
+        findIdentity: vi.fn(() => ("identity" in over ? over.identity! : { id: "irx-id", status: "active" as const })),
+        hasActiveSession: vi.fn(() => over.sessionActive ?? true),
+      });
+
+      it("resolves by identityId, carries the session and context, and never looks up a Google sub", async () => {
+        const jwe = await createSessionJWE({ ...base, sub: "irx-id" });
+        const identities = fakeIdentities({ findByLogin: () => ({ id: "someone-else", status: "active" }) });
+        const upsertUser = vi.fn();
+
+        const res = await request(handoffApp(identities, deps(), upsertUser)).get("/test").set("Cookie", cookie(jwe));
+
+        expect(res.body).toEqual({
+          userId: "irx-id",
+          identityId: "irx-id",
+          sessionId: "sess-1",
+          activeContext: { kind: "tenant", membershipId: "m1" },
+          userEmail: null,
+        });
+        expect(identities.findByLogin).not.toHaveBeenCalled();
+        expect(identities.attachGoogleSubByEmailOnce).not.toHaveBeenCalled();
+        expect(identities.createWithLogin).not.toHaveBeenCalled();
+        expect(upsertUser).not.toHaveBeenCalled();
+      });
+
+      it("is never resolved as a Google sub even when the token carries an email and a sub", async () => {
+        const jwe = await createSessionJWE({ ...base, email: "x@y.com", sub: "g-1", identityId: undefined });
+        const identities = fakeIdentities({ findByLogin: () => ({ id: "u1", status: "active" }) });
+
+        const res = await request(handoffApp(identities, deps())).get("/test").set("Cookie", cookie(jwe));
+
+        expect(res.body.identityId).toBeNull();
+        expect(identities.findByLogin).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ["the membership is not active", { membership: { ...activeMembership, status: "suspended" } }],
+        ["the membership is unknown", { membership: null }],
+        ["the membership belongs to another identity", { membership: { ...activeMembership, identityId: "other" } }],
+        ["the identity is disabled", { identity: { id: "irx-id", status: "disabled" as const } }],
+        ["the attended grant is gone (signed out, revoked, expired)", { sessionActive: false }],
+      ])("is signed out when %s", async (_name, over) => {
+        const jwe = await createSessionJWE(base);
+        const res = await request(handoffApp(fakeIdentities(), deps(over))).get("/test").set("Cookie", cookie(jwe));
+        expect(res.body.identityId).toBeNull();
+        expect(res.body.sessionId).toBeNull();
+      });
+
+      it.each([
+        ["no sessionId", { sessionId: undefined }],
+        ["no identityId", { identityId: undefined }],
+        ["no active context", { activeContext: undefined }],
+        ["a context of another kind", { activeContext: { kind: "personal" } }],
+      ])("is signed out with %s", async (_name, over) => {
+        const jwe = await createSessionJWE({ ...base, ...over });
+        const res = await request(handoffApp(fakeIdentities(), deps())).get("/test").set("Cookie", cookie(jwe));
+        expect(res.body.identityId).toBeNull();
+      });
+
+      it("is signed out when hand-off support is not configured", async () => {
+        const jwe = await createSessionJWE(base);
+        const res = await request(handoffApp(fakeIdentities(), undefined)).get("/test").set("Cookie", cookie(jwe));
+        expect(res.body.identityId).toBeNull();
+      });
+
+      it("treats an unknown provider as signed out", async () => {
+        const jwe = await createSessionJWE({ ...base, provider: "github", email: "a@b.com", sub: "s" });
+        const identities = fakeIdentities({ findByLogin: () => ({ id: "u1", status: "active" }) });
+        const res = await request(handoffApp(identities, deps())).get("/test").set("Cookie", cookie(jwe));
+        expect(res.body.identityId).toBeNull();
+        expect(identities.findByLogin).not.toHaveBeenCalled();
+      });
+
+      it("a Google session ignores any hand-off fields it carries", async () => {
+        const jwe = await createSessionJWE({ provider: "google", email: "a@b.com", sub: "g-1", identityId: "irx-id", sessionId: "s", activeContext: base.activeContext });
+        const identities = fakeIdentities({ findByLogin: () => ({ id: "u1", status: "active" }) });
+        const res = await request(handoffApp(identities, deps())).get("/test").set("Cookie", cookie(jwe));
+        expect(res.body).toMatchObject({ identityId: "u1", sessionId: null, activeContext: null });
+        expect(identities.findByLogin).toHaveBeenCalledWith("google", "g-1");
+      });
+    });
+
     it("reads the secure session cookie when x-forwarded-proto contains https in a list", async () => {
       const jwe = await createSessionJWE(
         { email: "secure-list@test.com", sub: "g-secure" },

@@ -19,11 +19,14 @@ export interface IdentityRepository {
   /** Looks an identity up by provider subject. Email is never a lookup key. */
   findByLogin(kind: LoginKind, subject: string): Identity | null;
   createWithLogin(input: { kind: LoginKind; subject: string; email?: string; id?: string }): Identity;
+  findById(id: string): Identity | null;
   /** One-time migration: swaps the pending "email:<email>" marker for the real Google sub. The only email lookup (spec §4.2). */
   attachGoogleSubByEmailOnce(email: string, sub: string): Identity | null;
   linkLogin(identityId: string, loginId: string, actor: string): void;
   listMemberships(identityId: string): Membership[];
 }
+
+const MARKER_PREFIX = "email:";
 
 type IdentityRow = { id: string; status: "active" | "disabled" };
 type MembershipRow = {
@@ -42,6 +45,8 @@ export class SqliteIdentityRepository implements IdentityRepository {
   constructor(private readonly db: ControlDb) {}
 
   findByLogin(kind: LoginKind, subject: string): Identity | null {
+    // "email:" is the backfill marker namespace (pending, unverified): never a real provider subject.
+    if (subject.startsWith(MARKER_PREFIX)) return null;
     const row = this.db
       .prepare(
         `SELECT i.id, i.status FROM login_identities l
@@ -49,6 +54,11 @@ export class SqliteIdentityRepository implements IdentityRepository {
          WHERE l.kind = ? AND l.subject = ?`,
       )
       .get(kind, subject) as IdentityRow | undefined;
+    return row ? { id: row.id, status: row.status } : null;
+  }
+
+  findById(id: string): Identity | null {
+    const row = this.db.prepare("SELECT id, status FROM identities WHERE id = ?").get(id) as IdentityRow | undefined;
     return row ? { id: row.id, status: row.status } : null;
   }
 
@@ -65,6 +75,7 @@ export class SqliteIdentityRepository implements IdentityRepository {
   }
 
   attachGoogleSubByEmailOnce(email: string, sub: string): Identity | null {
+    if (sub.startsWith(MARKER_PREFIX)) return null;
     return this.db.transaction((): Identity | null => {
       const row = this.db
         .prepare(

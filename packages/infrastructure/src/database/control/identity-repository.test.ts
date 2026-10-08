@@ -69,6 +69,16 @@ describe("identity repository and backfill", () => {
     expect(repo.findByLogin("google", "sub-9")).not.toBeNull();
   });
 
+  it("never resolves the backfill marker namespace as a subject, and never attaches one as a sub", () => {
+    const { control, raw, personal, repo } = setup();
+    raw.prepare("INSERT INTO users (id, email) VALUES ('u1', 'a@x.com')").run();
+    backfillIdentities(personal, control);
+
+    expect(repo.findByLogin("google", "email:a@x.com")).toBeNull();
+    expect(repo.attachGoogleSubByEmailOnce("a@x.com", "email:b@x.com")).toBeNull();
+    expect(control.prepare("SELECT subject FROM login_identities").get()).toEqual({ subject: "email:a@x.com" });
+  });
+
   it("createWithLogin uses the given id and generates one otherwise", () => {
     const { repo } = setup();
     expect(repo.createWithLogin({ kind: "google", subject: "s1", id: "fixed" }).id).toBe("fixed");

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import express from "express";
+import request from "supertest";
 import { StructuredLogger } from "@oneon/infrastructure";
 import { loadEnv } from "../config/env.js";
 import { createContainer } from "../container.js";
@@ -34,6 +35,29 @@ describe("registerRoutes: chat calendar read tools", () => {
       registerRoutes(express(), container);
       const registered = info.mock.calls.find(([message]) => message === "Chat route registered at /api/chat");
       expect(registered?.[1]?.tools).toEqual(expect.arrayContaining(["list_calendar_events", "search_calendar"]));
+    } finally {
+      container.shutdown();
+    }
+  });
+
+  it("serves hand-off redemption behind the service token only", async () => {
+    stubEnv();
+    const container = createContainer(loadEnv());
+    try {
+      const app = express();
+      app.use(express.json());
+      registerRoutes(app, container);
+
+      const anonymous = await request(app).post("/api/auth/handoff/redeem").send({ handoff: "x", sessionId: "y" });
+      const withToken = await request(app)
+        .post("/api/auth/handoff/redeem")
+        .set("Authorization", "Bearer test-api-token")
+        .send({ handoff: "x", sessionId: "y" });
+
+      expect(anonymous.status).toBe(401);
+      expect(anonymous.body).toEqual({ error: "Unauthorized" });
+      expect(withToken.status).toBe(401);
+      expect(withToken.body).toEqual({ error: "handoff_rejected", reason: "generic" });
     } finally {
       container.shutdown();
     }

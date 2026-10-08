@@ -24,6 +24,7 @@ import { createPushSubscriptionsRouter } from "./push-subscriptions.route.js";
 import { createUsersRouter } from "./users.route.js";
 import { createMemoryRouter } from "./memory.route.js";
 import { createPlatformRouter } from "./platform.route.js";
+import { createHandoffRouter } from "./handoff.route.js";
 import { createTokenAuthMiddleware } from "../middleware/auth.js";
 import { createSessionAuthMiddleware } from "../middleware/session-auth.js";
 import { requireUser } from "../middleware/require-user.js";
@@ -82,6 +83,13 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       ? (user) => container.userRepo!.upsert(user)
       : undefined,
     new StructuredLogger("session-auth", env.LOG_LEVEL),
+    container.impressorx
+      ? {
+          memberships: container.memberships,
+          identities: container.identityRepo,
+          hasActiveSession: (sessionId) => container.impressorx!.forSession(sessionId) !== null,
+        }
+      : undefined,
   );
   const tokenAuth = createTokenAuthMiddleware(env.API_TOKEN);
 
@@ -424,6 +432,22 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     );
     memoryLogger.info("Memory routes registered at /api/memory");
   }
+
+  // ── Hand-off redemption (the dashboard's server side, service token) ──
+  app.use(
+    "/api/auth/handoff",
+    ...systemAuth,
+    createHandoffRouter({
+      registrations: container.tenantRegistrations,
+      enrolment: container.enrolment,
+      identities: container.identityRepo,
+      memberships: container.memberships,
+      jti: container.handoffJti,
+      openTenant: container.openTenant,
+      client: container.impressorx,
+      logger: new StructuredLogger("handoff", env.LOG_LEVEL),
+    }),
+  );
 
   // ── Platform console (operators only) ─────────────────────
   const platformLogger = new StructuredLogger("platform", env.LOG_LEVEL);

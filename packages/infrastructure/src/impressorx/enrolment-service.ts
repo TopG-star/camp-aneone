@@ -230,7 +230,7 @@ export class EnrolmentService {
   async verifyFromDeployment(
     registrationId: string,
     token: string,
-    options: { audience: string; consumeJti?: (jti: string, expiresAt: string) => boolean },
+    options: { audience: string; maxTtlSeconds?: number; consumeJti?: (jti: string, expiresAt: string) => boolean },
   ): Promise<VerifiedJws> {
     const registration = this.activeRegistration(registrationId);
     const attempt = () => {
@@ -239,6 +239,7 @@ export class EnrolmentService {
         resolveKey: (kid) => keys.find((k) => k.keyId === kid)?.publicKeyJwk ?? null,
         issuer: `impressorx:${registration.tenantSlug}`,
         audience: options.audience,
+        maxTtlSeconds: options.maxTtlSeconds,
         now: this.clock(),
         consumeJti: options.consumeJti,
       });

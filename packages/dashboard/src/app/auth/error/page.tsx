@@ -4,10 +4,13 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Suspense } from "react";
 import { AlertTriangle } from "lucide-react";
+import { HANDOFF_MESSAGES, isHandoffReason } from "@/lib/handoff";
 
 function ErrorContent() {
   const params = useSearchParams();
   const error = params.get("error");
+  // Set by /auth/impressorx when a hand-off from ImpressoRx could not be opened.
+  const reason = params.get("reason");
 
   const messages: Record<string, string> = {
     AccessDenied: "Your email is not in the authorized list.",
@@ -15,7 +18,7 @@ function ErrorContent() {
     Default: "An authentication error occurred.",
   };
 
-  const message = messages[error ?? ""] ?? messages.Default;
+  const message = isHandoffReason(reason) ? HANDOFF_MESSAGES[reason] : (messages[error ?? ""] ?? messages.Default);
 
   return (
     <div className="auth-shell motion-page-enter">
@@ -24,7 +27,7 @@ function ErrorContent() {
         <div className="state-content state-content-center gap-1">
           <p className="page-eyebrow">Authentication</p>
           <h1 className="page-title">
-            Access Denied
+            {isHandoffReason(reason) ? "Can't open Oneon" : "Access Denied"}
           </h1>
           <p className="state-subtext">
             {message}

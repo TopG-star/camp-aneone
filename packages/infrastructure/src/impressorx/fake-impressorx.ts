@@ -170,14 +170,14 @@ export class FakeImpressorx {
 
 
   /** A hand-off JWS as ImpressoRx would mint it for a staff user (signed by the oldest valid deployment key). */
-  async mintHandoff(staffUserId: string, overrides: { ttlSeconds?: number } = {}): Promise<string> {
+  async mintHandoff(staffUserId: string, overrides: { ttlSeconds?: number; audience?: string; issuer?: string } = {}): Promise<string> {
     const signer = this.deploymentKeys[0]!;
     const snapshot = this.snapshotFor(staffUserId);
     return signJws({
       privateKeyJwk: signer.privateKeyJwk,
       kid: signer.keyId,
-      iss: this.issuer,
-      aud: "oneon",
+      iss: overrides.issuer ?? this.issuer,
+      aud: overrides.audience ?? "oneon",
       now: this.clock(),
       ttlSeconds: overrides.ttlSeconds ?? 60,
       claims: { sub: staffUserId, tenantSlug: this.tenantSlug, tv: snapshot.tokenVersion, role: snapshot.role },

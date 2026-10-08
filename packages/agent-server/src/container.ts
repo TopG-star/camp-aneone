@@ -30,6 +30,10 @@ import {
   PlatformOperatorRepository,
   TenantRegistrationRepository,
   EnrolmentService,
+  MembershipRepository,
+  UsedHandoffJti,
+  createImpressoRxClient,
+  type ImpressoRxClient,
   ContextDbGate,
   rawDb,
   backfillIdentities,
@@ -103,6 +107,12 @@ export interface AppContainer {
   platformOperators: PlatformOperatorRepository;
   tenantRegistrations: TenantRegistrationRepository;
   enrolment: EnrolmentService;
+  memberships: MembershipRepository;
+  handoffJti: UsedHandoffJti;
+  /** The sole holder of delegation grants; null until ONEON_GRANT_MASTER_KEY is set. */
+  impressorx: ImpressoRxClient | null;
+  /** Opens a tenant's database through the gate (refuses when the registration is not active). */
+  openTenant: (registrationId: string) => import("@oneon/domain").TenantDb;
   /** Creates a new tenant's database file (enrolment only). */
   createTenantFile: (registrationId: string, tenantId: string) => void;
   ensureIdentity: (user: { id: string; email: string }) => void;
@@ -176,6 +186,18 @@ export function createContainer(env: Env): AppContainer {
     oneonOrigin: env.PUBLIC_URL,
     masterKeyB64: env.ONEON_SIGNING_KEY_MASTER_KEY,
   });
+  const memberships = new MembershipRepository(control);
+  const handoffJti = new UsedHandoffJti(control);
+  const impressorx = env.ONEON_GRANT_MASTER_KEY
+    ? createImpressoRxClient({
+        control,
+        grantMasterKeyB64: env.ONEON_GRANT_MASTER_KEY,
+        enrolment,
+        onSnapshot: (membershipId, snapshot) => memberships.applySnapshot(membershipId, snapshot),
+        logger,
+      })
+    : null;
+  if (!impressorx) logger.warn("ImpressoRx hand-off: disabled (missing ONEON_GRANT_MASTER_KEY)");
   logger.info("Database ready", { path: env.DATABASE_PATH });
 
   const modelWiring = createModelWiring(env, { db, logger });
@@ -469,6 +491,10 @@ export function createContainer(env: Env): AppContainer {
     platformOperators,
     tenantRegistrations,
     enrolment,
+    memberships,
+    handoffJti,
+    impressorx,
+    openTenant: (registrationId) => gate.openTenant(registrationId),
     createTenantFile: (registrationId, tenantId) => void gate.createTenantFile(registrationId, tenantId),
     ensureIdentity: (user) => void ensureIdentityForUser(control, user),
     userProfileRepo,

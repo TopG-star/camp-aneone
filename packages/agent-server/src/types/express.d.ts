@@ -7,6 +7,10 @@ declare global {
       userId?: string;
       /** Authenticated user's email from session */
       userEmail?: string;
+      /** Hand-off sessions only: the dashboard-generated session id that the attended grant is bound to */
+      sessionId?: string;
+      /** Hand-off sessions only: the context the person is working in */
+      activeContext?: { kind: "tenant"; membershipId: string };
     }
   }
 }
