@@ -172,6 +172,14 @@ describe("architecture", { timeout: TIMEOUT_MS }, () => {
     expect(offenders).toEqual([]);
   });
 
+  it("only the ImpressoRx client imports the grant store (I4)", () => {
+    const offenders = sources
+      .filter((f) => /(from\s+|import\(\s*|require\(\s*)["'][^"']*grant-store(\.js)?["']/.test(f.text))
+      .map((f) => f.path)
+      .filter((p) => !isTest(p) && p !== "infrastructure/src/impressorx/client.ts");
+    expect(offenders).toEqual([]);
+  });
+
   it("model clients and providers are named in imports or exports only by the llm module and the model wiring", () => {
     const names = /\b(DeepSeekHttpClient|DeepSeekProvider|AnthropicProvider)\b/;
     const statements = /\b(?:import|export)\b[^;'"]*?\bfrom\s*["'][^"']+["']/g;

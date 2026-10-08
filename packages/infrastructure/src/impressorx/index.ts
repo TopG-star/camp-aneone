@@ -7,3 +7,12 @@ export {
   type EnrolmentServiceDeps,
   type FetchLike,
 } from "./enrolment-service.js";
+export {
+  ImpressoRxClient,
+  ImpressoRxRefusedError,
+  ImpressoRxUnreachableError,
+  type ImpressoRxClientDeps,
+  type GrantCalls,
+  type SessionCalls,
+  type MembershipSnapshot,
+} from "./client.js";
