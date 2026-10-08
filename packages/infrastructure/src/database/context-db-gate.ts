@@ -7,6 +7,12 @@ import type { ControlDb } from "./control/open-control-db.js";
 
 const FILE_NAME = /^[0-9a-f-]{36}\.db$/;
 
+/** The one place a registry file name becomes a path: the name must match the pattern, so it cannot leave tenantDir. */
+export function tenantFilePath(tenantDir: string, fileName: string): string {
+  if (!FILE_NAME.test(fileName)) throw new TenantRefusedError("tenant_unavailable");
+  return join(tenantDir, fileName);
+}
+
 export class TenantRefusedError extends Error {
   constructor(public readonly code: "tenant_unavailable" | "tenant_schema_behind") {
     super(code);
@@ -121,8 +127,7 @@ export class ContextDbGate {
   }
 
   private tenantPath(fileName: string): string {
-    if (!FILE_NAME.test(fileName)) throw new TenantRefusedError("tenant_unavailable");
-    return join(this.deps.tenantDir, fileName);
+    return tenantFilePath(this.deps.tenantDir, fileName);
   }
 
   private verifyFile(conn: Database.Database, tenantId: string): void {

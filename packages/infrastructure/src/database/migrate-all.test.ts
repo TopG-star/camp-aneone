@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -63,6 +63,41 @@ describe("migrateAll", () => {
     expect(existsSync(suspended.path)).toBe(false);
     expect(existsSync(missing.path)).toBe(false);
     expect(existsSync(deps.lockPath)).toBe(false);
+    control.close();
+  });
+
+  it("records a file name outside the pattern as failed and leaves the target untouched", () => {
+    const { control, register, deps } = setup();
+    const bad = register();
+    control.prepare("UPDATE tenant_registrations SET file_name = '../x.db' WHERE id = ?").run(bad.id);
+    const target = join(deps.tenantDir, "..", "x.db");
+    createDatabase(target).close();
+    const before = readFileSync(target);
+    const absent = register();
+    control.prepare("UPDATE tenant_registrations SET file_name = '../absent.db' WHERE id = ?").run(absent.id);
+
+    const result = migrateAll(deps);
+
+    expect(result.failed.map((f) => f.registrationId).sort()).toEqual([bad.id, absent.id].sort());
+    expect(readFileSync(target).equals(before)).toBe(true);
+    expect(existsSync(join(deps.tenantDir, "..", "absent.db"))).toBe(false);
+    control.close();
+  });
+
+  it("does not migrate a file whose context_meta names another context", () => {
+    const { control, register, deps } = setup();
+    const reg = register();
+    const db = createDatabase(reg.path);
+    db.exec("CREATE TABLE context_meta (kind TEXT NOT NULL, tenant_id TEXT, schema_version INTEGER NOT NULL, created_at TEXT NOT NULL)");
+    db.prepare("INSERT INTO context_meta VALUES ('tenant', 'someone-else', 1, 'now')").run();
+    db.close();
+
+    const result = migrateAll(deps);
+
+    expect(result.failed.map((f) => f.registrationId)).toEqual([reg.id]);
+    const check = createDatabase(reg.path);
+    expect(check.prepare("SELECT name FROM sqlite_master WHERE name = 'schema_migrations'").get()).toBeUndefined();
+    check.close();
     control.close();
   });
 

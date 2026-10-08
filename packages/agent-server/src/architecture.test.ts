@@ -118,6 +118,34 @@ describe("architecture", { timeout: TIMEOUT_MS }, () => {
     expect(offenders).toEqual([]);
   });
 
+  // A value import (anything but `import type`) of the SQLite driver, however it is bound or loaded.
+  const valueImportsSqlite = (text: string) =>
+    /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)["']better-sqlite3["']/.test(
+      text.replace(/\bimport\s+type\b[^;]*?\bfrom\s*["']better-sqlite3["']/g, ""),
+    );
+
+  it("the driver matcher catches renamed, call-without-new, require and dynamic imports, and allows import type", () => {
+    expect(valueImportsSqlite('import Sqlite from "better-sqlite3"; new Sqlite(p)')).toBe(true);
+    expect(valueImportsSqlite('import * as S from "better-sqlite3"; S.default(p)')).toBe(true);
+    expect(valueImportsSqlite('import Database from "better-sqlite3"; Database(p)')).toBe(true);
+    expect(valueImportsSqlite('const D = require("better-sqlite3"); new D(p)')).toBe(true);
+    expect(valueImportsSqlite('new (require("better-sqlite3"))(p)')).toBe(true);
+    expect(valueImportsSqlite('const { default: D } = await import("better-sqlite3")')).toBe(true);
+    expect(valueImportsSqlite('import "better-sqlite3";')).toBe(true);
+    expect(valueImportsSqlite('import type Database from "better-sqlite3";')).toBe(false);
+    expect(valueImportsSqlite('import type Database from "better-sqlite3";\nconst x = 1;')).toBe(false);
+  });
+
+  it("only the gate and connection.ts value-import the SQLite driver", () => {
+    const offenders = readdirSync(ROOT)
+      .filter((pkg) => existsSync(join(ROOT, pkg, "src")))
+      .flatMap((pkg) => sourceFiles(join(ROOT, pkg, "src")))
+      .map((f) => posix(relative(ROOT, f)))
+      .filter((p) => !isTest(p) && p !== "infrastructure/src/database/connection.ts" && p !== "infrastructure/src/database/context-db-gate.ts")
+      .filter((p) => valueImportsSqlite(readFileSync(join(ROOT, p), "utf8")));
+    expect(offenders).toEqual([]);
+  });
+
   it("repositories accept handles, not paths", () => {
     const offenders = sources
       .filter((f) => /^infrastructure\/src\/database\/repositories\//.test(f.path) && !isTest(f.path))
