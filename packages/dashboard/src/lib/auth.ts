@@ -15,7 +15,7 @@ declare module "next-auth" {
   }
 }
 
-/** Reaches the redirect as `code`, which /auth/impressorx turns into the message the person sees. */
+/** signIn rethrows this to its caller; its `code` is what /auth/impressorx turns into the message the person sees. */
 class HandoffRejected extends CredentialsSignin {
   constructor(reason: HandoffReason) {
     super();

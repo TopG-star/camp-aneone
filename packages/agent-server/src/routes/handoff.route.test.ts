@@ -160,13 +160,16 @@ describe("hand-off redemption", () => {
     expect(res.body).toEqual({ error: "handoff_rejected", reason: "expired" });
   });
 
-  it("a forged signature is generic even with a known issuer and a past expiry (no tenant oracle)", async () => {
-    const { fake, redeem, advance } = await setup();
-    const handoff = await fake.mintHandoff("staff-1");
-    const [h, p] = handoff.split(".");
-    const forged = `${h}.${p}.${"A".repeat(86)}`;
+  it("a forged token with a known issuer and an expiry past on the wall clock is generic (no tenant oracle)", async () => {
+    const { fake, redeem } = await setup();
+    const b64 = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const nowSec = Math.floor(Date.now() / 1000);
+    const forged = [
+      b64({ alg: "EdDSA", kid: "unknown-kid" }),
+      b64({ iss: "impressorx:acme", aud: "oneon", iat: nowSec - 660, exp: nowSec - 600, jti: randomUUID(), sub: "staff-1", tenantSlug: "acme", tv: 1, role: "manager" }),
+      "A".repeat(86),
+    ].join(".");
     const unknownIssuer = (await redeem(await fake.mintHandoff("staff-1", { issuer: "impressorx:nope" }))).res;
-    advance(120_000);
 
     const res = (await redeem(forged)).res;
     expect(res.status).toBe(401);
