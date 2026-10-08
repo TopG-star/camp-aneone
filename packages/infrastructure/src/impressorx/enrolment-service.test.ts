@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decodeJwt } from "jose";
+import { decodeJwt, decodeProtectedHeader } from "jose";
 import { openControlDb, type ControlDb } from "../database/control/open-control-db.js";
 import { SqliteIdentityRepository } from "../database/control/identity-repository.js";
 import { TenantRegistrationRepository } from "../database/control/tenant-registration-repository.js";
@@ -152,6 +152,50 @@ describe("enrolment service against the fake deployment", () => {
     expect(fake.acceptedOneonKeyIds).toEqual([k1, k2]); // k1 landed the lost change; k2 signs this one
     const k3 = repo.currentOneonKey(reg.id)!.keyId;
     expect(repo.unretiredOneonKeyIds(reg.id)).toEqual([k3]);
+  });
+
+  const isKeyAdd = (input: string | URL, init?: RequestInit) => init?.method === "POST" && input.toString().endsWith("/api/oneon/keys");
+
+  it("two rotations that never landed do not lock rotation: the original key eventually signs", async () => {
+    let mode: "down" | "up" = "up";
+    const { repo, fake, service, enrol, calls } = setup(undefined, (inner) => async (input, init) => {
+      if (mode === "down" && isKeyAdd(input, init)) return new Response(null, { status: 503 });
+      return inner(input, init);
+    });
+    const reg = await enrol();
+    const k1 = repo.currentOneonKey(reg.id)!.keyId;
+
+    mode = "down";
+    await expect(service.rotateOneonKey(reg.id)).rejects.toBeInstanceOf(EnrolmentFailedError);
+    await expect(service.rotateOneonKey(reg.id)).rejects.toBeInstanceOf(EnrolmentFailedError);
+    expect(repo.unretiredOneonKeyIds(reg.id)).toHaveLength(3);
+
+    mode = "up";
+    await service.rotateOneonKey(reg.id);
+    expect(fake.acceptedOneonKeyIds).toEqual([k1]); // k1 is the only key the deployment holds
+    const k4 = repo.currentOneonKey(reg.id)!.keyId;
+    expect(repo.unretiredOneonKeyIds(reg.id)).toEqual([k4]);
+
+    // The announced key never signed its own announcement.
+    for (const call of calls.filter((c) => c.url.endsWith("/api/oneon/keys") && c.body)) {
+      const token = (call.body as { request: string }).request;
+      expect(decodeProtectedHeader(token).kid).not.toBe(decodeJwt(token).newKeyId);
+    }
+  });
+
+  it("a 429 keeps the new key, a 401 deletes it", async () => {
+    let status = 429;
+    const { repo, service, enrol } = setup(undefined, (inner) => async (input, init) => {
+      if (isKeyAdd(input, init) && status !== 0) return new Response(null, { status });
+      return inner(input, init);
+    });
+    const reg = await enrol();
+    await expect(service.rotateOneonKey(reg.id)).rejects.toBeInstanceOf(EnrolmentFailedError);
+    expect(repo.unretiredOneonKeyIds(reg.id)).toHaveLength(2);
+
+    status = 401;
+    await expect(service.rotateOneonKey(reg.id)).rejects.toBeInstanceOf(EnrolmentFailedError);
+    expect(repo.unretiredOneonKeyIds(reg.id)).toHaveLength(2); // the 401 key was removed again
   });
 
   it("refreshDeploymentKeys accepts a list signed by a known key", async () => {

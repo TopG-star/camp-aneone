@@ -45,8 +45,6 @@ export interface EnrolInput {
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const VERIFY_REFRESH_MIN_INTERVAL_MS = 60_000;
-/** At most this many Oneon keys are tried when the deployment refuses the newest. */
-const MAX_KEY_ATTEMPTS = 3;
 
 export class EnrolmentService {
   private readonly fetchImpl: FetchLike;
@@ -133,7 +131,7 @@ export class EnrolmentService {
 
   /**
    * Unretired Oneon keys, newest first. After an unclear rotation the newest key may not be known to the deployment
-   * yet, so a request refused with the newest key should be retried with the next one (as rotateOneonKey does).
+   * yet, so a caller whose request is refused (401) with one key should try the next, down to the oldest.
    */
   oneonSigningKeys(registrationId: string): Array<{ keyId: string; privateKeyJwk: JWK }> {
     return this.openOneonKeys(registrationId);
@@ -150,9 +148,10 @@ export class EnrolmentService {
    * Registers a new Oneon key at the deployment. The new key is stored (sealed) BEFORE the request, so a lost answer
    * cannot leave the deployment holding a key Oneon never recorded:
    * - 204: the other keys retire in 7 days;
-   * - a definite refusal (4xx): the new key is deleted again;
-   * - anything unclear (network, timeout, 5xx): both keys are kept, and the next request falls back to the older key
-   *   when the deployment refuses the newest.
+   * - 401 (the only definite refusal): the new key is deleted again;
+   * - anything else (429, 403, 5xx, network, timeout, ...): the key is kept, because the change may have landed.
+   * The announced key never signs its own announcement; every other unretired key is tried, newest first, so a key the
+   *   deployment never received cannot lock rotation.
    */
   async rotateOneonKey(registrationId: string, actor: string | null = null): Promise<void> {
     const master = this.master();
@@ -160,8 +159,7 @@ export class EnrolmentService {
     const next = await generateEd25519Key();
     this.deps.repo.addPendingOneonKey(registrationId, next.keyId, next.publicKeyJwk, sealSecret(JSON.stringify(next.privateKeyJwk), master));
 
-    // Newest first. The new key is unknown to the deployment, so its request is refused and the next key is tried.
-    const candidates = this.openOneonKeys(registrationId).slice(0, MAX_KEY_ATTEMPTS);
+    const candidates = this.openOneonKeys(registrationId).filter((k) => k.keyId !== next.keyId);
     let ambiguous = false;
     for (const signer of candidates) {
       const request = await signJws({
@@ -183,7 +181,7 @@ export class EnrolmentService {
         this.deps.repo.retireOtherOneonKeys(registrationId, next.keyId, actor);
         return;
       }
-      if (res.status >= 500) {
+      if (res.status !== 401) {
         ambiguous = true;
         break;
       }
