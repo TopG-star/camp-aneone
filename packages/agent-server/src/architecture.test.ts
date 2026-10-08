@@ -1,5 +1,5 @@
 import { beforeAll, describe, it, expect } from "vitest";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -104,6 +104,27 @@ describe("architecture", { timeout: TIMEOUT_MS }, () => {
       .filter((f) => /(from\s+|import\(\s*|require\(\s*)["'](@anthropic-ai\/sdk|[./]*deepseek-http-client(\.js)?)["']/.test(f.text))
       .map((f) => f.path)
       .filter((p) => !isTest(p) && !/^infrastructure\/src\/llm\/providers\//.test(p) && p !== "infrastructure/src/llm/index.ts");
+    expect(offenders).toEqual([]);
+  });
+
+  it("only the gate and connection.ts construct a SQLite Database", () => {
+    // Every package, not just the four in `sources`.
+    const offenders = readdirSync(ROOT)
+      .filter((pkg) => existsSync(join(ROOT, pkg, "src")))
+      .flatMap((pkg) => sourceFiles(join(ROOT, pkg, "src")))
+      .map((f) => posix(relative(ROOT, f)))
+      .filter((p) => !isTest(p) && p !== "infrastructure/src/database/connection.ts" && p !== "infrastructure/src/database/context-db-gate.ts")
+      .filter((p) => /\bnew\s+Database\(/.test(readFileSync(join(ROOT, p), "utf8")));
+    expect(offenders).toEqual([]);
+  });
+
+  it("repositories accept handles, not paths", () => {
+    const offenders = sources
+      .filter((f) => /^infrastructure\/src\/database\/repositories\//.test(f.path) && !isTest(f.path))
+      .filter((f) =>
+        [...f.text.matchAll(/constructor\s*\(([^)]*)\)/g)].some(([, params]) => /\b(path|dbPath)\s*\??\s*:\s*string\b/.test(params!)),
+      )
+      .map((f) => f.path);
     expect(offenders).toEqual([]);
   });
 

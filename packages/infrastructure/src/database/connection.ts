@@ -22,15 +22,21 @@ export function createDatabase(dbPath: string): Database.Database {
   const db = new Database(dbPath);
 
   // Enable WAL mode for better concurrent read performance
-  db.pragma("journal_mode = WAL");
-  // Enforce foreign key constraints
-  db.pragma("foreign_keys = ON");
-  // Improve write performance (data safe with WAL)
-  db.pragma("synchronous = NORMAL");
-  // Store temp tables in memory
-  db.pragma("temp_store = MEMORY");
-  // 64MB mmap for read performance
-  db.pragma("mmap_size = 67108864");
+  try {
+    db.pragma("journal_mode = WAL");
+    // Enforce foreign key constraints
+    db.pragma("foreign_keys = ON");
+    // Improve write performance (data safe with WAL)
+    db.pragma("synchronous = NORMAL");
+    // Store temp tables in memory
+    db.pragma("temp_store = MEMORY");
+    // 64MB mmap for read performance
+    db.pragma("mmap_size = 67108864");
+  } catch (error) {
+    // A file that is not a database fails here; do not leak the open handle.
+    db.close();
+    throw error;
+  }
 
   return db;
 }
@@ -222,6 +228,16 @@ function canBackfillAfterError(
   return version === 4 && /duplicate column name:\s*conversation_id/i.test(message);
 }
 
+/** The highest personal migration number: the schema version every context file must be at. */
+export function latestMigrationVersion(): number {
+  return Math.max(
+    ...readdirSync(getMigrationsDir())
+      .map((file) => /^(\d+)_.+\.sql$/.exec(file))
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map((m) => Number(m[1])),
+  );
+}
+
 // A custom directory holds its own sequence: files named NNN_name.sql, applied in order.
 function discoverMigrations(
   dir: string,
@@ -266,6 +282,7 @@ export function runMigrations(db: Database.Database, migrationsDir?: string): vo
     { version: 13, name: "personal_memory", file: "013_personal_memory.sql" },
     { version: 14, name: "action_spec_framework", file: "014_action_spec_framework.sql" },
     { version: 15, name: "ai_data_boundary", file: "015_ai_data_boundary.sql" },
+    { version: 16, name: "context_meta_and_tenant_id", file: "016_context_meta_and_tenant_id.sql" },
   ];
 
   const custom = migrationsDir !== undefined;

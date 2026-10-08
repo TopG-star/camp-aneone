@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createDatabase, runMigrations } from "../connection.js";
 
-/** Applies migrations 001–013 only, by marking 014 as applied for the first run. */
+/** Applies migrations 001–013 and 015 only, by marking 014 and 016 (which both need the 014 tables) as applied for the first run. */
 function databaseAt013() {
   const db = createDatabase(":memory:");
   db.exec(`
@@ -10,10 +10,10 @@ function databaseAt013() {
       name       TEXT NOT NULL,
       applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
-    INSERT INTO schema_migrations (version, name) VALUES (14, 'action_spec_framework');
+    INSERT INTO schema_migrations (version, name) VALUES (14, 'action_spec_framework'), (16, 'context_meta_and_tenant_id');
   `);
   runMigrations(db);
-  db.prepare("DELETE FROM schema_migrations WHERE version = 14").run();
+  db.prepare("DELETE FROM schema_migrations WHERE version IN (14, 16)").run();
   return db;
 }
 

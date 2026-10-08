@@ -5,3 +5,4 @@ export * from "./ports/index.js";
 export * from "./user-scoped-preferences.js";
 export * from "./actions/index.js";
 export * from "./notification-suppression.js";
+export * from "./context.js";

@@ -1,4 +1,6 @@
-export { createDatabase, runMigrations } from "./connection.js";
+export { createDatabase, runMigrations, latestMigrationVersion } from "./connection.js";
+export { ContextDbGate, TenantRefusedError, rawDb, ensureIdentityAnchor } from "./context-db-gate.js";
+export { migrateAll } from "./migrate-all.js";
 export { openControlDb, type ControlDb } from "./control/open-control-db.js";
 export { SqliteTransactionRunner } from "./transaction-runner.js";
 export * from "./repositories/index.js";
