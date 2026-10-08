@@ -9,6 +9,7 @@ export {
 } from "./enrolment-service.js";
 export {
   ImpressoRxClient,
+  createImpressoRxClient,
   ImpressoRxRefusedError,
   ImpressoRxUnreachableError,
   type ImpressoRxClientDeps,

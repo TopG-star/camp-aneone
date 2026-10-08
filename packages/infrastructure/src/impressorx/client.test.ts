@@ -8,9 +8,9 @@ import { openControlDb, type ControlDb } from "../database/control/open-control-
 import { SqliteIdentityRepository } from "../database/control/identity-repository.js";
 import { TenantRegistrationRepository } from "../database/control/tenant-registration-repository.js";
 import { GrantStore } from "../database/control/grant-store.js";
-import { EnrolmentService } from "./enrolment-service.js";
+import { EnrolmentService, type FetchLike } from "./enrolment-service.js";
 import { FakeImpressorx } from "./fake-impressorx.js";
-import { ImpressoRxClient, ImpressoRxRefusedError, ImpressoRxUnreachableError, type MembershipSnapshot } from "./client.js";
+import { createImpressoRxClient, ImpressoRxClient, ImpressoRxRefusedError, ImpressoRxUnreachableError, type MembershipSnapshot } from "./client.js";
 import { generateEd25519Key } from "../crypto/jws.js";
 import { openSecret, sealSecret } from "../crypto/envelope.js";
 
@@ -67,12 +67,19 @@ describe("ImpressoRx client against the fake deployment", () => {
       error: (m, meta) => logged.push(JSON.stringify({ m, meta })),
       debug: (m, meta) => logged.push(JSON.stringify({ m, meta })),
     };
+    // Applies the request at the fake, then loses the reply (on token calls) while `dropReplies` is set.
+    const flags = { dropReplies: false };
+    const wrapped: FetchLike = async (input, init) => {
+      const res = await fake.fetch(input, init);
+      if (flags.dropReplies && input.toString().endsWith("/api/oneon/token")) throw new TypeError("fetch failed");
+      return res;
+    };
     const client = new ImpressoRxClient({
       registrations: repo,
       grants,
       enrolment,
       onSnapshot: (id, snapshot) => snapshots.push({ membershipId: id, snapshot }),
-      fetchImpl: fake.fetch,
+      fetchImpl: wrapped,
       clock,
       logger,
       sleep: async () => undefined,
@@ -84,10 +91,10 @@ describe("ImpressoRx client against the fake deployment", () => {
     };
     const launch = async (sessionId = randomUUID(), staffUserId = "staff-1") => {
       const handoff = await fake.mintHandoff(staffUserId);
-      const { grantId } = await client.exchangeHandoff(registration.id, handoff, sessionId, identityId, membershipId);
+      const { grantId } = await client.exchangeHandoff(registration.id, handoff, sessionId, identityId, membershipId, staffUserId);
       return { grantId, sessionId, handoff };
     };
-    return { enrolmentKey, storedValue, control, repo, fake, enrolment, registration, grants, client, launch, advance, snapshots, logged, identityId, membershipId };
+    return { flags, wrapped, clock, enrolmentKey, storedValue, control, repo, fake, enrolment, registration, grants, client, launch, advance, snapshots, logged, identityId, membershipId };
   }
 
   const expireTokens = (s: { advance: (ms: number) => void }) => s.advance(5 * 60 * 1000);
@@ -209,7 +216,7 @@ describe("ImpressoRx client against the fake deployment", () => {
     const s = await setup();
     s.fake.loseNextTokenResponse = true;
     const handoff = await s.fake.mintHandoff("staff-1");
-    await expect(s.client.exchangeHandoff(s.registration.id, handoff, "sess", s.identityId, s.membershipId)).rejects.toBeInstanceOf(
+    await expect(s.client.exchangeHandoff(s.registration.id, handoff, "sess", s.identityId, s.membershipId, "staff-1")).rejects.toBeInstanceOf(
       ImpressoRxUnreachableError,
     );
     expect(s.fake.tokenRequests.filter((r) => r.grantType === "handoff")).toHaveLength(1);
@@ -320,5 +327,108 @@ describe("ImpressoRx client against the fake deployment", () => {
 
     expect(s.logged.length).toBeGreaterThan(0);
     for (const secret of secrets) for (const line of s.logged) expect(line).not.toContain(secret);
+  });
+
+  describe("fix round 1", () => {
+    const issueInput = { kind: "action" as const, oneonActionId: "act-1", scope: ["jobs.read"], absoluteExpiresAt: new Date(Date.now() + 86_400_000).toISOString() };
+
+    it("never presents a stored exchange after the idempotency window: revokes locally and at the deployment", async () => {
+      const s = await setup();
+      const { grantId, sessionId } = await s.launch();
+      const calls = s.client.forSession(sessionId)!;
+      expireTokens(s);
+      s.flags.dropReplies = true;
+      await expect(calls.accessToken()).rejects.toBeInstanceOf(ImpressoRxUnreachableError);
+      s.flags.dropReplies = false;
+      s.advance(121_000);
+      await expect(calls.accessToken()).rejects.toBeInstanceOf(ImpressoRxRefusedError);
+      expect(s.fake.theftRevocations).toEqual([]);
+      expect(s.fake.tokenRequests.filter((r) => r.grantType === "grant").map((r) => r.outcome)).not.toContain("theft");
+      expect(s.control.prepare("SELECT status, revoked_reason, pending_request_id FROM delegation_grants WHERE id = ?").get(grantId)).toEqual({
+        status: "revoked",
+        revoked_reason: "exchange_outcome_unknown",
+        pending_request_id: null,
+      });
+      expect(s.fake.grants.get(grantId)!.status).toBe("revoked");
+    });
+
+    it("replays a lost issue reply as that issue, then runs accessToken() as its own exchange", async () => {
+      const s = await setup();
+      const { sessionId } = await s.launch();
+      const calls = s.client.forSession(sessionId)!;
+      expireTokens(s);
+      s.flags.dropReplies = true;
+      await expect(calls.issue(issueInput)).rejects.toBeInstanceOf(ImpressoRxUnreachableError);
+      s.flags.dropReplies = false;
+      await calls.accessToken();
+      expect(s.grants.findActionGrant("act-1")).not.toBeNull();
+      expect(s.fake.rotations).toBe(2);
+      expect(s.fake.theftRevocations).toEqual([]);
+    });
+
+    it("replays a lost grant reply as that grant exchange, then runs issue() as its own exchange", async () => {
+      const s = await setup();
+      const { sessionId } = await s.launch();
+      const calls = s.client.forSession(sessionId)!;
+      expireTokens(s);
+      s.flags.dropReplies = true;
+      await expect(calls.accessToken()).rejects.toBeInstanceOf(ImpressoRxUnreachableError);
+      s.flags.dropReplies = false;
+      const issued = await calls.issue(issueInput);
+      expect(s.grants.findActionGrant("act-1")).toBe(issued.grantId);
+      expect(s.fake.rotations).toBe(2);
+      expect(s.fake.theftRevocations).toEqual([]);
+    });
+
+    it("replays a lost reply for action a1 under a1's key before serving a2", async () => {
+      const s = await setup();
+      const { sessionId } = await s.launch();
+      const calls = s.client.forSession(sessionId)!;
+      expireTokens(s);
+      s.flags.dropReplies = true;
+      await expect(calls.accessToken({ oneonActionId: "a1" })).rejects.toBeInstanceOf(ImpressoRxUnreachableError);
+      s.flags.dropReplies = false;
+      await calls.accessToken({ oneonActionId: "a2" });
+      await calls.accessToken({ oneonActionId: "a1" }); // cached from the replay, no third exchange
+      expect(s.fake.rotations).toBe(2);
+      expect(s.fake.theftRevocations).toEqual([]);
+    });
+
+    it("slides the idle expiry on every exchange", async () => {
+      const s = await setup();
+      const { sessionId } = await s.launch();
+      const calls = s.client.forSession(sessionId)!;
+      for (let minutes = 5; minutes <= 45; minutes += 5) {
+        s.advance(5 * 60 * 1000);
+        await expect(calls.accessToken()).resolves.toEqual(expect.any(String));
+      }
+    });
+
+    it("refuses a hand-off for another staff user, stores nothing and revokes the issued grant", async () => {
+      const s = await setup();
+      const handoff = await s.fake.mintHandoff("someone-else");
+      await expect(s.client.exchangeHandoff(s.registration.id, handoff, "sess", s.identityId, s.membershipId, "staff-1")).rejects.toBeInstanceOf(
+        ImpressoRxRefusedError,
+      );
+      expect(s.control.prepare("SELECT COUNT(*) AS n FROM delegation_grants").get()).toEqual({ n: 0 });
+      expect([...s.fake.grants.values()].every((g) => g.status === "revoked")).toBe(true);
+      expect(s.snapshots).toHaveLength(0);
+    });
+
+    it("createImpressoRxClient wires the client without exposing the grant store", async () => {
+      const s = await setup();
+      const client = createImpressoRxClient({
+        control: s.control,
+        grantMasterKeyB64: randomBytes(32).toString("base64"),
+        enrolment: s.enrolment,
+        onSnapshot: () => undefined,
+        fetchImpl: s.fake.fetch,
+        clock: s.clock,
+      });
+      const handoff = await s.fake.mintHandoff("staff-1");
+      const { grantId } = await client.exchangeHandoff(s.registration.id, handoff, "sess-f", s.identityId, s.membershipId, "staff-1");
+      expect(client.forSession("sess-f")).not.toBeNull();
+      expect(grantId).toEqual(expect.any(String));
+    });
   });
 });

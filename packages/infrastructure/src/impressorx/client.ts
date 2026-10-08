@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { Logger } from "@oneon/domain";
 import { signJws } from "../crypto/jws.js";
-import { GrantInactiveError, type GrantStore, type GrantRecord, type InsertGrant } from "../database/control/grant-store.js";
-import type { TenantRegistration, TenantRegistrationRepository } from "../database/control/tenant-registration-repository.js";
+import { GrantInactiveError, GrantStore, type GrantRecord, type InsertGrant, type PendingOp } from "../database/control/grant-store.js";
+import type { ControlDb } from "../database/control/open-control-db.js";
+import { TenantRegistrationRepository } from "../database/control/tenant-registration-repository.js";
+import type { TenantRegistration } from "../database/control/tenant-registration-repository.js";
 import type { EnrolmentService, FetchLike } from "./enrolment-service.js";
 
 export type MembershipSnapshot = {
@@ -61,6 +63,8 @@ export interface ImpressoRxClientDeps {
 const REQUEST_TIMEOUT_MS = 10_000;
 /** The deployment answers a repeated request id from its cache for 120 s; stop before that. */
 const RETRY_WINDOW_MS = 110_000;
+/** Safety margin before the window closes: no attempt is started at or after (window - margin) since the exchange began. */
+const RETRY_MARGIN_MS = 10_000;
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 500;
 const TOKEN_REFRESH_MARGIN_MS = 30_000;
@@ -103,9 +107,14 @@ export class ImpressoRxClient {
     sessionId: string,
     identityId: string,
     membershipId: string,
+    expectedExternalUserId: string,
   ): Promise<{ grantId: string; snapshot: MembershipSnapshot }> {
     const registration = this.registration(registrationId);
     const res = await this.postToken(registration, { grantType: "handoff", handoff, requestId: randomUUID() }, false);
+    if (res.snapshot.userId !== expectedExternalUserId) {
+      await this.bestEffortRevoke(registration, res.grant.id);
+      throw new ImpressoRxRefusedError("Hand-off is for a different user");
+    }
     const now = this.clock().getTime();
     this.deps.grants.insert({
       id: res.grant.id,
@@ -148,7 +157,7 @@ export class ImpressoRxClient {
     const promise = this.serialised(grantId, async () => {
       const again = this.cachedToken(key);
       if (again) return again;
-      return this.exchangeGrant(grantId, oneonActionId);
+      return (await this.runExchange(grantId, oneonActionId ? { grantType: "grant", oneonActionId } : { grantType: "grant" })).accessToken;
     }).finally(() => this.inflight.delete(key));
     this.inflight.set(key, promise);
     return promise;
@@ -173,7 +182,7 @@ export class ImpressoRxClient {
     const record = this.deps.grants.find(grantId);
     if (!record) return;
     this.deps.grants.revoke(grantId, "revoked_by_oneon");
-    for (const key of [...this.tokens.keys()]) if (key.startsWith(`${grantId}:`)) this.tokens.delete(key);
+    this.dropTokens(grantId);
     await this.signedPost(this.registration(record.tenantRegistrationId), "/api/oneon/revoke", { grantId }, true);
   }
 
@@ -200,77 +209,111 @@ export class ImpressoRxClient {
   }
 
   /** @internal */
-  issue(
+  async issue(
     attendedGrantId: string,
     input: { kind: "action" | "schedule"; oneonActionId?: string; scope: string[]; absoluteExpiresAt: string },
   ): Promise<{ grantId: string }> {
-    return this.serialised(attendedGrantId, async () => {
-      const record = this.activeGrant(attendedGrantId);
-      const registration = this.registration(record.tenantRegistrationId);
-      const begin = this.beginExchange(attendedGrantId);
-      const res = await this.postToken(
-        registration,
-        {
-          grantType: "issue",
-          attendedGrantId,
-          attendedGrant: begin.value,
-          requestId: begin.requestId,
-          kind: input.kind,
-          scope: input.scope,
-          ...(input.oneonActionId ? { oneonActionId: input.oneonActionId } : {}),
-          absoluteExpiresAt: input.absoluteExpiresAt,
-        },
-        true,
-      );
-      if (!res.issued) throw new ImpressoRxUnreachableError("Reply carries no issued grant");
-      const now = this.clock().getTime();
-      const idle = Math.min(now + UNATTENDED_IDLE_MS, Date.parse(input.absoluteExpiresAt));
-      const issued: InsertGrant = {
-        id: res.issued.id,
-        identityId: record.identityId,
-        membershipId: record.membershipId,
-        tenantRegistrationId: record.tenantRegistrationId,
-        kind: input.kind,
-        scope: input.scope,
-        value: res.issued.value,
-        generation: res.issued.generation,
-        actionId: input.oneonActionId,
-        idleExpiresAt: new Date(idle).toISOString(),
-        absoluteExpiresAt: input.absoluteExpiresAt,
-      };
-      this.complete(attendedGrantId, begin.requestId, res, issued);
-      this.cacheToken(attendedGrantId, undefined, res);
-      this.deps.onSnapshot(record.membershipId, res.snapshot);
-      return { grantId: res.issued.id };
-    });
+    const op: PendingOp = {
+      grantType: "issue",
+      kind: input.kind,
+      ...(input.oneonActionId ? { oneonActionId: input.oneonActionId } : {}),
+      scope: input.scope,
+      absoluteExpiresAt: input.absoluteExpiresAt,
+    };
+    const out = await this.serialised(attendedGrantId, () => this.runExchange(attendedGrantId, op));
+    return { grantId: out.issuedGrantId! };
   }
 
   // ---- internals ----
 
-  private async exchangeGrant(grantId: string, oneonActionId: string | undefined): Promise<string> {
-    const record = this.activeGrant(grantId);
-    const registration = this.registration(record.tenantRegistrationId);
-    const begin = this.beginExchange(grantId);
-    const res = await this.postToken(
-      registration,
-      {
-        grantType: "grant",
-        grantId,
-        grant: begin.value,
-        requestId: begin.requestId,
-        ...(oneonActionId ? { oneonActionId } : {}),
-      },
-      true,
-    );
-    this.complete(grantId, begin.requestId, res);
-    this.cacheToken(grantId, oneonActionId, res);
-    this.deps.onSnapshot(record.membershipId, res.snapshot);
-    return res.accessToken;
+  /**
+   * Runs `op` as an exchange of the grant. A stored pending exchange (a lost reply or a crash) is replayed FIRST,
+   * exactly as stored (same request id, same value, same operation) and its result applied to that operation; then `op`
+   * runs as a new exchange. A stored exchange past the idempotency window is never presented: the grant is revoked.
+   */
+  private async runExchange(grantId: string, op: PendingOp): Promise<{ accessToken: string; issuedGrantId?: string }> {
+    for (;;) {
+      const record = this.activeGrant(grantId);
+      const registration = this.registration(record.tenantRegistrationId);
+      const begin = this.beginExchange(grantId, op);
+      if (begin.reused && this.clock().getTime() - Date.parse(begin.pendingSince) >= RETRY_WINDOW_MS - RETRY_MARGIN_MS) {
+        this.deps.grants.revoke(grantId, "exchange_outcome_unknown");
+        this.dropTokens(grantId);
+        await this.bestEffortRevoke(registration, grantId);
+        throw new ImpressoRxRefusedError("An earlier exchange has an unknown outcome");
+      }
+      const out = await this.perform(record, registration, begin);
+      if (JSON.stringify(begin.pendingOp) === JSON.stringify(op)) return out;
+    }
   }
 
-  private beginExchange(grantId: string) {
+  private async perform(
+    record: GrantRecord,
+    registration: TenantRegistration,
+    begin: { value: string; requestId: string; pendingSince: string; pendingOp: PendingOp },
+  ): Promise<{ accessToken: string; issuedGrantId?: string }> {
+    const op = begin.pendingOp;
+    const claims: Record<string, unknown> =
+      op.grantType === "issue"
+        ? {
+            grantType: "issue",
+            attendedGrantId: record.id,
+            attendedGrant: begin.value,
+            requestId: begin.requestId,
+            kind: op.kind,
+            scope: op.scope,
+            ...(op.oneonActionId ? { oneonActionId: op.oneonActionId } : {}),
+            absoluteExpiresAt: op.absoluteExpiresAt,
+          }
+        : {
+            grantType: "grant",
+            grantId: record.id,
+            grant: begin.value,
+            requestId: begin.requestId,
+            ...(op.oneonActionId ? { oneonActionId: op.oneonActionId } : {}),
+          };
+    const res = await this.postToken(registration, claims, true, Date.parse(begin.pendingSince));
+
+    let issued: InsertGrant | undefined;
+    if (op.grantType === "issue" && res.issued) {
+      const now = this.clock().getTime();
+      issued = {
+        id: res.issued.id,
+        identityId: record.identityId,
+        membershipId: record.membershipId,
+        tenantRegistrationId: record.tenantRegistrationId,
+        kind: op.kind,
+        scope: op.scope,
+        value: res.issued.value,
+        generation: res.issued.generation,
+        actionId: op.oneonActionId,
+        idleExpiresAt: new Date(Math.min(now + UNATTENDED_IDLE_MS, Date.parse(op.absoluteExpiresAt))).toISOString(),
+        absoluteExpiresAt: op.absoluteExpiresAt,
+      };
+    }
+    // The rotation is always completed, even when the reply turns out to be unusable.
+    this.complete(record.id, begin.requestId, res, issued);
+    this.cacheToken(record.id, op.grantType === "grant" ? op.oneonActionId : undefined, res);
+    this.deps.onSnapshot(record.membershipId, res.snapshot);
+    if (op.grantType === "issue" && !issued) throw new ImpressoRxUnreachableError("Reply carries no issued grant");
+    return { accessToken: res.accessToken, issuedGrantId: issued?.id };
+  }
+
+  private dropTokens(grantId: string): void {
+    for (const key of [...this.tokens.keys()]) if (key.startsWith(`${grantId}:`)) this.tokens.delete(key);
+  }
+
+  private async bestEffortRevoke(registration: TenantRegistration, grantId: string): Promise<void> {
     try {
-      return this.deps.grants.beginExchange(grantId);
+      await this.signedPost(registration, "/api/oneon/revoke", { grantId }, false);
+    } catch {
+      // The grant is already unusable on this side.
+    }
+  }
+
+  private beginExchange(grantId: string, op: PendingOp) {
+    try {
+      return this.deps.grants.beginExchange(grantId, op);
     } catch (error) {
       if (error instanceof GrantInactiveError) throw new ImpressoRxRefusedError("Grant is not active");
       throw error;
@@ -323,8 +366,8 @@ export class ImpressoRxClient {
     this.tokens.set(tokenKey(grantId, oneonActionId), { token: res.accessToken, expiresAt: Date.parse(res.accessTokenExpiresAt) });
   }
 
-  private async postToken(registration: TenantRegistration, claims: Record<string, unknown>, retry: boolean): Promise<TokenResponse> {
-    const res = await this.signedPost(registration, "/api/oneon/token", claims, retry);
+  private async postToken(registration: TenantRegistration, claims: Record<string, unknown>, retry: boolean, since?: number): Promise<TokenResponse> {
+    const res = await this.signedPost(registration, "/api/oneon/token", claims, retry, since);
     const parsed = parseTokenResponse(await res.json().catch(() => null));
     if (!parsed) throw new ImpressoRxUnreachableError("Malformed token reply");
     return parsed;
@@ -336,9 +379,9 @@ export class ImpressoRxClient {
    * deployment yet; 401 from every key is a refusal. Network failure, timeout, 5xx and 429 are retried (when `retry`)
    * while inside the retry window, then reported as unreachable.
    */
-  private async signedPost(registration: TenantRegistration, path: string, claims: Record<string, unknown>, retry: boolean): Promise<Response> {
+  private async signedPost(registration: TenantRegistration, path: string, claims: Record<string, unknown>, retry: boolean, since?: number): Promise<Response> {
     const keys = this.deps.enrolment.oneonSigningKeys(registration.id);
-    const started = this.clock().getTime();
+    const started = since ?? this.clock().getTime();
     for (const key of keys) {
       for (let attempt = 1; ; attempt++) {
         const request = await signJws({
@@ -367,7 +410,7 @@ export class ImpressoRxClient {
         if (status === 401) break;
         if (status !== null && status < 500 && status !== 429) throw new ImpressoRxRefusedError(`ImpressoRx answered ${status}`, status);
         const elapsed = this.clock().getTime() - started;
-        if (!retry || attempt >= MAX_ATTEMPTS || elapsed + RETRY_DELAY_MS * attempt >= RETRY_WINDOW_MS) {
+        if (!retry || attempt >= MAX_ATTEMPTS || elapsed + RETRY_DELAY_MS * attempt + RETRY_MARGIN_MS >= RETRY_WINDOW_MS) {
           this.deps.logger?.warn("ImpressoRx unreachable", { path, status });
           throw new ImpressoRxUnreachableError();
         }
@@ -454,4 +497,25 @@ function parseTokenResponse(body: unknown): TokenResponse | null {
   const issued = b.issued === undefined ? undefined : parseTriple(b.issued);
   if (issued === null) return null;
   return { accessToken: b.accessToken, accessTokenExpiresAt: b.accessTokenExpiresAt, grant, snapshot, issued };
+}
+
+/** Builds the client with its grant store and registration repository, so callers never import the grant store (I4). */
+export function createImpressoRxClient(opts: {
+  control: ControlDb;
+  grantMasterKeyB64: string;
+  enrolment: Pick<EnrolmentService, "oneonSigningKeys">;
+  onSnapshot: (membershipId: string, snapshot: MembershipSnapshot) => void;
+  fetchImpl?: FetchLike;
+  logger?: Logger;
+  clock?: () => Date;
+}): ImpressoRxClient {
+  return new ImpressoRxClient({
+    registrations: new TenantRegistrationRepository(opts.control),
+    grants: new GrantStore(opts.control, opts.grantMasterKeyB64, opts.clock),
+    enrolment: opts.enrolment,
+    onSnapshot: opts.onSnapshot,
+    fetchImpl: opts.fetchImpl,
+    logger: opts.logger,
+    clock: opts.clock,
+  });
 }
