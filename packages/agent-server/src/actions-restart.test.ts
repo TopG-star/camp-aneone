@@ -65,6 +65,7 @@ function boot(dbPath: string, google: ReturnType<typeof googleCalendar>, now: Da
     registry: createActionRegistry([createCalendarEventDefinition]),
     repo: instances,
     configRepo: new SqliteActionConfigRepository(asPersonal(db)),
+    memberships: { activeFor: () => null },
     capabilities: () => ({
       readers: {
         calendar: google.reader,

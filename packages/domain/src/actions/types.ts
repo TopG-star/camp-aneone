@@ -25,6 +25,25 @@ export function personalActor(userId: string): ActorContext {
   return { userId, scope: "personal", tenantId: null, roles: ["owner"], permissions: [], locationIds: [] };
 }
 
+/** What a current membership gives an actor (structurally the control database's Membership). */
+export interface MembershipLike {
+  role: string;
+  permissions: string[];
+  locationIds: string[];
+}
+
+/** A staff member acting in one pharmacy. Permissions are namespaced so they cannot collide with Oneon's own. */
+export function tenantActor(m: { identityId: string; tenantId: string; role: string; permissions: string[]; locationIds: string[] }): ActorContext {
+  return {
+    userId: m.identityId,
+    scope: "tenant",
+    tenantId: m.tenantId,
+    roles: [m.role],
+    permissions: m.permissions.map((p) => "impressorx:" + p),
+    locationIds: m.locationIds,
+  };
+}
+
 /** Recorded on every event. */
 export interface ActorRef {
   kind: "user" | "policy" | "system" | "sweeper";

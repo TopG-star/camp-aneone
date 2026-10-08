@@ -117,6 +117,14 @@ export class TenantRegistrationRepository {
     return row ? toRegistration(row) : null;
   }
 
+  /** The active registration whose rows carry this tenant id (UNIQUE); null when absent or not active. */
+  findByTenantId(tenantId: string): TenantRegistration | null {
+    const row = this.db
+      .prepare("SELECT * FROM tenant_registrations WHERE tenant_id = ? AND status = 'active'")
+      .get(tenantId) as RegistrationRow | undefined;
+    return row ? toRegistration(row) : null;
+  }
+
   /** `iss` is "impressorx:<slug>". */
   findByIssuer(iss: string): TenantRegistration | null {
     const prefix = "impressorx:";

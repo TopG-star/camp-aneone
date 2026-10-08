@@ -57,6 +57,16 @@ describe("tenant registration and operator repositories", () => {
     ]);
   });
 
+  it("finds an active registration by the tenant id its rows carry, and no other", () => {
+    const { control, repo, identityId } = setup();
+    const reg = repo.create(input(identityId));
+    control.prepare("UPDATE tenant_registrations SET tenant_id = 'registry-tenant' WHERE id = ?").run(reg.id);
+    expect(repo.findByTenantId("registry-tenant")?.id).toBe(reg.id);
+    expect(repo.findByTenantId(reg.id)).toBeNull();
+    repo.setStatus(reg.id, "suspended_by_operator", null, "test");
+    expect(repo.findByTenantId("registry-tenant")).toBeNull();
+  });
+
   it("writes nothing when any part fails", () => {
     const { control, repo, identityId } = setup();
     repo.create(input(identityId));

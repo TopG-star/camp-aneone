@@ -1,4 +1,4 @@
-import type { PersonalDb } from "@oneon/domain";
+import { personalActor, type PersonalDb } from "@oneon/domain";
 import express from "express";
 import type Database from "better-sqlite3";
 import {
@@ -18,6 +18,7 @@ import {
   createDatabase,
   runMigrations,
 } from "@oneon/infrastructure";
+import type { ActionsModule } from "../../actions-wiring.js";
 import { createActionsRouter } from "../actions.route.js";
 import { createActionDefinitionsRouter } from "../action-definitions.route.js";
 
@@ -89,6 +90,7 @@ export function buildActionsTestApp(options: { createDelayMs?: number } = {}): A
     registry,
     repo: instanceRepo,
     configRepo,
+    memberships: { activeFor: () => null },
     capabilities: () => ({
       readers: {
         calendar,
@@ -109,10 +111,14 @@ export function buildActionsTestApp(options: { createDelayMs?: number } = {}): A
   app.use(express.json());
   app.use((req, _res, next) => {
     req.userId = (req.headers["x-test-user"] as string) ?? "user-A";
+    req.activeContext = { kind: "personal", identityId: req.userId };
+    req.contextDb = asPersonal(db);
     next();
   });
-  app.use("/api/actions", createActionsRouter({ orchestrator, registry, instanceRepo, configRepo, legacyRepo, logger: testLogger }));
-  app.use("/api/action-definitions", createActionDefinitionsRouter({ registry, configRepo, logger: testLogger }));
+  const module = { orchestrator, registry, instanceRepo, configRepo, legacyRepo } as unknown as ActionsModule;
+  const actionsFor = () => module;
+  app.use("/api/actions", createActionsRouter({ actionsFor, actorFor: (ctx) => personalActor(ctx.identityId), logger: testLogger }));
+  app.use("/api/action-definitions", createActionDefinitionsRouter({ actionsFor, logger: testLogger }));
 
   return { app, db, orchestrator, instanceRepo, configRepo, events, deadlines, warnings, legacyRepo };
 }

@@ -29,7 +29,7 @@ import { createTokenAuthMiddleware } from "../middleware/auth.js";
 import { createSessionAuthMiddleware } from "../middleware/session-auth.js";
 import { requireUser } from "../middleware/require-user.js";
 import { requirePersonalContext, resolveActiveContext } from "../middleware/active-context.js";
-import { contextRepos } from "../context-wiring.js";
+import { actorForContext, contextRepos } from "../context-wiring.js";
 import {
   LocalDocMemoryProvider,
   StructuredLogger,
@@ -514,22 +514,18 @@ export function registerRoutes(app: Express, container: AppContainer): void {
   const actionsLogger = new StructuredLogger("actions", env.LOG_LEVEL);
   app.use(
     "/api/actions",
-    ...userAuth,
+    ...contextAuth,
     createActionsRouter({
-      orchestrator: container.actions.orchestrator,
-      registry: container.actions.registry,
-      instanceRepo: container.actions.instanceRepo,
-      configRepo: container.actions.configRepo,
-      legacyRepo: container.actions.legacyRepo,
+      actionsFor: container.actionsFor,
+      actorFor: (ctx) => actorForContext(ctx, container.memberships),
       logger: actionsLogger,
     }),
   );
   app.use(
     "/api/action-definitions",
-    ...userAuth,
+    ...contextAuth,
     createActionDefinitionsRouter({
-      registry: container.actions.registry,
-      configRepo: container.actions.configRepo,
+      actionsFor: container.actionsFor,
       logger: actionsLogger,
     }),
   );

@@ -1,5 +1,6 @@
 import {
   ActionNotFoundError,
+  DelegationRevokedError,
   TransitionConflictError,
   maxRisk,
   type ActionCapabilities,
@@ -29,7 +30,6 @@ export function createAdvance(deps: OrchestratorDeps) {
     if (!instance) throw new ActionNotFoundError(actionId);
     const def = deps.registry.get(instance.actionType);
     const caps = deps.capabilities(instance.userId);
-    const actor = actorForInstance(instance);
 
     for (let step = 0; step < 10; step++) {
       const before = instance.status;
@@ -39,10 +39,10 @@ export function createAdvance(deps: OrchestratorDeps) {
             instance = move(deps, instance, "validating", SYSTEM);
             break;
           case "validating":
-            instance = await validate(deps, instance, def, caps, actor);
+            instance = await validate(deps, instance, def, caps, actorForInstance(instance, deps.memberships));
             break;
           case "approved":
-            instance = await executeApproved(deps, instance, def, caps, actor);
+            instance = await executeApproved(deps, instance, def, caps, actorForInstance(instance, deps.memberships));
             break;
           case "verifying":
             instance = await verify(deps, instance, def, caps);
@@ -53,6 +53,17 @@ export function createAdvance(deps: OrchestratorDeps) {
       } catch (error) {
         // Someone else (a person or the sweeper) moved the action first; their transition stands.
         if (error instanceof TransitionConflictError) return deps.repo.findById(ownerId, actionId)!;
+        if (error instanceof DelegationRevokedError) {
+          try {
+            instance = move(deps, instance, "failed", SYSTEM, {}, {
+              error: { code: "delegation_revoked", message: "The person's access to this pharmacy has ended.", stage: "recheck" },
+            });
+          } catch (moveError) {
+            if (moveError instanceof TransitionConflictError) return deps.repo.findById(ownerId, actionId)!;
+            throw moveError;
+          }
+          continue;
+        }
         throw error;
       }
       if (instance.status === before) return instance;

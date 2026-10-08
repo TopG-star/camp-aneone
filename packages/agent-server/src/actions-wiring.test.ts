@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import type { Logger } from "@oneon/domain";
+import type { ContextDb, Logger, TenantDb } from "@oneon/domain";
 import { createDatabase, runMigrations } from "@oneon/infrastructure";
-import { createActionsModule, runActionRecovery, runActionStartupTasks, type ActionsModule } from "./actions-wiring.js";
+import { createActionsFor, createActionsModule, runActionRecovery, runActionStartupTasks, runTenantActionRecovery, type ActionsModule } from "./actions-wiring.js";
+import { activeMembershipLookup } from "./context-wiring.js";
 
 vi.mock("@oneon/infrastructure", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@oneon/infrastructure")>()),
@@ -125,5 +126,117 @@ describe("per-user calendar adapter", () => {
     const { actions, createGoogleTokenProvider } = module();
     createGoogleTokenProvider.mockReturnValueOnce(null as never);
     expect(actions.calendarReaderFor("nobody")).toBeNull();
+  });
+});
+
+describe("runTenantActionRecovery", () => {
+  function tenants(failOpenFor?: string) {
+    const trail: string[] = [];
+    const handle = (registrationId: string) => ({ kind: "tenant", tenantId: "t-" + registrationId, raw: {}, __brand: "TenantDb" }) as unknown as TenantDb;
+    const module = () =>
+      ({
+        orchestrator: {
+          sweep: vi.fn(async (owner: string) => (trail.push("sweep " + owner), { recovered: 0 })),
+          expireStale: vi.fn(async (owner: string) => (trail.push("expire " + owner), 0)),
+        },
+      }) as unknown as ActionsModule;
+    return {
+      trail,
+      deps: {
+        registrations: { listActive: () => [{ id: "r1" }, { id: "r2" }] },
+        openTenant: (id: string) => {
+          trail.push("open " + id);
+          if (id === failOpenFor) throw new Error("tenant_unavailable");
+          return handle(id);
+        },
+        actionsFor: (_db: ContextDb) => module(),
+      },
+    };
+  }
+
+  it("visits each active tenant once, opening one file at a time", async () => {
+    const { trail, deps } = tenants();
+    await runTenantActionRecovery(deps, fakeLogger());
+    expect(trail).toEqual(["open r1", "sweep t-r1", "expire t-r1", "open r2", "sweep t-r2", "expire t-r2"]);
+  });
+
+  it("logs a tenant that fails to open and still recovers the others", async () => {
+    const { trail, deps } = tenants("r1");
+    const logger = fakeLogger();
+    await expect(runTenantActionRecovery(deps, logger)).resolves.toBeUndefined();
+    expect(trail).toEqual(["open r1", "open r2", "sweep t-r2", "expire t-r2"]);
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it("runs after personal recovery in the startup tasks", async () => {
+    const { container, sweep } = fakeContainer({});
+    const { trail, deps } = tenants();
+    await runActionStartupTasks({ ...container, tenants: deps }, fakeLogger());
+    expect(sweep.mock.calls.map((c) => c[0])).toEqual(["u1", "u2"]);
+    expect(trail[0]).toBe("open r1");
+  });
+});
+
+describe("actionsFor", () => {
+  function factory() {
+    const createGoogleTokenProvider = vi.fn();
+    const actionsFor = createActionsFor({
+      publicUrl: "https://oneon.test",
+      calendarId: "primary",
+      calendarCacheTtlMs: 60_000,
+      oauthTokenRepo: null,
+      deadlines: { findById: () => null },
+      notificationRepo: {} as never,
+      preferenceRepo: {} as never,
+      notificationPort: {} as never,
+      notificationWriter: {} as never,
+      createGoogleTokenProvider,
+      logger: fakeLogger(),
+    });
+    const open = (kind: "personal" | "tenant") => {
+      const raw = createDatabase(":memory:");
+      runMigrations(raw);
+      return (kind === "personal"
+        ? { kind, raw, __brand: "PersonalDb" }
+        : { kind, tenantId: "t-a", raw, __brand: "TenantDb" }) as unknown as ContextDb;
+    };
+    return { actionsFor, open, createGoogleTokenProvider };
+  }
+
+  it("builds a module once per handle", () => {
+    const { actionsFor, open } = factory();
+    const tenant = open("tenant");
+    expect(actionsFor(tenant)).toBe(actionsFor(tenant));
+    expect(actionsFor(open("tenant"))).not.toBe(actionsFor(tenant));
+  });
+
+  it("gives a tenant handle no personal definitions, no Google access and no legacy repository", () => {
+    const { actionsFor, open, createGoogleTokenProvider } = factory();
+    const personal = actionsFor(open("personal"));
+    const tenant = actionsFor(open("tenant"));
+    expect(personal.registry.list().length).toBeGreaterThan(0);
+    expect(tenant.registry.list()).toEqual([]);
+    expect(tenant.calendarReaderFor("i1")).toBeNull();
+    const caps = tenant.capabilitiesFor("i1");
+    expect(caps.writers).toEqual({ calendar: null, notifications: null });
+    expect(createGoogleTokenProvider).not.toHaveBeenCalled();
+    expect(() => tenant.legacyRepo).toThrow();
+  });
+});
+
+describe("activeMembershipLookup", () => {
+  const membership = { id: "m1", identityId: "i1", tenantRegistrationId: "r1", role: "manager", permissions: ["p"], locationIds: [], status: "active" };
+  it("finds the identity's active membership at the registration holding the tenant id", () => {
+    const lookup = activeMembershipLookup(
+      { findByTenantId: (t: string) => (t === "t-a" ? { id: "r1" } : null) },
+      { listActiveForIdentity: () => [{ ...membership, tenantRegistrationId: "r0" }, membership] } as never,
+    );
+    expect(lookup.activeFor("i1", "t-a")).toBe(membership);
+  });
+
+  it("returns null for an unknown or inactive registration, or an identity without a membership there", () => {
+    const none = { listActiveForIdentity: () => [] } as never;
+    expect(activeMembershipLookup({ findByTenantId: () => null }, { listActiveForIdentity: () => [membership] } as never).activeFor("i1", "t-a")).toBeNull();
+    expect(activeMembershipLookup({ findByTenantId: () => ({ id: "r1" }) }, none).activeFor("i1", "t-a")).toBeNull();
   });
 });

@@ -32,3 +32,12 @@ export class ExternalCallError extends Error {
     this.name = "ExternalCallError";
   }
 }
+
+/** The person an action runs for no longer has an active membership at its pharmacy. */
+export class DelegationRevokedError extends Error {
+  readonly code = "delegation_revoked";
+  constructor() {
+    super("delegation_revoked");
+    this.name = "DelegationRevokedError";
+  }
+}

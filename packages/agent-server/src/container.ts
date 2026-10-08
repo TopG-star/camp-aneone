@@ -77,7 +77,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type { BackgroundLoop } from "./background-loop.js";
-import { createActionsModule, type ActionsModule } from "./actions-wiring.js";
+import { createActionsFor, type ActionsModule } from "./actions-wiring.js";
+import { activeMembershipLookup } from "./context-wiring.js";
 import { createModelWiring } from "./model-wiring.js";
 import type { AiDataChoiceRepository, ModelAuditRepository, ModelGateway, ModelRouting, ProviderId, ProviderOverride } from "@oneon/application";
 
@@ -149,6 +150,8 @@ export interface AppContainer {
 
   // ── Actions (spec: Action Spec framework) ─────────────────
   actions: ActionsModule;
+  /** The actions module for a request's handle (memoized per handle). Tenant requests must use this, never `actions`. */
+  actionsFor: (db: import("@oneon/domain").ContextDb) => ActionsModule;
   notificationWriter: NotificationWriter;
 
   // ── Background Loop (mutable, set after creation) ─────────
@@ -434,8 +437,8 @@ export function createContainer(env: Env): AppContainer {
     },
   };
 
-  const actions = createActionsModule({
-    context: personal,
+  const actionsFor = createActionsFor({
+    memberships: activeMembershipLookup(tenantRegistrations, memberships),
     publicUrl: env.PUBLIC_URL,
     calendarId: env.CALENDAR_ID,
     calendarCacheTtlMs: env.CALENDAR_CACHE_TTL_MS,
@@ -448,6 +451,7 @@ export function createContainer(env: Env): AppContainer {
     createGoogleTokenProvider,
     logger,
   });
+  const actions = actionsFor(personal);
 
   // ── Power Automate status ─────────────────────────────────
   if (env.PA_OUTLOOK_WEBHOOK_SECRET) {
@@ -516,6 +520,7 @@ export function createContainer(env: Env): AppContainer {
     notificationPort,
     transactionRunner,
     actions,
+    actionsFor,
     notificationWriter,
     backgroundLoop: null,
     logger,

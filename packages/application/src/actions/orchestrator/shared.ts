@@ -1,10 +1,13 @@
 import {
+  DelegationRevokedError,
   personalActor,
+  tenantActor,
   type ActionInstance,
   type ActorContext,
   type ActorRef,
   type InstancePatch,
   type JsonObject,
+  type MembershipLike,
   type LifecycleStatus,
 } from "@oneon/domain";
 import { clampPolicy, type ClampResult, type PolicyDecision } from "../policy/index.js";
@@ -16,9 +19,21 @@ export const SYSTEM: ActorRef = { kind: "system" };
 export const POLICY: ActorRef = { kind: "policy" };
 export const SWEEPER: ActorRef = { kind: "sweeper" };
 
-export function actorForInstance(instance: ActionInstance): ActorContext {
+/** Personal: the owner. Tenant: rebuilt from the membership as it is now, so a suspension or role change applies at once. */
+export function actorForInstance(
+  instance: ActionInstance,
+  memberships: { activeFor(identityId: string, tenantId: string): MembershipLike | null },
+): ActorContext {
   if (instance.scope === "personal") return personalActor(instance.userId);
-  throw new Error("Tenant-scope actions are not supported until sub-project B");
+  const membership = instance.tenantId ? memberships.activeFor(instance.userId, instance.tenantId) : null;
+  if (!membership) throw new DelegationRevokedError();
+  return tenantActor({
+    identityId: instance.userId,
+    tenantId: instance.tenantId!,
+    role: membership.role,
+    permissions: membership.permissions,
+    locationIds: membership.locationIds,
+  });
 }
 
 export function effectivePolicyFor(

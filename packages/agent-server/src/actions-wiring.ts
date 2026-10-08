@@ -7,9 +7,11 @@ import {
   type ActionInstanceRepository,
   type CalendarReader,
   type ContextDb,
+  type TenantDb,
   type CalendarWriter,
   type Deadline,
   type LegacyActionRepository,
+  type MembershipLike,
   type Logger,
   type NotificationPort,
   type NotificationRepository,
@@ -38,6 +40,8 @@ import { contextRepos } from "./context-wiring.js";
 export interface ActionsWiringDeps {
   /** The personal handle: the orchestrator and the startup tasks run on the personal context only. */
   context: ContextDb;
+  /** Current active membership of an identity at a tenant (registry tenant id). Defaults to none, so a tenant action fails closed. */
+  memberships?: { activeFor(identityId: string, tenantId: string): MembershipLike | null };
   publicUrl: string;
   calendarId: string;
   calendarCacheTtlMs: number;
@@ -67,11 +71,15 @@ export interface ActionsModule {
 
 /** The only place outside infrastructure that holds a CalendarWriter (spec §5, Task 15 test). */
 export function createActionsModule(deps: ActionsWiringDeps): ActionsModule {
-  const registry = createActionRegistry(createActionDefinitions());
-  const { actionInstances: instanceRepo, actionConfigs: configRepo, legacyActions: legacyRepo } = contextRepos(deps.context);
+  const isTenant = deps.context.kind === "tenant";
+  // B-core has no tenant action types, so a tenant handle gets an empty registry (R1: a type exists only if registered).
+  const registry = createActionRegistry(createActionDefinitions().filter((d) => (d.scope === "tenant") === isTenant));
+  const repos = contextRepos(deps.context);
+  const { actionInstances: instanceRepo, actionConfigs: configRepo } = repos;
   const calendars = new Map<string, GoogleCalendarAdapter>();
 
   function calendarFor(userId: string): GoogleCalendarAdapter | null {
+    if (isTenant) return null; // no Google access in a pharmacy context
     const cached = calendars.get(userId);
     if (cached) return cached;
     const tokenProvider = deps.createGoogleTokenProvider(userId);
@@ -87,6 +95,18 @@ export function createActionsModule(deps: ActionsWiringDeps): ActionsModule {
   }
 
   function capabilitiesFor(userId: string): ActionCapabilities {
+    if (isTenant) {
+      return {
+        readers: {
+          calendar: null,
+          deadlines: { findById: () => null },
+          notifications: { isSuppressed: () => null, findById: () => null },
+          identity: { googleEmail: null },
+          links: { inboundItem: (id) => `${deps.publicUrl}/items/${id}` },
+        },
+        writers: { calendar: null, notifications: null },
+      };
+    }
     const calendar = calendarFor(userId);
     const reader: CalendarReader | null = calendar;
     const writer: CalendarWriter | null = calendar;
@@ -119,14 +139,33 @@ export function createActionsModule(deps: ActionsWiringDeps): ActionsModule {
     registry,
     repo: instanceRepo,
     configRepo,
+    memberships: deps.memberships ?? { activeFor: () => null },
     capabilities: capabilitiesFor,
-    notifier: createActionNotifier(deps.notificationPort, deps.logger),
+    // Tenant notifications are not part of B-core; the personal notifier would address a personal inbox.
+    notifier: isTenant ? { awaitingApproval: async () => {}, rollbackFailed: async () => {} } : createActionNotifier(deps.notificationPort, deps.logger),
     logger: deps.logger,
     clock: () => new Date(),
     newId: randomUUID,
   });
 
-  return { orchestrator, registry, instanceRepo, configRepo, legacyRepo, capabilitiesFor, calendarReaderFor: calendarFor };
+  const module: ActionsModule = { orchestrator, registry, instanceRepo, configRepo, capabilitiesFor, calendarReaderFor: calendarFor } as ActionsModule;
+  // Personal-only: reading it for a tenant handle throws (see contextRepos). Not enumerable, so inspecting a module never trips it.
+  Object.defineProperty(module, "legacyRepo", { get: () => repos.legacyActions, enumerable: false });
+  return module;
+}
+
+const modules = new WeakMap<ContextDb, ActionsModule>();
+
+/** The actions module for a handle, built once per handle (like contextRepos). Never keep it beyond the handle's request. */
+export function createActionsFor(base: Omit<ActionsWiringDeps, "context">): (db: ContextDb) => ActionsModule {
+  return (db) => {
+    let module = modules.get(db);
+    if (!module) {
+      module = createActionsModule({ ...base, context: db });
+      modules.set(db, module);
+    }
+    return module;
+  };
 }
 
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -145,9 +184,41 @@ export async function runActionRecovery(actions: ActionsModule, userId: string, 
   }
 }
 
+/** Recovery for every active tenant, one file at a time. A tenant that cannot be opened or swept is logged and skipped. */
+export async function runTenantActionRecovery(
+  deps: {
+    registrations: { listActive(): Array<{ id: string }> };
+    openTenant(registrationId: string): TenantDb;
+    actionsFor(db: ContextDb): ActionsModule;
+  },
+  logger: Logger,
+): Promise<void> {
+  let registrations: Array<{ id: string }>;
+  try {
+    registrations = deps.registrations.listActive();
+  } catch (error) {
+    logger.warn("Tenant action recovery could not list registrations", { error: errorMessage(error) });
+    return;
+  }
+  for (const registration of registrations) {
+    try {
+      const db = deps.openTenant(registration.id);
+      // A tenant's actions are owned by the tenant id (spec §7.4), so one sweep covers all its people.
+      await runActionRecovery(deps.actionsFor(db), db.tenantId, logger);
+    } catch (error) {
+      logger.warn("Tenant action recovery failed", { registrationId: registration.id, error: errorMessage(error) });
+    }
+  }
+}
+
 /** Spec §8.4, §8.6, §7.4: drift check, one-time legacy import, then recovery for every user. */
 export async function runActionStartupTasks(
-  container: { db: Database.Database; actions: ActionsModule; userRepo: { list(): Array<{ id: string }> } | null },
+  container: {
+    db: Database.Database;
+    actions: ActionsModule;
+    userRepo: { list(): Array<{ id: string }> } | null;
+    tenants?: Parameters<typeof runTenantActionRecovery>[0];
+  },
   logger: Logger,
 ): Promise<void> {
   const repaired = runActionDriftCheck(container.db, logger);
@@ -166,4 +237,5 @@ export async function runActionStartupTasks(
   for (const userId of userIds) {
     await runActionRecovery(container.actions, userId, logger);
   }
+  if (container.tenants) await runTenantActionRecovery(container.tenants, logger);
 }

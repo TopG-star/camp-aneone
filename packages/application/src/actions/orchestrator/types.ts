@@ -6,6 +6,7 @@ import type {
   ActorContext,
   EvidenceItem,
   Logger,
+  MembershipLike,
 } from "@oneon/domain";
 import type { ActionRegistry } from "../registry.js";
 import type { KeyContext } from "../definition.js";
@@ -20,6 +21,8 @@ export interface OrchestratorDeps {
   registry: ActionRegistry;
   repo: ActionInstanceRepository;
   configRepo: ActionConfigRepository;
+  /** The current active membership of an identity at a tenant (registry tenant id), or null. */
+  memberships: { activeFor(identityId: string, tenantId: string): MembershipLike | null };
   /** Readers and writers for the user the action runs for. Built by the composition root. */
   capabilities(userId: string): ActionCapabilities;
   notifier: ActionNotifier;

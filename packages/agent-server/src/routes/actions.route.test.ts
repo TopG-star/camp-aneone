@@ -241,3 +241,49 @@ describe("GET /api/actions/legacy paging", () => {
     expect(spy).toHaveBeenCalledWith("user-A", { limit: 100, offset: 0 });
   });
 });
+
+describe("tenant context", () => {
+  async function tenantApp() {
+    const { default: express } = await import("express");
+    const { tenantActor } = await import("@oneon/domain");
+    const { createActionsRouter } = await import("./actions.route.js");
+    const handle = { kind: "tenant", tenantId: "t-a", raw: {}, __brand: "TenantDb" } as never;
+    const seen: unknown[] = [];
+    const list = vi.fn(() => []);
+    const module = {
+      registry: { has: () => false },
+      instanceRepo: { list, count: () => 0 },
+      get legacyRepo(): never {
+        throw new Error("personal legacy repository touched");
+      },
+    };
+    const app = express();
+    app.use((req, _res, next) => {
+      req.activeContext = { kind: "tenant", identityId: "i1", membershipId: "m1", tenantId: "t-a", registrationId: "r1" };
+      req.contextDb = handle;
+      next();
+    });
+    app.use(
+      "/api/actions",
+      createActionsRouter({
+        actionsFor: (db) => (seen.push(db), module as never),
+        actorFor: (ctx) => (ctx.kind === "tenant" ? tenantActor({ identityId: ctx.identityId, tenantId: ctx.tenantId, role: "owner", permissions: [], locationIds: [] }) : null),
+        logger: { info() {}, warn() {}, error() {}, debug() {} },
+      }),
+    );
+    return { app, seen, handle, list };
+  }
+
+  it("lists from the request's own handle, owned by the registry tenant id", async () => {
+    const t = await tenantApp();
+    const res = await request(t.app).get("/api/actions");
+    expect(res.status).toBe(200);
+    expect(t.seen).toEqual([t.handle]);
+    expect(t.list).toHaveBeenCalledWith("t-a", expect.anything());
+  });
+
+  it("has no legacy log in a pharmacy context", async () => {
+    const t = await tenantApp();
+    expect((await request(t.app).get("/api/actions/legacy")).status).toBe(404);
+  });
+});

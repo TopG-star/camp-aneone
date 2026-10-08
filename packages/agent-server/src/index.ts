@@ -308,11 +308,17 @@ if (env.FEATURE_BACKGROUND_LOOP) {
   logger.info("Background loop disabled via FEATURE_BACKGROUND_LOOP=false");
 }
 
-void runActionStartupTasks(container, logger).catch((error: unknown) =>
+void runActionStartupTasks(
+  {
+    ...container,
+    tenants: { registrations: container.tenantRegistrations, openTenant: container.openTenant, actionsFor: container.actionsFor },
+  },
+  logger,
+).catch((error: unknown) =>
   logger.error("Action startup tasks failed", { error: error instanceof Error ? error.message : String(error) }),
 );
 
-// Nightly: refresh every enrolled deployment's public keys (spec §5.4). Only when signing keys can be opened at all.
+// Nightly: refresh every enrolled deployment's public keys (spec ï¿½5.4). Only when signing keys can be opened at all.
 if (env.ONEON_SIGNING_KEY_MASTER_KEY) {
   const nightly = setInterval(() => {
     void container.enrolment
