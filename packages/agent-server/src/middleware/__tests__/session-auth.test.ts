@@ -204,7 +204,7 @@ describe("Session Auth Middleware", () => {
       const identities = fakeIdentities({
         findByLogin: () => lookups.shift() ?? null,
         createWithLogin: () => {
-          throw new Error("UNIQUE constraint failed");
+          throw Object.assign(new Error("UNIQUE constraint failed"), { code: "SQLITE_CONSTRAINT_UNIQUE" });
         },
       });
 
@@ -213,6 +213,26 @@ describe("Session Auth Middleware", () => {
         .set("Cookie", cookie(jwe));
 
       expect(res.body.identityId).toBe("winner");
+    });
+
+    it("logs other creation errors without token material and treats the session as signed out", async () => {
+      const jwe = await createSessionJWE({ email: "boom@test.com", sub: "g-boom" });
+      const identities = fakeIdentities({
+        createWithLogin: () => {
+          throw Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" });
+        },
+      });
+      const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+      const app = express();
+      app.use(cookieParser());
+      app.use(createSessionAuthMiddleware(TEST_SECRET, identities, (user) => ({ id: user.id }), logger));
+      app.get("/test", (req, res) => res.json({ identityId: req.identityId ?? null }));
+
+      const res = await request(app).get("/test").set("Cookie", cookie(jwe));
+
+      expect(res.body.identityId).toBeNull();
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(jwe);
     });
 
     it("reads a session token split into cookie chunks", async () => {

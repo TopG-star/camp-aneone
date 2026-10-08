@@ -1,5 +1,6 @@
 import NextAuth, { type NextAuthResult } from "next-auth";
 import Google from "next-auth/providers/google";
+import { isSignInAllowed } from "./sign-in-policy";
 
 declare module "next-auth" {
   interface User {
@@ -26,11 +27,7 @@ export const {
   ],
   callbacks: {
     async signIn({ profile }) {
-      const email = profile?.email?.toLowerCase();
-      if (!email || !allowedEmails.includes(email)) {
-        return false;
-      }
-      return true;
+      return isSignInAllowed(profile, allowedEmails);
     },
     async jwt({ token, profile }) {
       if (profile?.email) {

@@ -13,6 +13,7 @@ import type {
 
 export interface DevFinanceRouteDeps {
   userRepo: UserRepository;
+  ensureIdentity: (user: { id: string; email: string }) => void;
   bankStatementRepo: BankStatementRepository;
   bankStatementParseRepo: BankStatementParseRepository;
   bankStatementParserRegistry: BankStatementParserRegistry;
@@ -84,7 +85,7 @@ export function createDevFinanceRouter(deps: DevFinanceRouteDeps): Router {
         return;
       }
 
-      const userResolution = ensureUser(deps.userRepo, parsedUserEmail.value);
+      const userResolution = ensureUser(deps.userRepo, deps.ensureIdentity, parsedUserEmail.value);
 
       const createdStatement = deps.bankStatementRepo.upsert({
         userId: userResolution.user.id,
@@ -171,6 +172,7 @@ export function createDevFinanceRouter(deps: DevFinanceRouteDeps): Router {
 
 function ensureUser(
   userRepo: UserRepository,
+  ensureIdentity: (user: { id: string; email: string }) => void,
   email: string,
 ): { user: User; created: boolean } {
   const existing = userRepo.findByEmail(email);
@@ -182,6 +184,7 @@ function ensureUser(
     id: randomUUID(),
     email,
   });
+  ensureIdentity({ id: user.id, email: user.email });
 
   return { user, created: true };
 }

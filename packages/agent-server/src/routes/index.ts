@@ -80,6 +80,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     container.userRepo
       ? (user) => container.userRepo!.upsert(user)
       : undefined,
+    new StructuredLogger("session-auth", env.LOG_LEVEL),
   );
   const tokenAuth = createTokenAuthMiddleware(env.API_TOKEN);
 
@@ -601,6 +602,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
         ...systemAuth,
         createDevFinanceRouter({
           userRepo: container.userRepo,
+          ensureIdentity: container.ensureIdentity,
           bankStatementRepo: container.bankStatementRepo,
           bankStatementParseRepo: container.bankStatementParseRepo,
           bankStatementParserRegistry: container.bankStatementParserRegistry,
@@ -619,6 +621,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       ...systemAuth,
       createUsersRouter({
         userRepo: container.userRepo,
+        ensureIdentity: container.ensureIdentity,
         logger: usersLogger,
       }),
     );

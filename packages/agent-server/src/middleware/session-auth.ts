@@ -2,6 +2,7 @@ import type { RequestHandler } from "express";
 import { jwtDecrypt } from "jose";
 import { subtle, randomUUID } from "node:crypto";
 import type { IdentityRepository } from "@oneon/infrastructure";
+import type { Logger } from "@oneon/domain";
 
 const AUTH_CONTENT_ENCRYPTION_ALGORITHMS = [
   "A256CBC-HS512",
@@ -145,6 +146,7 @@ export function createSessionAuthMiddleware(
   nextauthSecret: string,
   identities: SessionIdentities,
   upsertUser?: (user: { id: string; email: string }) => { id: string },
+  logger?: Logger,
 ): RequestHandler {
   return async (req, _res, next) => {
     const forwardedProto = String(req.headers["x-forwarded-proto"] ?? "");
@@ -173,12 +175,19 @@ export function createSessionAuthMiddleware(
     if (!identity && upsertUser) {
       // First request from a newly-authenticated user — auto-create
       const id = randomUUID();
+      // The users row (personal DB) and the identity (control DB) are written in two databases, so this is not
+      // atomic: if createWithLogin fails, an orphan users row remains. It is repaired by the startup backfill.
       try {
         upsertUser({ id, email: session.email });
         identity = identities.createWithLogin({ kind: "google", subject: session.sub, email: session.email, id });
-      } catch {
-        // A concurrent first request may have created the identity already.
-        identity = identities.findByLogin("google", session.sub);
+      } catch (err) {
+        if ((err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE") {
+          // The identity for this sub already exists (created by another request): use it.
+          identity = identities.findByLogin("google", session.sub);
+        } else {
+          // Signed out for this request; never log the token or sub.
+          logger?.warn("Session identity creation failed", { error: err instanceof Error ? err.message : String(err) });
+        }
       }
     }
     if (identity && identity.status === "active") {

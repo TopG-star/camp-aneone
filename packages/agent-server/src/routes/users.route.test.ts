@@ -22,6 +22,7 @@ function createMockUserRepo(): UserRepository {
 function createDeps(overrides: Partial<UsersRouteDeps> = {}): UsersRouteDeps {
   return {
     userRepo: createMockUserRepo(),
+    ensureIdentity: vi.fn(),
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     ...overrides,
   };
@@ -48,6 +49,7 @@ describe("Users Route", () => {
       expect(res.body.created).toBe(true);
       expect(res.body.user.email).toBe("alice@test.com");
       expect(deps.userRepo.upsert).toHaveBeenCalledTimes(1);
+      expect(deps.ensureIdentity).toHaveBeenCalledWith({ id: res.body.user.id, email: "alice@test.com" });
     });
 
     it("returns existing user without creating", async () => {

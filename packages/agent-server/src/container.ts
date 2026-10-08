@@ -30,6 +30,7 @@ import {
   ContextDbGate,
   rawDb,
   backfillIdentities,
+  ensureIdentityForUser,
   SqliteIdentityRepository,
   type IdentityRepository,
   SqliteInboundItemRepository,
@@ -96,6 +97,7 @@ export interface AppContainer {
   bankStatementParserRegistry: BankStatementParserRegistry;
   userRepo: UserRepository | null;
   identityRepo: IdentityRepository;
+  ensureIdentity: (user: { id: string; email: string }) => void;
   userProfileRepo: UserProfileRepository;
   oauthTokenRepo: OAuthTokenRepository | null;
   personalMemoryNoteRepo: PersonalMemoryNoteRepository;
@@ -449,6 +451,7 @@ export function createContainer(env: Env): AppContainer {
     bankStatementParserRegistry,
     userRepo,
     identityRepo,
+    ensureIdentity: (user) => void ensureIdentityForUser(control, user),
     userProfileRepo,
     oauthTokenRepo,
     personalMemoryNoteRepo,

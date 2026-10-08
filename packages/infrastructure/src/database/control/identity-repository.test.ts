@@ -119,3 +119,20 @@ describe("identity repository and backfill", () => {
     ]);
   });
 });
+
+describe("ensureIdentityForUser", () => {
+  it("is idempotent, and a user added after backfill resolves by sub to its users.id", async () => {
+    const { ensureIdentityForUser } = await import("./ensure-identity.js");
+    const dir = mkdtempSync(join(tmpdir(), "identity-"));
+    const control = openControlDb(join(dir, "control.db"));
+    try {
+      const repo = new SqliteIdentityRepository(control);
+      expect(ensureIdentityForUser(control, { id: "late", email: "late@x.com" })).toBe(true);
+      expect(ensureIdentityForUser(control, { id: "late", email: "late@x.com" })).toBe(false);
+      expect(repo.attachGoogleSubByEmailOnce("late@x.com", "sub-late")).toEqual({ id: "late", status: "active" });
+    } finally {
+      control.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
