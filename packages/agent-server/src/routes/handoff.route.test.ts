@@ -80,15 +80,17 @@ describe("hand-off redemption", () => {
         openTenant: (id) => gate.openTenant(id),
         client,
         logger,
-        clock,
       }),
     );
 
-    const redeem = async (handoff: string, sessionId: string = randomUUID()) => {
-      const res = await request(app).post("/api/auth/handoff/redeem").set("Authorization", `Bearer ${TOKEN}`).send({ handoff, sessionId });
+    const redeem = async (handoff: string, sessionId: string = randomUUID(), origin: string | null = ORIGIN) => {
+      const res = await request(app)
+        .post("/api/auth/handoff/redeem")
+        .set("Authorization", `Bearer ${TOKEN}`)
+        .send({ handoff, sessionId, ...(origin === null ? {} : { origin }) });
       return { res, sessionId };
     };
-    return { app, control, gate, fake, registration, registrations, redeem, logger, advance: (ms: number) => (now += ms) };
+    return { app, control, gate, client, fake, registration, registrations, redeem, logger, advance: (ms: number) => (now += ms) };
   }
 
   it("first hand-off creates an identity and membership, and an anchor row in the tenant file", async () => {
@@ -156,6 +158,49 @@ describe("hand-off redemption", () => {
     const res = (await redeem(handoff)).res;
     expect(res.status).toBe(401);
     expect(res.body).toEqual({ error: "handoff_rejected", reason: "expired" });
+  });
+
+  it("a forged signature is generic even with a known issuer and a past expiry (no tenant oracle)", async () => {
+    const { fake, redeem, advance } = await setup();
+    const handoff = await fake.mintHandoff("staff-1");
+    const [h, p] = handoff.split(".");
+    const forged = `${h}.${p}.${"A".repeat(86)}`;
+    const unknownIssuer = (await redeem(await fake.mintHandoff("staff-1", { issuer: "impressorx:nope" }))).res;
+    advance(120_000);
+
+    const res = (await redeem(forged)).res;
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual(GENERIC);
+    expect(res.body).toEqual(unknownIssuer.body);
+  });
+
+  it("pins the origin: the right Origin succeeds; a wrong or missing one is generic and consumes nothing", async () => {
+    const { fake, redeem } = await setup();
+    const handoff = await fake.mintHandoff("staff-1");
+
+    const wrong = (await redeem(handoff, randomUUID(), "https://evil.example")).res;
+    const missing = (await redeem(handoff, randomUUID(), null)).res;
+    const suffix = (await redeem(handoff, randomUUID(), `${ORIGIN}.evil.example`)).res;
+    for (const res of [wrong, missing, suffix]) {
+      expect(res.status).toBe(401);
+      expect(res.body).toEqual(GENERIC);
+    }
+    expect(fake.grants.size).toBe(0);
+    // The jti was not consumed by the refusals: the same hand-off still opens with the right origin.
+    expect((await redeem(handoff)).res.status).toBe(200);
+  });
+
+  it("a grant is only found for the identity and membership it was opened for", async () => {
+    const { client, fake, redeem } = await setup();
+    const shared = randomUUID();
+    const a = (await redeem(await fake.mintHandoff("staff-1"), shared)).res.body;
+    const b = (await redeem(await fake.mintHandoff("staff-2"), shared)).res.body;
+
+    expect(client.hasAttendedGrant(shared, a.identityId, a.membershipId)).toBe(true);
+    expect(client.hasAttendedGrant(shared, b.identityId, b.membershipId)).toBe(true);
+    expect(client.hasAttendedGrant(shared, a.identityId, b.membershipId)).toBe(false);
+    expect(client.hasAttendedGrant(shared, b.identityId, a.membershipId)).toBe(false);
+    expect(client.hasAttendedGrant(randomUUID(), a.identityId, a.membershipId)).toBe(false);
   });
 
   it("answers a wrong audience, an unknown issuer, a suspended registration and a long-lived hand-off identically", async () => {

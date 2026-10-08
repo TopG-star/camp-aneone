@@ -31,14 +31,14 @@ function resolve(options: AgentServerOptions) {
 const TIMEOUT_MS = 30_000;
 
 /** Asks the agent-server to verify a hand-off and open its session. Never throws; the hand-off is never logged. */
-export async function redeemHandoff(handoff: string, sessionId: string, options: AgentServerOptions = {}): Promise<RedeemResult> {
+export async function redeemHandoff(handoff: string, sessionId: string, origin: string, options: AgentServerOptions = {}): Promise<RedeemResult> {
   const { fetchImpl, baseUrl, token } = resolve(options);
   if (!token) return { ok: false, reason: "generic" };
   try {
     const res = await fetchImpl(`${baseUrl}/api/auth/handoff/redeem`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: JSON.stringify({ handoff, sessionId }),
+      body: JSON.stringify({ handoff, sessionId, origin }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;

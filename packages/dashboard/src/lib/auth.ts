@@ -41,15 +41,18 @@ export const {
       clientId: process.env.GOOGLE_CLIENT_ID!,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
     }),
-    // A staff member arriving from ImpressoRx. Only /auth/impressorx calls this, with a hand-off and a session id.
+    // A staff member arriving from ImpressoRx. Only /auth/impressorx calls this, with a hand-off and the request Origin.
     Credentials({
       id: "impressorx",
       name: "ImpressoRx",
-      credentials: { handoff: {}, sessionId: {} },
+      credentials: { handoff: {}, origin: {} },
       async authorize(credentials) {
-        const { handoff, sessionId } = credentials ?? {};
-        if (typeof handoff !== "string" || typeof sessionId !== "string") throw new HandoffRejected("generic");
-        const result = await redeemHandoff(handoff, sessionId);
+        const { handoff, origin } = credentials ?? {};
+        if (typeof handoff !== "string" || typeof origin !== "string") throw new HandoffRejected("generic");
+        // The session id is ours alone: this provider is also reachable at /api/auth/callback/impressorx, so nothing
+        // the caller sends may choose it.
+        const sessionId = crypto.randomUUID(); // Web Crypto: this module also loads in the edge middleware
+        const result = await redeemHandoff(handoff, sessionId, origin);
         if (!result.ok) throw new HandoffRejected(result.reason);
         return { id: result.identityId, identityId: result.identityId, membershipId: result.membershipId, sessionId };
       },

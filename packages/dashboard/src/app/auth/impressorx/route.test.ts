@@ -1,3 +1,4 @@
+import { CredentialsSignin } from "next-auth";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { signIn } = vi.hoisted(() => ({ signIn: vi.fn() }));
@@ -5,14 +6,25 @@ vi.mock("../../../lib/auth", () => ({ signIn }));
 
 import { DELETE, GET, PATCH, POST, PUT } from "./route";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+function form(fields: Record<string, string>, origin: string | null = "https://acme.example"): Request {
+  return new Request("https://oneon.example/auth/impressorx", {
+    method: "POST",
+    body: new URLSearchParams(fields),
+    headers: origin ? { origin } : {},
+  });
+}
 
-function form(fields: Record<string, string>): Request {
-  return new Request("https://oneon.example/auth/impressorx", { method: "POST", body: new URLSearchParams(fields) });
+// What Auth.js really does when authorize throws: signIn rejects with the error.
+function rejection(code: string): CredentialsSignin {
+  const error = new CredentialsSignin();
+  error.code = code;
+  return error;
 }
 
 describe("/auth/impressorx", () => {
-  beforeEach(() => signIn.mockReset());
+  beforeEach(() => {
+    signIn.mockReset();
+  });
 
   it.each([
     ["GET", GET],
@@ -26,32 +38,35 @@ describe("/auth/impressorx", () => {
     expect(signIn).not.toHaveBeenCalled();
   });
 
-  it("signs in with the hand-off and a fresh session id, then goes to the dashboard", async () => {
+  it("signs in with the hand-off and the request Origin (no caller-chosen session id), then goes to the dashboard", async () => {
     signIn.mockResolvedValue("https://oneon.example/");
 
-    const res = await POST(form({ handoff: "the-jws" }));
+    const res = await POST(form({ handoff: "the-jws", sessionId: "chosen-by-caller" }));
 
-    expect(signIn).toHaveBeenCalledWith("impressorx", { handoff: "the-jws", sessionId: expect.stringMatching(UUID), redirect: false, redirectTo: "/" });
+    expect(signIn).toHaveBeenCalledWith("impressorx", { handoff: "the-jws", origin: "https://acme.example", redirect: false, redirectTo: "/" });
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe("/");
   });
 
-  it("uses a different session id for every hand-off", async () => {
-    signIn.mockResolvedValue("https://oneon.example/");
-    await POST(form({ handoff: "a" }));
-    await POST(form({ handoff: "b" }));
-    expect(signIn.mock.calls[0]![1].sessionId).not.toBe(signIn.mock.calls[1]![1].sessionId);
-  });
-
   it.each(["expired", "generic", "membership_suspended"])("sends a %s rejection to the error page with its reason", async (code) => {
-    signIn.mockResolvedValue(`https://oneon.example/auth/signin?error=CredentialsSignin&code=${code}`);
+    signIn.mockImplementation(async () => {
+      throw rejection(code);
+    });
     const res = await POST(form({ handoff: "x" }));
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe(`/auth/error?reason=${code}`);
   });
 
+  it("passes an absent Origin on as an empty value", async () => {
+    signIn.mockResolvedValue("https://oneon.example/");
+    await POST(form({ handoff: "x" }, null));
+    expect(signIn.mock.calls[0]![1].origin).toBe("");
+  });
+
   it("treats an unknown code, a thrown error or a missing hand-off as generic", async () => {
-    signIn.mockResolvedValueOnce("https://oneon.example/auth/signin?error=CredentialsSignin&code=credentials");
+    signIn.mockImplementationOnce(async () => {
+      throw rejection("credentials");
+    });
     expect((await POST(form({ handoff: "x" }))).headers.get("location")).toBe("/auth/error?reason=generic");
 
     signIn.mockRejectedValueOnce(new Error("boom"));

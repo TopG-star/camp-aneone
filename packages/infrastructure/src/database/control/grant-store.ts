@@ -188,6 +188,18 @@ export class GrantStore {
     return row ? toRecord(row) : null;
   }
 
+  /** The active attended grant of this session that was opened for exactly this identity and membership. */
+  findAttendedForSessionBound(sessionId: string, identityId: string, membershipId: string): GrantRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM delegation_grants
+          WHERE session_id = ? AND identity_id = ? AND membership_id = ? AND kind = 'attended' AND status = 'active'
+          ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(sessionId, identityId, membershipId) as Row | undefined;
+    return row ? toRecord(row) : null;
+  }
+
   findActionGrant(actionId: string): string | null {
     const row = this.db
       .prepare("SELECT id FROM delegation_grants WHERE action_id = ? AND kind = 'action' AND status = 'active' ORDER BY created_at DESC LIMIT 1")

@@ -170,7 +170,7 @@ export interface HandoffSessionChecks {
   memberships: Pick<MembershipRepository, "findById">;
   identities: Pick<IdentityRepository, "findById">;
   /** True while the session's attended grant is active (not signed out, revoked or expired). */
-  hasActiveSession: (sessionId: string) => boolean;
+  hasActiveSession: (sessionId: string, identityId: string, membershipId: string) => boolean;
 }
 
 /**
@@ -276,6 +276,6 @@ function resolveHandoffSession(
   if (!membership || membership.status !== "active" || membership.identityId !== session.identityId) return null;
   const identity = handoff.identities.findById(session.identityId);
   if (!identity || identity.status !== "active") return null;
-  if (!handoff.hasActiveSession(session.sessionId)) return null;
+  if (!handoff.hasActiveSession(session.sessionId, session.identityId, session.activeContext.membershipId)) return null;
   return identity.id;
 }

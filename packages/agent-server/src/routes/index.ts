@@ -87,7 +87,8 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       ? {
           memberships: container.memberships,
           identities: container.identityRepo,
-          hasActiveSession: (sessionId) => container.impressorx!.forSession(sessionId) !== null,
+          hasActiveSession: (sessionId, identityId, membershipId) =>
+            container.impressorx!.hasAttendedGrant(sessionId, identityId, membershipId),
         }
       : undefined,
   );

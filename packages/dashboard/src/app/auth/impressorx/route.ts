@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { CredentialsSignin } from "next-auth";
 import { NextResponse } from "next/server";
 import { signIn } from "../../../lib/auth";
 import { isHandoffReason } from "../../../lib/handoff";
@@ -20,17 +20,13 @@ export async function POST(req: Request) {
   if (typeof handoff !== "string" || handoff.length === 0) return failed("generic");
 
   try {
-    // A fresh session id per hand-off. Signing in builds a new session token, so any existing cookie is replaced and
-    // nothing of the previous person is linked to this one.
-    const url = await signIn("impressorx", { handoff, sessionId: randomUUID(), redirect: false, redirectTo: "/" });
-    const target = new URL(String(url), "http://placeholder.invalid");
-    if (target.searchParams.get("error")) {
-      const code = target.searchParams.get("code");
-      return failed(isHandoffReason(code) ? code : "generic");
-    }
+    // Signing in builds a new session token, so any existing cookie is replaced and nothing of the previous person is
+    // linked to this one. The session id is generated in authorize. The Origin header is checked against the deployment.
+    await signIn("impressorx", { handoff, origin: req.headers.get("origin") ?? "", redirect: false, redirectTo: "/" });
     return see("/");
-  } catch {
-    // Never echo the hand-off or the error.
-    return failed("generic");
+  } catch (error) {
+    // A rejected hand-off makes signIn throw the CredentialsSignin from authorize; its code is the reason.
+    // Never echo the hand-off or anything else.
+    return failed(error instanceof CredentialsSignin && isHandoffReason(error.code) ? error.code : "generic");
   }
 }

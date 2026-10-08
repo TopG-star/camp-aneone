@@ -305,6 +305,13 @@ describe("Session Auth Middleware", () => {
         hasActiveSession: vi.fn(() => over.sessionActive ?? true),
       });
 
+      it("checks the grant against the session, the identity and the membership", async () => {
+        const jwe = await createSessionJWE(base);
+        const checks = deps();
+        await request(handoffApp(fakeIdentities(), checks)).get("/test").set("Cookie", cookie(jwe));
+        expect(checks.hasActiveSession).toHaveBeenCalledWith("sess-1", "irx-id", "m1");
+      });
+
       it("resolves by identityId, carries the session and context, and never looks up a Google sub", async () => {
         const jwe = await createSessionJWE({ ...base, sub: "irx-id" });
         const identities = fakeIdentities({ findByLogin: () => ({ id: "someone-else", status: "active" }) });

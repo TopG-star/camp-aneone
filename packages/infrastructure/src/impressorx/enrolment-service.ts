@@ -1,14 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { decodeJwt, decodeProtectedHeader } from "jose";
 import { openSecret, sealSecret } from "../crypto/envelope.js";
-import { generateEd25519Key, parsePublicJwk, signJws, verifyJws, type JWK, type VerifiedJws } from "../crypto/jws.js";
+import { JwsError, generateEd25519Key, parsePublicJwk, signJws, verifyJws, type JWK, type VerifiedJws } from "../crypto/jws.js";
 import type { TenantRegistration, TenantRegistrationRepository } from "../database/control/tenant-registration-repository.js";
 
 export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
 /** Any failure talking to, or verifying, the deployment. Carries no remote detail on purpose. */
 export class EnrolmentFailedError extends Error {
-  constructor(message = "Enrolment failed") {
+  /** Set only when the signature was valid and the message itself was too old or already used. */
+  constructor(
+    message = "Enrolment failed",
+    readonly reason?: "expired" | "replayed",
+  ) {
     super(message);
     this.name = "EnrolmentFailedError";
   }
@@ -261,7 +265,11 @@ export class EnrolmentService {
         }
       }
       return await attempt();
-    } catch {
+    } catch (error) {
+      // verifyJws raises these only after the signature has verified, so they say nothing about unauthenticated callers.
+      if (error instanceof JwsError && (error.message === "expired" || error.message === "replayed")) {
+        throw new EnrolmentFailedError("Enrolment failed", error.message);
+      }
       throw new EnrolmentFailedError();
     }
   }

@@ -20,7 +20,6 @@ export type HandoffRejection = "expired" | "generic" | "membership_suspended";
 
 /** A hand-off grant lives 60 s (the contract); a longer one is not ours. */
 const HANDOFF_MAX_TTL_SECONDS = 60;
-const LEEWAY_MS = 30_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface HandoffRouterDeps {
@@ -33,7 +32,6 @@ export interface HandoffRouterDeps {
   /** Null when ONEON_GRANT_MASTER_KEY is not configured: every hand-off is then rejected. */
   client: Pick<ImpressoRxClient, "exchangeHandoff" | "forSession"> | null;
   logger: Logger;
-  clock?: () => Date;
 }
 
 class Rejected extends Error {
@@ -48,17 +46,16 @@ class Rejected extends Error {
  */
 export function createHandoffRouter(deps: HandoffRouterDeps): Router {
   const router = Router();
-  const clock = deps.clock ?? (() => new Date());
 
   const reject = (res: import("express").Response, reason: HandoffRejection) =>
     res.status(401).json({ error: "handoff_rejected", reason });
 
   router.post("/redeem", async (req, res) => {
-    const { handoff, sessionId } = (req.body ?? {}) as { handoff?: unknown; sessionId?: unknown };
+    const { handoff, sessionId, origin } = (req.body ?? {}) as { handoff?: unknown; sessionId?: unknown; origin?: unknown };
     try {
       if (typeof handoff !== "string" || handoff.length === 0 || handoff.length > 8192) throw new Rejected("generic");
       if (typeof sessionId !== "string" || !UUID.test(sessionId)) throw new Rejected("generic");
-      res.json(await redeem(deps, clock, handoff, sessionId));
+      res.json(await redeem(deps, handoff, sessionId, origin));
     } catch (error) {
       if (error instanceof Rejected) return void reject(res, error.reason);
       // Neither the hand-off nor any token is logged.
@@ -85,12 +82,12 @@ export function createHandoffRouter(deps: HandoffRouterDeps): Router {
 
 async function redeem(
   deps: HandoffRouterDeps,
-  clock: () => Date,
   handoff: string,
   sessionId: string,
+  origin: unknown,
 ): Promise<{ identityId: string; membershipId: string }> {
   // `iss` is read from the unverified payload only to pick the registration whose keys verify the message.
-  let unverified: { iss?: unknown; exp?: unknown };
+  let unverified: { iss?: unknown };
   try {
     unverified = decodeJwt(handoff);
   } catch {
@@ -98,23 +95,20 @@ async function redeem(
   }
   const registration = typeof unverified.iss === "string" ? deps.registrations.findByIssuer(unverified.iss) : null;
   if (!registration || registration.status !== "active") throw new Rejected("generic");
+  // The browser POSTs from the deployment's own origin (spec 6.1 step 4). Checked before anything is consumed.
+  if (typeof origin !== "string" || origin !== registration.origin) throw new Rejected("generic");
 
-  let replayed = false;
   let claims: Record<string, unknown>;
   try {
     ({ payload: claims } = await deps.enrolment.verifyFromDeployment(registration.id, handoff, {
       audience: "oneon",
       maxTtlSeconds: HANDOFF_MAX_TTL_SECONDS,
-      consumeJti: (jti, expiresAt) => {
-        const fresh = deps.jti.consume(jti, expiresAt);
-        if (!fresh) replayed = true;
-        return fresh;
-      },
+      consumeJti: (jti, expiresAt) => deps.jti.consume(jti, expiresAt),
     }));
   } catch (error) {
     if (!(error instanceof EnrolmentFailedError)) throw error;
-    const exp = typeof unverified.exp === "number" ? unverified.exp * 1000 : null;
-    throw new Rejected(replayed || (exp !== null && exp + LEEWAY_MS < clock().getTime()) ? "expired" : "generic");
+    // "expired" only once the signature has verified; an unauthenticated caller cannot learn anything from it.
+    throw new Rejected(error.reason ? "expired" : "generic");
   }
 
   const sub = claims.sub;

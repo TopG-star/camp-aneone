@@ -140,6 +140,11 @@ export class ImpressoRxClient {
     return grant ? new Handle(this, grant.id) : null;
   }
 
+  /** True while this session holds an active attended grant opened for exactly this identity and membership. */
+  hasAttendedGrant(sessionId: string, identityId: string, membershipId: string): boolean {
+    return this.deps.grants.findAttendedForSessionBound(sessionId, identityId, membershipId) !== null;
+  }
+
   /** Unattended calls (actions, schedules). */
   forGrant(grantId: string): GrantCalls {
     return new Handle(this, grantId);
