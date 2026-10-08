@@ -3,10 +3,12 @@ import type { ContextDb, Logger } from "@oneon/domain";
 import {
   createModelGateway,
   Fingerprinter,
+  TENANT_CHOICE_LIMIT,
   parseProviderOverrides,
   type AiDataChoiceRepository,
   type ModelAuditRepository,
   type ModelGateway,
+  type ModelGatewayDeps,
   type ModelProvider,
   type ModelRouting,
   type ProviderId,
@@ -39,7 +41,7 @@ export function createModelWiring(env: Env, deps: { context: ContextDb; logger: 
   if (!providers[standard]) {
     routingWarnings.push({ role: "standard", provider: standard });
     deps.logger.warn("Model gateway: disabled (no key for LLM_PROVIDER)", { provider: standard });
-    return { gateway: null as ModelGateway | null, routing: null as ModelRouting | null, choices, audit, configuredProviders, routingWarnings, overrides, setToolVocabulary, toolVocabulary: currentToolVocabulary };
+    return { gateway: null as ModelGateway | null, gatewayFor: (_db: ContextDb): ModelGateway | null => null, routing: null as ModelRouting | null, choices, audit, configuredProviders, routingWarnings, overrides, setToolVocabulary, toolVocabulary: currentToolVocabulary };
   }
   const routing: ModelRouting = {
     standard,
@@ -54,7 +56,7 @@ export function createModelWiring(env: Env, deps: { context: ContextDb; logger: 
     env.DEEPSEEK_API_KEY && env.DEEPSEEK_CLASSIFIER_MODEL && env.DEEPSEEK_SYNTHESIS_MODEL
       ? { standard: env.DEEPSEEK_CLASSIFIER_MODEL, reasoning: env.DEEPSEEK_SYNTHESIS_MODEL }
       : undefined;
-  const gateway = createModelGateway({
+  const gatewayDeps: ModelGatewayDeps = {
     providers,
     overrides,
     routing,
@@ -69,7 +71,22 @@ export function createModelWiring(env: Env, deps: { context: ContextDb; logger: 
     timeouts: { standard: env.LLM_CLASSIFIER_TIMEOUT_MS, reasoning: env.LLM_SYNTHESIS_TIMEOUT_MS },
     logger: deps.logger,
     authoredVocabulary: currentToolVocabulary,
-  });
+    // No tenant limit is stored yet (spec 9.4), so every tenant is at the default; the stored limit replaces this.
+    tenantLimit: () => TENANT_CHOICE_LIMIT,
+  };
+  const gateway = createModelGateway(gatewayDeps);
+  // A tenant request gets a gateway whose audit is that request's own handle: its decision and outcome rows are written to
+  // the tenant file, and the repository refuses (tenant_mismatch) a context that names another tenant. Built once per handle.
+  const tenantGateways = new WeakMap<ContextDb, ModelGateway>();
+  const gatewayFor = (db: ContextDb): ModelGateway | null => {
+    if (db === deps.context) return gateway;
+    let tenantGateway = tenantGateways.get(db);
+    if (!tenantGateway) {
+      tenantGateway = createModelGateway({ ...gatewayDeps, auditFor: () => contextRepos(db).modelAudit });
+      tenantGateways.set(db, tenantGateway);
+    }
+    return tenantGateway;
+  };
   deps.logger.info(routingWarnings.length ? "Model gateway: active (degraded routing)" : "Model gateway: ✓ active", { routing, overrides: Object.fromEntries(overrides) });
-  return { gateway, routing, choices, audit, configuredProviders, routingWarnings, overrides, setToolVocabulary, toolVocabulary: currentToolVocabulary };
+  return { gateway, gatewayFor, routing, choices, audit, configuredProviders, routingWarnings, overrides, setToolVocabulary, toolVocabulary: currentToolVocabulary };
 }

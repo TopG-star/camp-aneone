@@ -37,6 +37,7 @@ export function createSearchTeamsMessagesTool(
   return {
     name: "search_teams_messages",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "Search Microsoft Teams messages by keyword, optionally filtered by channel name and date range.",
     inputSchema: searchTeamsMessagesSchema,

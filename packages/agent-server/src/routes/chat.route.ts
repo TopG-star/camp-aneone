@@ -14,6 +14,7 @@ import {
   type ToolRegistry,
   type ModelGateway,
   type ChatContextStats,
+  type TenantToolScope,
 } from "@oneon/application";
 
 export interface ChatRouteDeps {
@@ -25,7 +26,11 @@ export interface ChatRouteDeps {
   deadlineRepo?: Pick<DeadlineRepository, "findByDateRange"> | null;
   instanceRepo?: Pick<ActionInstanceRepository, "count"> | null;
   userProfileRepo?: Pick<UserProfileRepository, "findByUserId"> | null;
-  modelGateway?: ModelGateway | null;
+  /** The request's gateway: its audit is the request's own handle, so a tenant's model calls are audited in its own file. */
+  modelGatewayFor?: (req: Request) => ModelGateway | null;
+  /** The request's tenant action instances and definitions (from its handle). Without it a tenant request has no model and no tools. */
+  tenantActionsFor?: (req: Request) => TenantToolScope["actions"];
+  /** All tools; each chat is offered, and may run, only those declared for its context. */
   toolRegistry?: ToolRegistry | null;
 }
 
@@ -39,7 +44,8 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
     classificationRepo,
     deadlineRepo,
     instanceRepo,
-    modelGateway,
+    modelGatewayFor,
+    tenantActionsFor,
     toolRegistry,
   } = deps;
 
@@ -59,9 +65,14 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
 
     // ── 2. Resolve user profile preferences ───────────────
     const userId = req.userId!;
-    // A tenant context reads and writes only its own file. The personal profile, personal data, tools and the
-    // personal-context model gateway are not available there yet, so none of them is passed.
+    // A tenant context reads and writes only its own file. The personal profile and personal data are never passed to it.
+    // Its model turn and tools come from the active context alone (the session), never from the request.
     const inTenant = req.contextDb?.kind === "tenant";
+    const active = req.activeContext;
+    const tenantScope: TenantToolScope | null =
+      inTenant && active?.kind === "tenant" && tenantActionsFor
+        ? { identityId: active.identityId, tenantId: active.tenantId, membershipId: active.membershipId, actions: tenantActionsFor(req) }
+        : null;
     let profile = null;
 
     try {
@@ -89,8 +100,10 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
       {
         conversationRepo: conversationsFor(req),
         logger,
-        modelGateway: inTenant ? null : modelGateway,
-        toolRegistry: inTenant ? null : toolRegistry,
+        // A tenant request whose scope did not resolve has no model and no tools (fail closed).
+        modelGateway: inTenant && !tenantScope ? null : (modelGatewayFor?.(req) ?? null),
+        toolRegistry: inTenant && !tenantScope ? null : toolRegistry,
+        tenantScope,
         stats,
       },
       {

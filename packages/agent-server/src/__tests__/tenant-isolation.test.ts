@@ -5,6 +5,7 @@ import { join } from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import {
   ContextDbGate,
   ensureIdentityAnchor,
@@ -18,7 +19,8 @@ import {
 import type { ContextDb, Logger } from "@oneon/domain";
 import { resolveActiveContext } from "../middleware/active-context.js";
 import { contextRepos } from "../context-wiring.js";
-import { createChatRouter } from "../routes/chat.route.js";
+import { createChatRouter, type ChatRouteDeps } from "../routes/chat.route.js";
+import { createActionRegistry, createListPendingActionsTool, createShowMyAccessTool, createToolRegistry, type ModelGateway } from "@oneon/application";
 import { loadEnv } from "../config/env.js";
 import { createContainer } from "../container.js";
 import { registerRoutes } from "../routes/index.js";
@@ -26,7 +28,7 @@ import { registerRoutes } from "../routes/index.js";
 const logger: Logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
 // Spec 4.7 fixture: Gerry has a Google login, a membership in tenant A (Admin) and one in tenant B (WarehouseStaff).
-function fixture() {
+function fixture(chat?: (parts: { memberships: MembershipRepository }) => Partial<ChatRouteDeps>) {
   const dir = mkdtempSync(join(tmpdir(), "tenant-isolation-"));
   const control = openControlDb(join(dir, "control.db"));
   const gate = new ContextDbGate({ control, personalPath: join(dir, "personal.db"), tenantDir: join(dir, "tenants") });
@@ -68,7 +70,7 @@ function fixture() {
   app.use(
     "/api/chat",
     resolveActiveContext({ gate, memberships, identities, logger }),
-    createChatRouter({ conversationsFor: (req) => contextRepos(req.contextDb!).conversations, logger }),
+    createChatRouter({ conversationsFor: (req) => contextRepos(req.contextDb!).conversations, logger, ...chat?.({ memberships }) }),
   );
 
   return {
@@ -106,6 +108,92 @@ describe("tenant isolation through the active context", () => {
     expect(countIn(f.personal)).toBe(0);
     const rows = rawDb(f.gate.openTenant(f.a.registrationId)).prepare("SELECT DISTINCT tenant_id FROM conversations").all();
     expect(rows).toEqual([{ tenant_id: f.a.tenantId }]);
+  });
+
+
+  describe("tenant chat with a model", () => {
+    const tenantTools = (memberships: MembershipRepository) => {
+      const registry = createToolRegistry();
+      const personalTool = vi.fn(() => ({ data: [], summary: "personal" }));
+      registry.register({
+        name: "list_inbox", version: "1", description: "personal inbox", contexts: ["personal"],
+        inputSchema: z.object({}).passthrough(), output: { fields: {}, summaryClass: "D1" }, execute: personalTool,
+      });
+      registry.register(createShowMyAccessTool({ memberships }));
+      registry.register(createListPendingActionsTool({ instanceRepo: {} as never, registry: createActionRegistry([]) }));
+      return { registry, personalTool };
+    };
+    // Asks for one tool, then stops; the chat reply is denied so the tool summaries answer.
+    const asking = (tool: string): { gateway: ModelGateway; contexts: unknown[] } => {
+      const contexts: unknown[] = [];
+      const gateway: ModelGateway = {
+        beginTurn: (context) => {
+          contexts.push(context);
+          let round = 0; // per turn: the first intent round asks for the tool, the next stops
+          return {
+            call: async (req) =>
+              req.purpose === "chat_reply"
+                ? { kind: "denied", reason: "required_part_withheld", withheld: [], decisionId: "d" }
+                : { kind: "answered", text: "", json: round++ === 0 ? [{ tool, parameters: {} }] : [{ tool: "none", parameters: {} }], withheld: [], decisionId: "d" },
+            restoreToolParams: (params) => ({ ok: true, params }),
+            effectiveLimit: () => "D1",
+          };
+        },
+      };
+      return { gateway, contexts };
+    };
+    const withModel = (tool: string) => {
+      const asked = asking(tool);
+      let personalTool: ReturnType<typeof tenantTools>["personalTool"] | undefined;
+      const f = fixture(({ memberships }) => {
+        const tools = tenantTools(memberships);
+        personalTool = tools.personalTool;
+        return {
+          toolRegistry: tools.registry,
+          modelGatewayFor: () => asked.gateway,
+          tenantActionsFor: (req) => ({ instanceRepo: contextRepos(req.contextDb!).actionInstances, registry: createActionRegistry([]) }),
+        };
+      });
+      open.push(f.close);
+      return { f, contexts: asked.contexts, personalTool: () => personalTool! };
+    };
+
+    it("shows the access of the membership the session names: A's role in A, B's role in B", async () => {
+      const { f, contexts } = withModel("show_my_access");
+
+      f.actAs({ identityId: f.gerry, membershipId: f.a.membershipId });
+      expect((await say(f, "what is my role?")).body.response).toContain("Role Admin");
+      f.actAs({ identityId: f.gerry, membershipId: f.b.membershipId });
+      expect((await say(f, "what is my role?")).body.response).toContain("Role WarehouseStaff");
+
+      expect(contexts).toEqual([
+        { kind: "tenant", identityId: f.gerry, tenantId: f.a.tenantId, membershipId: f.a.membershipId },
+        { kind: "tenant", identityId: f.gerry, tenantId: f.b.tenantId, membershipId: f.b.membershipId },
+      ]);
+    });
+
+    it("reads the tenant file's own pending actions, never the personal ones", async () => {
+      const { f } = withModel("list_pending_actions");
+      f.actAs({ identityId: f.gerry, membershipId: f.a.membershipId });
+
+      const res = await say(f, "what is waiting?");
+
+      expect(res.status).toBe(200);
+      expect(res.body.response).toContain("Found 0 actions awaiting approval.");
+    });
+
+    it("does not run a personal tool in a tenant context, and offers personal tools in personal", async () => {
+      const { f, personalTool, contexts } = withModel("list_inbox");
+
+      f.actAs({ identityId: f.gerry, membershipId: f.a.membershipId });
+      await say(f, "read my mail");
+      expect(personalTool()).not.toHaveBeenCalled();
+
+      f.actAs({ identityId: f.gerry });
+      await say(f, "read my mail");
+      expect(personalTool()).toHaveBeenCalledTimes(1);
+      expect(contexts[1]).toEqual({ kind: "personal", identityId: f.gerry });
+    });
   });
 
   it("a conversation started in personal is invisible in A and B", async () => {

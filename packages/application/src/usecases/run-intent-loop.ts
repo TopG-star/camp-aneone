@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Logger } from "@oneon/domain";
-import type { ToolRegistry } from "../tools/tool-registry.js";
+import type { TenantToolScope, ToolRegistry } from "../tools/tool-registry.js";
 import type { GatewayResult, ModelTurn } from "../ai-boundary/gateway.js";
 import type { DenyReason, SecretLocation } from "../ai-boundary/decide.js";
 import {
@@ -43,6 +43,8 @@ export interface RunIntentLoopDeps {
   modelTurn: ModelTurn;
   toolRegistry: ToolRegistry;
   logger: Logger;
+  /** Set when the turn runs in a tenant context: every tool call then names that context and carries this scope. Absent means personal. */
+  tenantScope?: TenantToolScope;
 }
 
 export interface RunIntentLoopInput {
@@ -79,7 +81,7 @@ export async function runIntentLoop(
   deps: RunIntentLoopDeps,
   input: RunIntentLoopInput
 ): Promise<RunIntentLoopResult> {
-  const { modelTurn, toolRegistry, logger } = deps;
+  const { modelTurn, toolRegistry, logger, tenantScope } = deps;
   const { userMessage, history, toolDefinitions, stats, now, timezone, persona, userId, turnId } = input;
 
   const allToolCalls: ToolCallRecord[] = [];
@@ -191,7 +193,11 @@ export async function runIntentLoop(
           ...(userId ? { userId } : {}),
           ...(turnId ? { turnId, turnExcerpt: userMessage.slice(0, 280) } : {}),
         };
-        const result = await toolRegistry.execute(intent.tool, executionParameters);
+        const result = tenantScope
+          ? await toolRegistry.execute(intent.tool, executionParameters, "tenant", tenantScope)
+          : await toolRegistry.execute(intent.tool, executionParameters);
+        // A tool outside the context ran nothing; it is a failed call like any other, so the model is told and the failure count applies.
+        if ("ok" in result) throw new Error(result.error);
         const durationMs =
           Math.round((performance.now() - startTime) * 100) / 100;
 

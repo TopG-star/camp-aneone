@@ -43,6 +43,7 @@ export function createFinanceStatementStatusTool(
   return {
     name: "finance_statement_status",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "Show finance statement processing status with total counts and recent statement items.",
     inputSchema: financeStatementStatusSchema,

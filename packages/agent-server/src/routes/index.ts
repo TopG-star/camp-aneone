@@ -60,6 +60,7 @@ import {
   createSummarizeFinanceSpendTool,
   createFinanceSpendInsightsTool,
   createSearchPersonalMemoryTool,
+  createShowMyAccessTool,
   createChatActionTools,
 } from "@oneon/application";
 
@@ -251,6 +252,8 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       instanceRepo: container.actions.instanceRepo,
       registry: container.actions.registry,
     }));
+    // Tenant only: the membership comes from the request's active context, which the chat route puts in the tool scope.
+    toolRegistry.register(createShowMyAccessTool({ memberships: container.memberships }));
     toolRegistry.register(createListFollowUpsTool({
       classificationRepo: container.classificationRepo,
       inboundItemRepo: container.inboundItemRepo,
@@ -375,7 +378,11 @@ export function registerRoutes(app: Express, container: AppContainer): void {
         deadlineRepo: container.deadlineRepo,
         instanceRepo: container.actions.instanceRepo,
         userProfileRepo: container.userProfileRepo,
-        modelGateway: container.modelGateway,
+        modelGatewayFor: (req) => container.modelGatewayFor(req.contextDb!),
+        tenantActionsFor: (req) => {
+          const { instanceRepo, registry } = container.actionsFor(req.contextDb!);
+          return { instanceRepo, registry };
+        },
         toolRegistry,
       })
     );

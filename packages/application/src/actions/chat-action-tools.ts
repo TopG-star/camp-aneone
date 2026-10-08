@@ -57,6 +57,7 @@ function makeTool(deps: ChatActionToolDeps, type: string, description: string): 
   return {
     name: type,
     version: "2.0.0",
+    contexts: ["personal"],
     description,
     inputSchema: serverFields,
     output: {

@@ -123,6 +123,8 @@ export interface AppContainer {
 
   // ── External Ports ────────────────────────────────────────
   modelGateway: ModelGateway | null;
+  /** The gateway for a request's handle: its model calls are audited in that handle's file. Tenant requests must use this, never `modelGateway`. */
+  modelGatewayFor: (db: import("@oneon/domain").ContextDb) => ModelGateway | null;
   /** Gives the model gateway the registered tools' names and descriptions, so Oneon's own words are not mistaken for restored values. */
   setModelToolVocabulary: (tools: Array<{ name: string; description: string }>) => void;
   modelRouting: ModelRouting | null;
@@ -507,6 +509,7 @@ export function createContainer(env: Env): AppContainer {
     getEligibleUsers,
     createGoogleTokenProvider,
     modelGateway: modelWiring.gateway,
+    modelGatewayFor: modelWiring.gatewayFor,
     setModelToolVocabulary: modelWiring.setToolVocabulary,
     modelRouting: modelWiring.routing,
     aiDataChoices: modelWiring.choices,

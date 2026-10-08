@@ -52,6 +52,7 @@ export function createSearchPersonalMemoryTool(
   return {
     name: "search_personal_memory",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "Retrieve relevant personal notes, pinned outputs, and curated docs to ground responses.",
     inputSchema: searchPersonalMemorySchema,

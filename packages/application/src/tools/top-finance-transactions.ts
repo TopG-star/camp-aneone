@@ -45,6 +45,7 @@ export function createTopFinanceTransactionsTool(
   return {
     name: "top_finance_transactions",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "List top finance transactions by inflow, outflow, or absolute amount.",
     inputSchema: topFinanceTransactionsSchema,

@@ -35,6 +35,10 @@ export interface ModelGatewayDeps {
   models: Partial<Record<ProviderId, { standard: string; reasoning: string }>>;
   choices: AiDataChoiceRepository;
   audit: ModelAuditRepository;
+  /** The audit repository a call is written to. Defaults to `audit`. A tenant context must return its own file's repository (spec 9.5). */
+  auditFor?: (context: ModelContext) => ModelAuditRepository;
+  /** The tenant layer of the limit (spec 9.4), read per call. Defaults to TENANT_CHOICE_LIMIT; tenant limits are not stored yet. */
+  tenantLimit?: (tenantId: string) => DataClass;
   fingerprinter: Fingerprinter;
   maxRetries: number;
   timeouts: { standard: number; reasoning: number };
@@ -132,9 +136,11 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
   const purposeOf = (name: string): PurposeDefinition | undefined => (Object.prototype.hasOwnProperty.call(purposes, name) ? purposes[name] : undefined);
   const clock = deps.clock ?? (() => new Date());
   const newId = deps.newId ?? randomUUID;
+  const auditFor = deps.auditFor ?? (() => deps.audit);
+  const tenantLimit = deps.tenantLimit ?? (() => TENANT_CHOICE_LIMIT);
 
   const choiceLimit = (context: ModelContext, provider: ProviderId): DataClass =>
-    context.kind === "tenant" ? TENANT_CHOICE_LIMIT : (deps.choices.current(context.identityId, provider)?.maxClass ?? "D1");
+    context.kind === "tenant" ? tenantLimit(context.tenantId) : (deps.choices.current(context.identityId, provider)?.maxClass ?? "D1");
 
   const providerFor = (purpose: string): ProviderId => {
     return purposeOf(purpose)?.tier === "reasoning" ? deps.routing.reasoning : deps.routing.standard;
@@ -149,6 +155,8 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
   ): Promise<GatewayResult> {
     const callId = newId();
     const decisionId = newId();
+    // One repository for the whole call: the decision and the outcome are written to the same file.
+    const audit = auditFor(context);
     const def = purposeOf(request.purpose);
     const entry = deps.providers[provider] ? registry[provider] : undefined;
     const decision = decide({ context, request, provider: { entry, override: deps.overrides.get(provider) }, choiceLimit: choiceLimit(context, provider), purposes });
@@ -177,7 +185,7 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
     if (decision.alert) deps.logger.warn("boundary_alert", { purpose: request.purpose, callId, withheld: decision.withheld.length });
 
     if (decision.kind === "deny") {
-      deps.audit.recordDecision({ ...base, decision: "deny", denyReason: decision.reason, released: [], placeholderCount: 0, inputFingerprint: null });
+      audit.recordDecision({ ...base, decision: "deny", denyReason: decision.reason, released: [], placeholderCount: 0, inputFingerprint: null });
       return { kind: "denied", reason: decision.reason, ...(decision.secretIn ? { secretIn: decision.secretIn } : {}), withheld: decision.withheld, decisionId };
     }
 
@@ -191,11 +199,11 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
     // prompt another way, e.g. echoed by a tool after its placeholder was restored. Values the person typed are exempt.
     if (classRank(decision.effectiveLimit) < classRank("D2") && findRestoredValue(sentDataText(request, decision), map, userText, authored)) {
       deps.logger.warn("boundary_alert", { purpose: request.purpose, callId, reason: "masked_value_present" });
-      deps.audit.recordDecision({ ...base, alert: true, decision: "deny", denyReason: "masked_value_present", released: [], placeholderCount: 0, inputFingerprint: null });
+      audit.recordDecision({ ...base, alert: true, decision: "deny", denyReason: "masked_value_present", released: [], placeholderCount: 0, inputFingerprint: null });
       return { kind: "denied", reason: "masked_value_present", withheld: decision.withheld, decisionId };
     }
 
-    deps.audit.recordDecision({
+    audit.recordDecision({
       ...base,
       decision: "allow",
       denyReason: null,
@@ -245,14 +253,14 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
       keyVersion: deps.fingerprinter.keyVersion,
     };
     if (failure !== null || last === null) {
-      deps.audit.recordOutcome({ ...outcomeBase, status: "failed", blockReason: null, checks: { O1: "skipped", O2: "skipped", O3: "skipped", O4: "skipped" }, outputFingerprint: null });
+      audit.recordOutcome({ ...outcomeBase, status: "failed", blockReason: null, checks: { O1: "skipped", O2: "skipped", O3: "skipped", O4: "skipped" }, outputFingerprint: null });
       return { kind: "failed", message: failure ?? "no answer", withheld: decision.withheld, decisionId };
     }
     if (!last.ok) {
-      deps.audit.recordOutcome({ ...outcomeBase, status: "blocked", blockReason: last.reason, checks: last.checks, outputFingerprint: null });
+      audit.recordOutcome({ ...outcomeBase, status: "blocked", blockReason: last.reason, checks: last.checks, outputFingerprint: null });
       return { kind: "blocked", reason: last.reason, withheld: decision.withheld, decisionId };
     }
-    deps.audit.recordOutcome({ ...outcomeBase, status: "answered", blockReason: null, checks: last.checks, outputFingerprint: deps.fingerprinter.of(context, last.text) });
+    audit.recordOutcome({ ...outcomeBase, status: "answered", blockReason: null, checks: last.checks, outputFingerprint: deps.fingerprinter.of(context, last.text) });
     return { kind: "answered", text: last.text, json: last.json, withheld: decision.withheld, decisionId };
   }
 

@@ -37,6 +37,7 @@ export function createSearchCalendarTool(
   return {
     name: "search_calendar",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "Search Google Calendar events by keyword within an optional time range (defaults to ±30 days).",
     inputSchema: searchCalendarSchema,

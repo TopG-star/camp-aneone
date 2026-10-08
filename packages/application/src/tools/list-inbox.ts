@@ -61,6 +61,7 @@ export function createListInboxTool(deps: ListInboxDeps): ToolDefinition {
   return {
     name: "list_inbox",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "List recent inbox items by source, priority threshold, or date. Returns items enriched with classification data when available.",
     inputSchema: listInboxSchema,

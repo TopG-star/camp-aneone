@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { NewActionInstance } from "@oneon/domain";
 import {
   createListPendingActionsTool,
   listPendingActionsSchema,
 } from "./list-pending-actions.js";
-import { createToolRegistry } from "./tool-registry.js";
+import { createToolRegistry, type TenantToolScope } from "./tool-registry.js";
 import { InMemoryActionRepo } from "../actions/__tests__/in-memory-repos.js";
 import { createActionRegistry } from "../actions/registry.js";
 import { createReminderDefinition } from "../actions/definitions/create-reminder.js";
@@ -105,5 +105,55 @@ describe("list_pending_actions tool", () => {
     const result = await registry.execute("list_pending_actions", { userId: "u1" });
     expect(result.data).toHaveLength(1);
     expect(result.meta.toolName).toBe("list_pending_actions");
+  });
+});
+
+describe("list_pending_actions in a tenant context", () => {
+  const registry = createActionRegistry([createReminderDefinition]);
+  let personalRepo: InMemoryActionRepo;
+  let tenantRepo: InMemoryActionRepo;
+  let tool: ToolDefinition;
+  const scope = (): TenantToolScope => ({ identityId: "i1", tenantId: "t1", membershipId: "m1", actions: { instanceRepo: tenantRepo, registry } });
+
+  beforeEach(() => {
+    personalRepo = new InMemoryActionRepo(clock);
+    tenantRepo = new InMemoryActionRepo(clock);
+    seed(personalRepo, "a-personal", "i1");
+    seed(tenantRepo, "a-tenant", "t1");
+    seed(tenantRepo, "a-other-tenant", "t2");
+    tool = createListPendingActionsTool({ instanceRepo: personalRepo, registry: createActionRegistry([]) });
+  });
+
+  it("is available in both contexts", () => {
+    expect(tool.contexts).toEqual(["personal", "tenant"]);
+  });
+
+  it("reads the tenant file's instances, owned by the tenant id, and never the personal repository", async () => {
+    const result = await tool.execute(tool.inputSchema.parse({ userId: "i1" }), scope());
+
+    expect((result.data as Array<{ id: string }>).map((a) => a.id)).toEqual(["a-tenant"]);
+    expectMatchesOutputSchema(tool, result);
+  });
+
+  it("describes the instances with the tenant's own action registry", async () => {
+    const result = await tool.execute(tool.inputSchema.parse({}), scope());
+
+    expect(result.data).toEqual([expect.objectContaining({ id: "a-tenant", label: "Create reminder" })]);
+    expect(result.summary).toBe("Found 1 action awaiting approval.");
+  });
+
+  it("does not need a user id: the tenant is the owner", async () => {
+    expect((await tool.execute(tool.inputSchema.parse({}), scope())).data).toHaveLength(1);
+  });
+
+  it("runs through the registry with the personal repository untouched", async () => {
+    const list = vi.spyOn(personalRepo, "list");
+    const tools = createToolRegistry();
+    tools.register(tool);
+
+    const result = await tools.execute("list_pending_actions", { userId: "i1" }, "tenant", scope());
+
+    expect(result).toMatchObject({ data: [expect.objectContaining({ id: "a-tenant" })] });
+    expect(list).not.toHaveBeenCalled();
   });
 });

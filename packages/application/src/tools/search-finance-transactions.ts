@@ -45,6 +45,7 @@ export function createSearchFinanceTransactionsTool(
   return {
     name: "search_finance_transactions",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "Search parsed finance transactions by text, statement id, and date range.",
     inputSchema: searchFinanceTransactionsSchema,

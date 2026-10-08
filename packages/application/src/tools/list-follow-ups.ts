@@ -58,6 +58,7 @@ export function createListFollowUpsTool(
   return {
     name: "list_follow_ups",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "List items that need follow-up. Optionally filter to overdue items only.",
     inputSchema: listFollowUpsSchema,
