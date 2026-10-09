@@ -103,14 +103,16 @@ export function releaseIfEnded(deps: OrchestratorDeps, instance: ActionInstance)
 }
 
 /**
- * Spec §7.6: how long a tenant action's approval stays good; null for actions without a limit (personal). It is the limit in force when
- * the approval was given, which the decision recorded with it carries (its policy); the grant was issued to expire with that limit.
- * Configuration changed afterwards cannot stretch an approval, so only a decision without one falls back to the current policy.
+ * Spec §7.6: how long a tenant action's approval stays good; null for actions without a limit (personal). It is the shorter of the
+ * limit in force when the approval was given (carried by the decision recorded with it, its policy; the grant was issued to expire
+ * with it) and the current one: raising the configured limit cannot extend an approval that already exists, and lowering it takes
+ * effect at once. A decision without a recorded limit falls back to the current policy.
  */
 export function approvalAgeLimitHours(instance: Pick<ActionInstance, "scope" | "decision">, currentPolicy: EffectivePolicy): number | null {
   if (instance.scope !== "tenant") return null;
+  const current = currentPolicy.maxApprovalAgeHours ?? TENANT_MAX_APPROVAL_AGE_HOURS;
   const recorded = (instance.decision as { policy?: { maxApprovalAgeHours?: number } } | null)?.policy?.maxApprovalAgeHours;
-  return recorded ?? currentPolicy.maxApprovalAgeHours ?? TENANT_MAX_APPROVAL_AGE_HOURS;
+  return recorded === undefined ? current : Math.min(recorded, current);
 }
 
 /** A tenant actor's permissions carry this prefix (domain tenantActor); ImpressoRx knows them without it. */
