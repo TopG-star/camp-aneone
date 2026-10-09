@@ -335,10 +335,11 @@ describe("tenant actions against the fake ImpressoRx (spec 7, 9.2, 9.3)", () => 
     const memberships = new MembershipRepository(control);
     const fake = new FakeImpressorx(ORIGIN, "acme", CODE);
     fake.snapshots.set("staff-1", { userId: "staff-1", role: "manager", permissions: ["inventory.transfer"], locationIds: [], tokenVersion: 1, tenantStatus: "Active" });
-    const hooks: { afterToken?: (grantType: string) => void } = {};
+    // Runs after the fake has answered a token request and before Oneon sees the reply; it may throw to lose the reply.
+    const hooks: { afterToken?: (grantType: string) => void | Promise<void> } = {};
     const fetchImpl = async (input: string | URL, init?: RequestInit) => {
       const res = await fake.fetch(input, init);
-      if (String(input).endsWith("/api/oneon/token")) hooks.afterToken?.(fake.tokenRequests.at(-1)!.grantType);
+      if (String(input).endsWith("/api/oneon/token")) await hooks.afterToken?.(fake.tokenRequests.at(-1)!.grantType);
       return res;
     };
     const enrolment = new EnrolmentService({ repo: registrations, oneonOrigin: "https://oneon.example", masterKeyB64: randomBytes(32).toString("base64"), fetchImpl });
@@ -591,7 +592,7 @@ describe("tenant actions against the fake ImpressoRx (spec 7, 9.2, 9.3)", () => 
     expect(s.fake.grants.get(grantId)!.generation).toBeGreaterThan(1);
   });
 
-  it("with no grant it fails delegation_revoked", async () => {
+  it("with no grant and no session it fails no_action_grant, which is not a revocation: Retry stays and nothing says the access ended", async () => {
     const s = await setup();
     s.fake.allowUnattended = false; // no action grant can be issued
     s.hooks.afterToken = (grantType) => {
@@ -606,8 +607,71 @@ describe("tenant actions against the fake ImpressoRx (spec 7, 9.2, 9.3)", () => 
 
     await s.sweep();
 
-    expect(s.find(instance.id)).toMatchObject({ status: "failed", error: { code: "delegation_revoked", stage: "recheck" } });
+    expect(s.find(instance.id)).toMatchObject({ status: "failed", error: { code: "no_action_grant", stage: "recheck" } });
     expect(s.executed).not.toHaveBeenCalled();
+    const res = await request(s.app()).get(`/api/actions/${instance.id}`);
+    expect(res.body).toMatchObject({ status: "failed", allowedOperations: ["retry"], error: { code: "no_action_grant" } });
+    expect(res.body.error.message).toBe("Oneon couldn't keep access to finish this on its own. Retry while you're signed in.");
+  });
+
+  it("an issue that could not be completed (unreachable) leaves no grant, and the sweeper fails the action as no_action_grant too", async () => {
+    const s = await setup();
+    s.hooks.afterToken = (grantType) => {
+      if (grantType !== "issue") return;
+      s.fake.networkFailure = true; // the issue was applied at ImpressoRx but nothing more gets through
+      throw new TypeError("fetch failed");
+    };
+    const instance = await s.propose();
+    await s.actions.orchestrator.approve(s.actor, instance.id, s.session);
+    expect(s.find(instance.id).status).toBe("approved");
+    s.hooks.afterToken = undefined;
+    s.fake.networkFailure = false;
+    vi.setSystemTime(Date.now() + 10 * 60_000);
+
+    await s.sweep();
+
+    expect(s.find(instance.id)).toMatchObject({ status: "failed", error: { code: "no_action_grant" } });
+  });
+
+  it("a cancel that arrives while the grant is being issued still ends with that grant revoked (spec 7.1)", async () => {
+    const s = await setup();
+    const instance = await s.propose();
+    s.hooks.afterToken = async (grantType) => {
+      if (grantType !== "issue") return;
+      s.hooks.afterToken = undefined;
+      await s.actions.orchestrator.cancel(s.actor, instance.id); // ImpressoRx has issued the grant; Oneon has not stored it yet
+    };
+
+    const result = await s.actions.orchestrator.approve(s.actor, instance.id, s.session);
+
+    expect(result.status).toBe("cancelled");
+    expect(s.grantRows()).toHaveLength(1);
+    const [grant] = s.grantRows();
+    expect(grant).toMatchObject({ action_id: instance.id, status: "revoked" });
+    await vi.waitFor(() => expect(s.fake.grants.get(grant!.id)!.status).toBe("revoked"));
+    expect(s.executed).not.toHaveBeenCalled();
+  });
+
+  it("an issue whose reply was lost and that a later exchange replays after the action ended is stored revoked, and revoked at ImpressoRx", async () => {
+    const s = await setup();
+    const instance = await s.propose();
+    s.hooks.afterToken = (grantType) => {
+      if (grantType !== "issue") return;
+      s.fake.networkFailure = true; // applied at ImpressoRx; the reply and everything after it is lost
+      throw new TypeError("fetch failed");
+    };
+    const approved = await s.actions.orchestrator.approve(s.actor, instance.id, s.session);
+    expect(approved.status).toBe("approved");
+    expect(s.grantRows()).toEqual([]);
+    await s.actions.orchestrator.cancel(s.actor, instance.id);
+    s.hooks.afterToken = undefined;
+    s.fake.networkFailure = false;
+
+    await s.client.forBoundSession(s.session.sessionId, s.identityId, s.membership.id)!.accessToken({ oneonActionId: "later" }); // the next exchange replays the stored issue
+
+    const [grant] = s.grantRows();
+    expect(grant).toMatchObject({ action_id: instance.id, status: "revoked", revoked_reason: "action_ended" });
+    await vi.waitFor(() => expect(s.fake.grants.get(grant!.id)!.status).toBe("revoked"));
   });
 
   it("when ImpressoRx refuses to issue (unattended access off) the approval stands and the action runs in the request with the attended token", async () => {

@@ -50,6 +50,11 @@ export class FakeImpressorx {
   loseNextTokenResponse = false;
   /** Whether grantType "issue" is allowed. */
   allowUnattended = true;
+  /**
+   * The tenant is not Active: every token request is refused with a bare 401 that revokes nothing and counts as no theft, before the
+   * idempotent replay is looked at (ImpressoRx's decideExchange).
+   */
+  tenantSuspended = false;
   /** Snapshot returned for a staff user; unknown users get a default one. */
   readonly snapshots = new Map<string, FakeSnapshot>();
   /** Every token request the server saw, for assertions. */
@@ -247,6 +252,10 @@ export class FakeImpressorx {
     const requestId = payload.requestId;
     const log = (outcome: "ok" | "cached" | "theft" | "refused") => this.tokenRequests.push({ grantType, requestId: String(requestId), kid, jti, outcome });
     if (typeof requestId !== "string") {
+      log("refused");
+      return unauthorized();
+    }
+    if (this.tenantSuspended) {
       log("refused");
       return unauthorized();
     }

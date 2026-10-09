@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Zap } from "lucide-react";
-import { GROUP_BADGE, actorLabel, evidenceSummary, needsReconnect, operationLabel, statusLabel, undoNote, verifyingNote } from "@/lib/action-ui";
+import { GROUP_BADGE, actorLabel, evidenceSummary, needsReconnect, operationLabel, statusLabel, timelineLabel, undoNote, verifyingNote } from "@/lib/action-ui";
 
 type Operation = ActionView["allowedOperations"][number];
 
@@ -108,7 +108,7 @@ export function ActionCard(props: {
             {view.timeline.map((e) => (
               <li key={e.seq} className="text-sm">
                 <span className="meta-copy">{new Date(e.createdAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}</span>{" "}
-                <span className="text-on-surface dark:text-dark-on-surface">{statusLabel(e.toStatus)}</span>{" "}
+                <span className="text-on-surface dark:text-dark-on-surface">{timelineLabel(e)}</span>{" "}
                 <span className="meta-copy">· {actorLabel(e.actor)}</span>
               </li>
             ))}

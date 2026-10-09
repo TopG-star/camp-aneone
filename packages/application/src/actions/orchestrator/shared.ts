@@ -87,20 +87,38 @@ export function move(
   patch?: InstancePatch,
 ): ActionInstance {
   const next = deps.repo.appendTransition({ actionId: instance.id, expectedStatus: instance.status, toStatus: to, actor, data, patch });
-  if (next.scope === "tenant" && ENDS_GRANT.has(next.status)) {
-    try {
-      deps.delegation?.release(next);
-    } catch (error) {
-      // The action is already over; a grant that could not be released is revoked by its own expiry at the latest.
-      deps.logger.warn("Releasing an action's grant failed", { actionId: next.id, error: error instanceof Error ? error.message : String(error) });
-    }
-  }
+  releaseIfEnded(deps, next);
   return next;
 }
 
-/** Spec §7.6: how long a tenant action's approval stays good; null for actions without a limit (personal). */
-export function approvalAgeLimitHours(instance: Pick<ActionInstance, "scope">, policy: EffectivePolicy): number | null {
-  return instance.scope === "tenant" ? (policy.maxApprovalAgeHours ?? TENANT_MAX_APPROVAL_AGE_HOURS) : null;
+/** A tenant action that has reached a final status gives up its grant. Never throws. */
+export function releaseIfEnded(deps: OrchestratorDeps, instance: ActionInstance): void {
+  if (instance.scope !== "tenant" || !ENDS_GRANT.has(instance.status)) return;
+  try {
+    deps.delegation?.release(instance);
+  } catch (error) {
+    // The action is already over; a grant that could not be released is revoked by its own expiry at the latest.
+    deps.logger.warn("Releasing an action's grant failed", { actionId: instance.id, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+/**
+ * Spec §7.6: how long a tenant action's approval stays good; null for actions without a limit (personal). It is the limit in force when
+ * the approval was given, which the decision recorded with it carries (its policy); the grant was issued to expire with that limit.
+ * Configuration changed afterwards cannot stretch an approval, so only a decision without one falls back to the current policy.
+ */
+export function approvalAgeLimitHours(instance: Pick<ActionInstance, "scope" | "decision">, currentPolicy: EffectivePolicy): number | null {
+  if (instance.scope !== "tenant") return null;
+  const recorded = (instance.decision as { policy?: { maxApprovalAgeHours?: number } } | null)?.policy?.maxApprovalAgeHours;
+  return recorded ?? currentPolicy.maxApprovalAgeHours ?? TENANT_MAX_APPROVAL_AGE_HOURS;
+}
+
+/** A tenant actor's permissions carry this prefix (domain tenantActor); ImpressoRx knows them without it. */
+const IMPRESSORX_PREFIX = "impressorx:";
+
+/** The permissions of a policy that are ImpressoRx's, as ImpressoRx names them. Anything else is not for ImpressoRx to grant. */
+export function impressorxScope(permissions: readonly string[]): string[] {
+  return permissions.filter((p) => p.startsWith(IMPRESSORX_PREFIX)).map((p) => p.slice(IMPRESSORX_PREFIX.length));
 }
 
 export function decisionOf(instance: ActionInstance): PolicyDecision | null {

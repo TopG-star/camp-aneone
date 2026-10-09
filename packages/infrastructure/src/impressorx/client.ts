@@ -33,7 +33,14 @@ export class ImpressoRxRefusedError extends Error {
  * grant revoked or expired here) or an unexpected status (404, 400, 3xx). Callers that must tell them apart test for this class.
  */
 export class ImpressoRxUnauthorizedError extends ImpressoRxRefusedError {
-  constructor(message = "ImpressoRx answered 401") {
+  /**
+   * True when every attempt of the signed request was answered 401, with no timeout, network failure or 5xx before it, so none of
+   * them can have been applied. A 401 after an ambiguous attempt says nothing about whether the request was applied.
+   */
+  constructor(
+    message = "ImpressoRx answered 401",
+    readonly unambiguous = false,
+  ) {
     super(message, 401);
   }
 }
@@ -200,16 +207,20 @@ export class ImpressoRxClient {
     return grantId ? new Handle(this, grantId) : null;
   }
 
+  /** True when the action has ever had a grant stored here, active or not. */
+  hadActionGrant(actionId: string): boolean {
+    return this.deps.grants.hadActionGrant(actionId);
+  }
+
   /**
-   * Revokes the action's grant when the action is over: here first, so it is never used again, then at ImpressoRx on a best-effort basis
-   * (releaseGrants also drops its cached tokens and logs a failure at warn). Never throws for an unreachable deployment; a call for an
-   * action with no active grant sends nothing.
+   * The action is over: its grant is revoked here first, so it is never used again, then at ImpressoRx on a best-effort basis
+   * (releaseGrants also drops its cached tokens and logs a failure at warn). Never throws for an unreachable deployment; an action with
+   * no active grant sends nothing. The end is remembered either way: a grant stored for this action later (an issue still in flight, or
+   * one a later exchange replays) is stored revoked, and revoked at ImpressoRx too.
    */
   async revokeActionGrant(actionId: string, reason: string): Promise<void> {
-    const grantId = this.deps.grants.findActionGrant(actionId);
-    if (!grantId) return;
-    this.deps.grants.revoke(grantId, reason);
-    await this.releaseGrants([grantId]);
+    const grantId = this.deps.grants.endAction(actionId, reason);
+    if (grantId) await this.releaseGrants([grantId]);
   }
 
   // ---- used by Handle ----
@@ -317,7 +328,7 @@ export class ImpressoRxClient {
   private async perform(
     record: GrantRecord,
     registration: TenantRegistration,
-    begin: { value: string; requestId: string; pendingSince: string; pendingOp: PendingOp },
+    begin: { value: string; requestId: string; pendingSince: string; pendingOp: PendingOp; reused: boolean },
   ): Promise<{ accessToken: string; issuedGrantId?: string }> {
     const op = begin.pendingOp;
     const claims: Record<string, unknown> =
@@ -343,9 +354,14 @@ export class ImpressoRxClient {
     try {
       res = await this.postToken(registration, claims, true, Date.parse(begin.pendingSince));
     } catch (error) {
-      // ImpressoRx's own refusal (for example an issue while unattended access is off) applied nothing. The stored request must not be
-      // replayed, and refused again, by the next exchange of this grant, which is still good for what it is allowed to do.
-      if (error instanceof ImpressoRxUnauthorizedError) this.deps.grants.abandonExchange(record.id, begin.requestId);
+      // A request refused on every attempt (for example an issue while unattended access is off) applied nothing. The stored request must
+      // not be replayed, and refused again, by the next exchange of this grant, which is still good for what it is allowed to do.
+      // That holds only for a request that is new here and was refused by every attempt with no timeout or 5xx before it. A replayed
+      // request may have been applied already, and ImpressoRx also answers 401 without revoking anything while the pharmacy is not
+      // active: dropping it would leave Oneon holding the value from before the rotation, which ImpressoRx counts as theft.
+      if (error instanceof ImpressoRxUnauthorizedError && error.unambiguous && !begin.reused) {
+        this.deps.grants.abandonExchange(record.id, begin.requestId);
+      }
       throw error;
     }
 
@@ -367,9 +383,11 @@ export class ImpressoRxClient {
       };
     }
     // The rotation is always completed, even when the reply turns out to be unusable.
-    this.complete(record.id, begin.requestId, res, issued);
+    const issuedForEndedAction = this.complete(record.id, begin.requestId, res, issued);
     this.cacheToken(record.id, op.grantType === "grant" ? op.oneonActionId : undefined, res);
     this.deps.onSnapshot(record.membershipId, res.snapshot);
+    // Its action had already reached a final status: it was stored revoked, and ImpressoRx is told (best effort, never thrown).
+    if (issuedForEndedAction && issued) await this.releaseGrants([issued.id]);
     if (op.grantType === "issue" && !issued) throw new ImpressoRxUnreachableError("Reply carries no issued grant");
     return { accessToken: res.accessToken, issuedGrantId: issued?.id };
   }
@@ -395,9 +413,9 @@ export class ImpressoRxClient {
     }
   }
 
-  private complete(grantId: string, requestId: string, res: TokenResponse, issued?: InsertGrant): void {
+  private complete(grantId: string, requestId: string, res: TokenResponse, issued?: InsertGrant): boolean {
     try {
-      this.deps.grants.completeExchange(grantId, requestId, res.grant.value, res.grant.generation, issued);
+      return this.deps.grants.completeExchange(grantId, requestId, res.grant.value, res.grant.generation, issued);
     } catch (error) {
       if (error instanceof GrantInactiveError) throw new ImpressoRxRefusedError("Grant is not active");
       throw error;
@@ -465,6 +483,8 @@ export class ImpressoRxClient {
     const keys = this.deps.enrolment.oneonSigningKeys(registration.id);
     const started = since ?? this.clock().getTime();
     let unauthorized = false;
+    // An attempt that got no answer, or a 5xx or 429, may have been applied before the connection failed.
+    let ambiguous = false;
     for (const key of keys) {
       for (let attempt = 1; ; attempt++) {
         const request = await signJws({
@@ -495,6 +515,7 @@ export class ImpressoRxClient {
           break;
         }
         if (status !== null && status < 500 && status !== 429) throw new ImpressoRxRefusedError(`ImpressoRx answered ${status}`, status);
+        ambiguous = true;
         const elapsed = this.clock().getTime() - started;
         if (!retry || attempt >= MAX_ATTEMPTS || elapsed + RETRY_DELAY_MS * attempt + RETRY_MARGIN_MS >= RETRY_WINDOW_MS) {
           this.deps.logger?.warn("ImpressoRx unreachable", { path, status });
@@ -504,7 +525,7 @@ export class ImpressoRxClient {
       }
     }
     this.deps.logger?.warn("ImpressoRx refused a signed request", { path });
-    throw unauthorized ? new ImpressoRxUnauthorizedError("ImpressoRx refused the request") : new ImpressoRxRefusedError();
+    throw unauthorized ? new ImpressoRxUnauthorizedError("ImpressoRx refused the request", !ambiguous) : new ImpressoRxRefusedError();
   }
 
   private async bearerFetch(url: string, token: string, init: { method: "GET" | "POST"; body?: string; contentType?: boolean }): Promise<Response> {

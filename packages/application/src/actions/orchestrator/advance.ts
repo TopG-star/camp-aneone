@@ -234,8 +234,9 @@ async function executeApproved(
       if (error instanceof DelegationRevokedError) throw error; // advance fails the action as delegation_revoked
       if (error instanceof DelegationUnreachableError) return waitForImpressorx(deps, instance);
       if (error instanceof ExternalCallError) {
-        // Any other refusal is permanent (a 404 or 400 is not going to change): nothing ran, and nothing is retried.
-        deps.logger.warn("ImpressoRx refused the exchange", { actionId: instance.id, code: error.code, message: error.message });
+        // Any other refusal is permanent (a 404 or 400 is not going to change, nor is an action that never got a grant): nothing ran,
+        // and nothing is retried.
+        deps.logger.warn("ImpressoRx access could not be opened, and will not be retried", { actionId: instance.id, code: error.code, message: error.message });
         return move(deps, instance, "failed", SYSTEM, { outcome: "definite_failure", code: error.code }, {
           error: { code: error.code, message: error.message, stage: "recheck" },
         });

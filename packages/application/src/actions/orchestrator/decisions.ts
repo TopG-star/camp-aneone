@@ -9,7 +9,18 @@ import {
 } from "@oneon/domain";
 import { canAct, canApprove, decide, type EffectivePolicy } from "../policy/index.js";
 import type { AnyActionDefinition } from "../definition.js";
-import { HOUR, POLICY, SYSTEM, approvalAgeLimitHours, approvalExpired, effectivePolicyFor, expiryHoursOf, move } from "./shared.js";
+import {
+  HOUR,
+  POLICY,
+  SYSTEM,
+  approvalAgeLimitHours,
+  approvalExpired,
+  effectivePolicyFor,
+  expiryHoursOf,
+  impressorxScope,
+  move,
+  releaseIfEnded,
+} from "./shared.js";
 import {
   ActionOperationError,
   ApprovalCheckError,
@@ -20,9 +31,6 @@ import {
 } from "./types.js";
 
 const CANCELLABLE = new Set(["proposed", "validating", "awaiting_approval", "approved"]);
-
-/** A tenant actor's permissions carry this prefix (domain tenantActor); ImpressoRx knows them without it. */
-const IMPRESSORX_PREFIX = "impressorx:";
 
 export function loadOwned(deps: OrchestratorDeps, actor: ActorContext, actionId: string) {
   const ownerId = actor.scope === "personal" ? actor.userId : actor.tenantId ?? "";
@@ -101,9 +109,13 @@ export function createDecisions(
       await deps.delegation?.issueActionGrant({
         instance: approved,
         session,
-        scope: policy.requiredPermissions.map((p) => (p.startsWith(IMPRESSORX_PREFIX) ? p.slice(IMPRESSORX_PREFIX.length) : p)),
+        scope: impressorxScope(policy.requiredPermissions),
         absoluteExpiresAt: new Date(Date.parse(approvedAt) + ageLimit * HOUR).toISOString(),
       });
+      // The action may have ended while ImpressoRx was being asked (a cancel in another request): its release found no grant to
+      // revoke then, and the one just stored must not outlive it (spec 7.1).
+      const after = deps.repo.findById(ownerId, approved.id);
+      if (after) releaseIfEnded(deps, after);
     }
     return advance(ownerId, approved.id, session);
   }

@@ -151,10 +151,11 @@ export class GrantStore {
 
   /**
    * Stores the rotated value, clears the pending exchange and slides the idle expiry (attended 30 min, schedule 14 days,
-   * action = absolute; never beyond the absolute expiry). `issued` is inserted in the same transaction.
+   * action = absolute; never beyond the absolute expiry). `issued` is inserted in the same transaction, revoked when its action has
+   * already ended (see endAction). Returns true when `issued` was stored revoked for that reason.
    */
-  completeExchange(id: string, requestId: string, newValue: string, generation: number, issued?: InsertGrant): void {
-    this.db.transaction(() => {
+  completeExchange(id: string, requestId: string, newValue: string, generation: number, issued?: InsertGrant): boolean {
+    return this.db.transaction((): boolean => {
       const row = this.db.prepare("SELECT kind, absolute_expires_at FROM delegation_grants WHERE id = ?").get(id) as
         | { kind: GrantKind; absolute_expires_at: string }
         | undefined;
@@ -171,7 +172,10 @@ export class GrantStore {
         )
         .run(sealed.ciphertext, sealed.wrappedKey, generation, now.toISOString(), idle, id, requestId);
       if (result.changes !== 1) throw new GrantInactiveError();
-      if (issued) this.insertRow(issued);
+      if (!issued) return false;
+      const ended = issued.actionId !== undefined && this.db.prepare("SELECT 1 FROM action_grant_tombstones WHERE action_id = ?").get(issued.actionId) !== undefined;
+      this.insertRow(issued, ended ? "action_ended" : null);
+      return ended;
     }).immediate();
   }
 
@@ -243,19 +247,38 @@ export class GrantStore {
     return row?.id ?? null;
   }
 
-  private insertRow(g: InsertGrant): void {
+  /** True when the action has ever had a grant stored here, whatever became of it. */
+  hadActionGrant(actionId: string): boolean {
+    return this.db.prepare("SELECT 1 FROM delegation_grants WHERE action_id = ? AND kind = 'action'").get(actionId) !== undefined;
+  }
+
+  /**
+   * The action reached a final status (spec 7.1): its active grant is revoked, and its end is remembered, in one transaction. A grant
+   * stored for the action later (an issue that was in flight, or one replayed by a later exchange) is stored revoked. Returns the id of
+   * the grant revoked now, if there was one.
+   */
+  endAction(actionId: string, reason: string): string | null {
+    return this.db.transaction((): string | null => {
+      this.db.prepare("INSERT OR IGNORE INTO action_grant_tombstones (action_id, created_at) VALUES (?, ?)").run(actionId, this.clock().toISOString());
+      const id = this.findActionGrant(actionId);
+      if (id) this.revoke(id, reason);
+      return id;
+    }).immediate();
+  }
+
+  private insertRow(g: InsertGrant, revokedReason: string | null = null): void {
     const sealed = sealSecret(g.value, this.masterKeyB64);
     this.db
       .prepare(
         `INSERT INTO delegation_grants
            (id, identity_id, membership_id, tenant_registration_id, kind, scope_json, encrypted_value, wrapped_key,
-            generation, status, session_id, action_id, created_at, idle_expires_at, absolute_expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
+            generation, status, revoked_reason, session_id, action_id, created_at, idle_expires_at, absolute_expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         g.id, g.identityId, g.membershipId, g.tenantRegistrationId, g.kind, JSON.stringify(g.scope),
-        sealed.ciphertext, sealed.wrappedKey, g.generation, g.sessionId ?? null, g.actionId ?? null,
-        this.clock().toISOString(), g.idleExpiresAt, g.absoluteExpiresAt,
+        sealed.ciphertext, sealed.wrappedKey, g.generation, revokedReason === null ? "active" : "revoked", revokedReason,
+        g.sessionId ?? null, g.actionId ?? null, this.clock().toISOString(), g.idleExpiresAt, g.absoluteExpiresAt,
       );
   }
 }

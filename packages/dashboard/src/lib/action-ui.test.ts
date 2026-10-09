@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { STATUS_GROUPS } from "@oneon/contracts";
 import {
-  GROUP_BADGE, GROUP_FILTERS, actionsQuery, actorLabel, chatChip, evidenceSummary, needsReconnect, operationLabel, statusLabel, undoNote, verifyingNote,
+  GROUP_BADGE, GROUP_FILTERS, actionsQuery, actorLabel, chatChip, evidenceSummary, needsReconnect, operationLabel, statusLabel, timelineLabel, undoNote, verifyingNote,
 } from "./action-ui";
 
 describe("action UI helpers", () => {
@@ -36,8 +36,15 @@ describe("action UI helpers", () => {
     const view = (status: string, code: string | null) => ({ status, error: code ? { code, stage: "recheck", message: "x" } : null }) as never;
     expect(needsReconnect(view("failed", "delegation_revoked"))).toBe(true);
     expect(needsReconnect(view("failed", "approval_stale"))).toBe(false);
+    expect(needsReconnect(view("failed", "no_action_grant"))).toBe(false); // nothing was revoked: Oneon could not keep access on its own
     expect(needsReconnect(view("failed", null))).toBe(false);
     expect(needsReconnect(view("completed", "delegation_revoked"))).toBe(false);
+  });
+
+  it("shows a note that kept the status (a retry while ImpressoRx is unreachable) as waiting, not as a second approval", () => {
+    expect(timelineLabel({ fromStatus: "validating", toStatus: "approved" })).toBe("Approved");
+    expect(timelineLabel({ fromStatus: "approved", toStatus: "approved" })).toBe("Waiting for ImpressoRx");
+    expect(timelineLabel({ fromStatus: null, toStatus: "proposed" })).toBe("Proposed");
   });
 
   it("names actors and operations in plain words", () => {

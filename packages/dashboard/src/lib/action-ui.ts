@@ -111,3 +111,11 @@ export function undoNote(view: Pick<ActionView, "undo" | "attemptNumber">): stri
 export function needsReconnect(view: Pick<ActionView, "status" | "error">): boolean {
   return view.status === "failed" && view.error?.code === "delegation_revoked";
 }
+
+/**
+ * An event that leaves the status where it was is a note, not a step: today the retry recorded while ImpressoRx cannot be reached.
+ * It must not read as the action being approved again.
+ */
+export function timelineLabel(event: Pick<ActionView["timeline"][number], "fromStatus" | "toStatus">): string {
+  return event.fromStatus === event.toStatus ? "Waiting for ImpressoRx" : statusLabel(event.toStatus);
+}

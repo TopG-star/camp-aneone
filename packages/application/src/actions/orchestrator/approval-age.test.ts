@@ -142,6 +142,23 @@ describe("the approval age limit at execution", () => {
     expect(w.h.repo.findById("t-a", w.id)).toMatchObject({ status: "failed", error: { code: "approval_stale" } });
   });
 
+  it("the age check uses the limit recorded with the approval, so raising the configured limit afterwards cannot revive it", async () => {
+    const always = { mode: "always" as const, thresholds: {} };
+    const { delegation } = delegationStub({ open: vi.fn(async () => { throw new DelegationUnreachableError(); }) });
+    const h = harness([tenantProbe({ floor: { ...FLOOR, approval: always }, defaults: { ...FLOOR, approval: always, enabled: true } })], { memberships, delegation });
+    h.configRepo.save({ scope: "tenant", ownerId: "t-a", actionType: "probe", configJson: JSON.stringify({ maxApprovalAgeHours: 6 }), changedBy: "i1" });
+    const proposed = await h.orchestrator.requestAction(request({ actor }));
+    if (proposed.kind === "refused") throw new Error();
+    await h.orchestrator.approve(actor, proposed.instance.id, { sessionId: "s1", identityId: "i1" }); // approved under 6 hours; ImpressoRx is unreachable
+    expect(h.repo.findById("t-a", proposed.instance.id)!.status).toBe("approved");
+
+    h.configRepo.save({ scope: "tenant", ownerId: "t-a", actionType: "probe", configJson: JSON.stringify({ maxApprovalAgeHours: 24 }), changedBy: "i1" });
+    h.advanceClock(7 * HOUR);
+    await h.orchestrator.sweep("t-a");
+
+    expect(h.repo.findById("t-a", proposed.instance.id)).toMatchObject({ status: "failed", error: { code: "approval_stale" } });
+  });
+
   it("a personal action keeps its own stale-approval rule and gets no age limit", async () => {
     let checks = 0;
     const h = harness([probeDefinition({ preconditions: async () => { if (++checks > 1) throw new Error("down at the re-check"); return []; } })]);

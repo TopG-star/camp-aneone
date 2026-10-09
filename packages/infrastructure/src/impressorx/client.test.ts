@@ -75,11 +75,16 @@ describe("ImpressoRx client against the fake deployment", () => {
       error: (m, meta) => logged.push(JSON.stringify({ m, meta })),
       debug: (m, meta) => logged.push(JSON.stringify({ m, meta })),
     };
-    // Applies the request at the fake, then loses the reply (on token calls) while `dropReplies` is set.
-    const flags = { dropReplies: false };
+    // Applies the request at the fake, then loses the reply (on token calls) while `dropReplies` is set. `afterToken` runs after each
+    // token request the fake has answered, before the reply is lost.
+    const flags: { dropReplies: boolean; afterToken?: () => void } = { dropReplies: false };
     const wrapped: FetchLike = async (input, init) => {
       const res = await fake.fetch(input, init);
-      if (flags.dropReplies && input.toString().endsWith("/api/oneon/token")) throw new TypeError("fetch failed");
+      if (input.toString().endsWith("/api/oneon/token")) {
+        const drop = flags.dropReplies;
+        flags.afterToken?.();
+        if (drop) throw new TypeError("fetch failed");
+      }
       return res;
     };
     const client = new ImpressoRxClient({
@@ -646,6 +651,118 @@ describe("ImpressoRx client against the fake deployment", () => {
       await bound(s, sessionId).trpc("inventory.transfer", { n: 1 }, "mutation", { oneonActionId: "act-1" }).catch(() => undefined);
 
       expect(seen).toEqual(["act-1"]);
+    });
+  });
+
+  describe("action grants, fix round 1", () => {
+    const DAY = 24 * 3600 * 1000;
+    const bound = (s: Awaited<ReturnType<typeof setup>>, sessionId: string) => s.client.forBoundSession(sessionId, s.identityId, s.membershipId)!;
+    const pendingId = (s: Awaited<ReturnType<typeof setup>>, grantId: string) =>
+      (s.control.prepare("SELECT pending_request_id FROM delegation_grants WHERE id = ?").get(grantId) as { pending_request_id: string | null }).pending_request_id;
+    const actionRow = (s: Awaited<ReturnType<typeof setup>>, actionId: string) =>
+      s.control.prepare("SELECT id, status, revoked_reason FROM delegation_grants WHERE action_id = ?").get(actionId) as
+        | { id: string; status: string; revoked_reason: string | null }
+        | undefined;
+    const issueFor = (s: Awaited<ReturnType<typeof setup>>, sessionId: string, actionId: string) =>
+      bound(s, sessionId).issue({ kind: "action", oneonActionId: actionId, scope: ["jobs.read"], absoluteExpiresAt: new Date(s.clock().getTime() + DAY).toISOString() });
+
+    it("a replayed exchange that a suspended tenant refuses stays pending: the value from before the rotation is never presented", async () => {
+      const s = await setup();
+      const { grantId, sessionId } = await s.launch();
+      s.flags.dropReplies = true;
+      await expect(bound(s, sessionId).accessToken({ oneonActionId: "act-1" })).rejects.toBeInstanceOf(ImpressoRxUnreachableError); // applied, reply lost
+      s.flags.dropReplies = false;
+      expect(s.storedValue(grantId)).not.toBe(s.fake.grantValue(grantId)); // ImpressoRx has rotated; Oneon still holds the old value
+      const pending = pendingId(s, grantId);
+      expect(pending).not.toBeNull();
+
+      s.fake.tenantSuspended = true;
+      await expect(bound(s, sessionId).accessToken({ oneonActionId: "act-1" })).rejects.toBeInstanceOf(ImpressoRxUnauthorizedError);
+      expect(pendingId(s, grantId)).toBe(pending);
+
+      s.fake.tenantSuspended = false; // the pharmacy is active again
+      await expect(bound(s, sessionId).accessToken({ oneonActionId: "act-1" })).resolves.toEqual(expect.any(String));
+      expect(s.fake.theftRevocations).toEqual([]);
+      expect(s.grants.find(grantId)!.status).toBe("active");
+      expect(s.storedValue(grantId)).toBe(s.fake.grantValue(grantId));
+    });
+
+    it("a timeout followed by 401s on the retry and on the next key keeps the exchange pending too", async () => {
+      const s = await setup();
+      const { grantId, sessionId } = await s.launch();
+      const newer = await generateEd25519Key();
+      s.repo.addPendingOneonKey(s.registration.id, newer.keyId, newer.publicKeyJwk, sealSecret(JSON.stringify(newer.privateKeyJwk), s.enrolmentKey));
+      s.fake.oneonKeys.push({ keyId: newer.keyId, publicKeyJwk: newer.publicKeyJwk, retiredAt: null }); // the deployment knows both keys
+      // The first attempt is applied and its reply lost; the tenant is suspended before the retry and before the older key is tried.
+      s.flags.dropReplies = true;
+      s.flags.afterToken = () => {
+        s.fake.tenantSuspended = true;
+        s.flags.dropReplies = false;
+      };
+
+      await expect(bound(s, sessionId).accessToken({ oneonActionId: "act-1" })).rejects.toBeInstanceOf(ImpressoRxUnauthorizedError);
+
+      expect(pendingId(s, grantId)).not.toBeNull();
+      expect(s.storedValue(grantId)).not.toBe(s.fake.grantValue(grantId));
+      s.flags.afterToken = undefined;
+      s.fake.tenantSuspended = false;
+      await expect(bound(s, sessionId).accessToken({ oneonActionId: "act-1" })).resolves.toEqual(expect.any(String));
+      expect(s.fake.theftRevocations).toEqual([]);
+      expect(s.storedValue(grantId)).toBe(s.fake.grantValue(grantId));
+    });
+
+    it("a new exchange that every attempt of a suspended tenant refused applied nothing, so it is dropped", async () => {
+      const s = await setup();
+      const { grantId, sessionId } = await s.launch();
+      s.fake.tenantSuspended = true;
+
+      await expect(bound(s, sessionId).accessToken({ oneonActionId: "act-1" })).rejects.toBeInstanceOf(ImpressoRxUnauthorizedError);
+
+      expect(pendingId(s, grantId)).toBeNull();
+      s.fake.tenantSuspended = false;
+      await expect(bound(s, sessionId).accessToken({ oneonActionId: "act-1" })).resolves.toEqual(expect.any(String));
+      expect(s.fake.theftRevocations).toEqual([]);
+    });
+
+    it("a grant issued for an action that has already ended is stored revoked, and revoked at ImpressoRx", async () => {
+      const s = await setup();
+      const { sessionId } = await s.launch();
+      await s.client.revokeActionGrant("act-1", "action_cancelled"); // nothing to revoke yet: the action's end is remembered
+
+      const issued = await issueFor(s, sessionId, "act-1");
+      const other = await issueFor(s, sessionId, "act-2");
+
+      expect(actionRow(s, "act-1")).toEqual({ id: issued.grantId, status: "revoked", revoked_reason: "action_ended" });
+      expect(s.fake.grants.get(issued.grantId)!.status).toBe("revoked");
+      expect(s.client.forActionGrant("act-1")).toBeNull();
+      expect(actionRow(s, "act-2")).toMatchObject({ id: other.grantId, status: "active" }); // other actions are not affected
+    });
+
+    it("an issue whose reply was lost and replays after the action ended also lands revoked", async () => {
+      const s = await setup();
+      const { sessionId } = await s.launch();
+      s.flags.dropReplies = true;
+      await expect(issueFor(s, sessionId, "act-1")).rejects.toBeInstanceOf(ImpressoRxUnreachableError); // applied at ImpressoRx, never stored here
+      s.flags.dropReplies = false;
+      expect(actionRow(s, "act-1")).toBeUndefined();
+      await s.client.revokeActionGrant("act-1", "action_cancelled");
+
+      await bound(s, sessionId).accessToken({ oneonActionId: "later" }); // replays the stored issue, then runs its own exchange
+
+      const row = actionRow(s, "act-1")!;
+      expect(row).toMatchObject({ status: "revoked", revoked_reason: "action_ended" });
+      expect(s.fake.grants.get(row.id)!.status).toBe("revoked");
+    });
+
+    it("hadActionGrant tells an action that never had a grant from one whose grant was revoked", async () => {
+      const s = await setup();
+      const { sessionId } = await s.launch();
+      expect(s.client.hadActionGrant("act-1")).toBe(false);
+      await issueFor(s, sessionId, "act-1");
+      expect(s.client.hadActionGrant("act-1")).toBe(true);
+      await s.client.revokeActionGrant("act-1", "action_completed");
+      expect(s.client.hadActionGrant("act-1")).toBe(true);
+      expect(s.client.hadActionGrant("act-2")).toBe(false);
     });
   });
 

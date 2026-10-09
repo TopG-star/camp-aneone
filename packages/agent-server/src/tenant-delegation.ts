@@ -10,7 +10,7 @@ import type { SnapshotRefresher } from "./middleware/active-context.js";
 
 export interface TenantDelegationDeps {
   /** The ImpressoRx client; null when delegation is not configured, and every tenant action then fails closed. */
-  client: Pick<ImpressoRxClient, "forBoundSession" | "forActionGrant" | "revokeActionGrant"> | null;
+  client: Pick<ImpressoRxClient, "forBoundSession" | "forActionGrant" | "revokeActionGrant" | "hadActionGrant"> | null;
   /** The identity's current active membership at the tenant whose rows carry this registry tenant id. */
   memberships: { activeFor(identityId: string, tenantId: string): (MembershipLike & { id: string; identityId: string }) | null };
   snapshots: Pick<SnapshotRefresher, "checkLive">;
@@ -75,7 +75,13 @@ export function createTenantDelegation(deps: TenantDelegationDeps): TenantDelega
     async open(instance, session): Promise<ImpressoRxCalls> {
       const attended = attendedFor(instance, session);
       const grant = attended ?? client?.forActionGrant(instance.id) ?? null;
-      if (!client || !grant) throw new DelegationRevokedError();
+      if (!client) throw new DelegationRevokedError();
+      if (!grant) {
+        // A grant that existed and was revoked is the access ending (spec 7.7). One that was never issued (ImpressoRx could not be
+        // reached or refused the issue) is not: the person's access is fine, Oneon just has nothing to act on its own with.
+        if (client.hadActionGrant(instance.id)) throw new DelegationRevokedError();
+        throw new ExternalCallError("definite", "no_action_grant", "No action grant was issued, and there is no session to run the action with");
+      }
 
       /** The grant that failed is revoked here (at ImpressoRx too, best effort) before the action is failed. */
       const revokeUsedGrant = async () => {

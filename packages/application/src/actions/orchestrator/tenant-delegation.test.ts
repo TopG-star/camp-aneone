@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { DelegationRevokedError, DelegationUnreachableError, ExternalCallError, personalActor, tenantActor } from "@oneon/domain";
 import { harness, probeDefinition, request } from "../__tests__/orchestrator-harness.js";
 import type { PolicyFloor } from "../policy/index.js";
+import { impressorxScope } from "./shared.js";
 import type { TenantDelegation } from "./types.js";
 
 const HOUR = 3_600_000;
@@ -152,6 +153,46 @@ describe("approving a tenant action", () => {
     expect(done.status).toBe("completed");
     expect(delegation.open).toHaveBeenCalledWith(expect.objectContaining({ id: instance.id }), session);
     expect(seen).toEqual([calls]);
+  });
+
+  it("an action that ended while its grant was being issued has the grant released again once the issue returns", async () => {
+    const trail: string[] = [];
+    const holder: { cancel?: () => Promise<unknown> } = {};
+    const { delegation } = delegationStub({
+      issueActionGrant: vi.fn(async () => {
+        trail.push("issue starts");
+        await holder.cancel!(); // another request cancels the action while ImpressoRx is being asked
+        trail.push("issue returns");
+      }),
+      release: vi.fn((i) => void trail.push(`release ${i.status}`)),
+    });
+    const h = harness([tenantProbe()], { memberships, delegation });
+    const instance = await awaiting(h);
+    holder.cancel = () => h.orchestrator.cancel(actor, instance.id);
+
+    const result = await h.orchestrator.approve(actor, instance.id, session);
+
+    expect(result.status).toBe("cancelled");
+    // The cancel released nothing (the grant did not exist yet); the release after the issue returns is the one that revokes it.
+    expect(trail).toEqual(["issue starts", "release cancelled", "issue returns", "release cancelled"]);
+  });
+
+  it("does not release again after an issue when the action is still running", async () => {
+    const { delegation } = delegationStub({ open: vi.fn(async () => { throw new DelegationUnreachableError(); }) });
+    const h = harness([tenantProbe()], { memberships, delegation });
+    const instance = await awaiting(h);
+
+    await h.orchestrator.approve(actor, instance.id, session);
+
+    expect(delegation.release).not.toHaveBeenCalled();
+  });
+
+  it("only permissions that are ImpressoRx's go into the grant's scope", () => {
+    expect(impressorxScope(["impressorx:inventory.transfer", "calendar.write", "impressorx:customers.view"])).toEqual([
+      "inventory.transfer",
+      "customers.view",
+    ]);
+    expect(impressorxScope(["calendar.write"])).toEqual([]);
   });
 
   it("the sweeper opens the connection without a session", async () => {

@@ -22,6 +22,7 @@ const TEXT: Record<string, string> = {
   policy_refused_now: "Your settings no longer allow this action, so Oneon didn't run it.",
   approval_stale: "This approval is too old to act on. Ask for it again.",
   delegation_revoked: "Your access to this pharmacy has ended, so Oneon didn't run this. Open Oneon from ImpressoRx to reconnect, then try again.",
+  no_action_grant: "Oneon couldn't keep access to finish this on its own. Retry while you're signed in.",
   impressorx_refused: "ImpressoRx refused the change, so nothing was changed.",
   // Execution: definite failures (nothing changed)
   missing_version: "Google didn't report the event's version, so Oneon didn't change it.",
