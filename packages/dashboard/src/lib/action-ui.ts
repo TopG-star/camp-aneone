@@ -103,3 +103,11 @@ export function undoNote(view: Pick<ActionView, "undo" | "attemptNumber">): stri
   const parts = [view.undo.text, view.attemptNumber > 1 ? `Attempt ${view.attemptNumber}` : null].filter(Boolean);
   return parts.length > 0 ? parts.join(" · ") : null;
 }
+
+/**
+ * Spec §7.7: the person's access to the pharmacy ended before the action could run (a role change, deactivation, switched-off
+ * unattended access, a revoked connection). Retry stays available once they have reconnected; nothing is reassigned to anyone else.
+ */
+export function needsReconnect(view: Pick<ActionView, "status" | "error">): boolean {
+  return view.status === "failed" && view.error?.code === "delegation_revoked";
+}

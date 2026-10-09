@@ -20,6 +20,7 @@ import {
 } from "./client.js";
 import { generateEd25519Key } from "../crypto/jws.js";
 import { openSecret, sealSecret } from "../crypto/envelope.js";
+import { decodeJwt } from "jose";
 
 const ORIGIN = "https://acme.example";
 const CODE = "ABCD-EFGH-JKLM";
@@ -532,6 +533,119 @@ describe("ImpressoRx client against the fake deployment", () => {
       s.client.revokeForMembership("some-other-membership", "membership_suspended");
 
       expect(s.grants.find(grantId)!.status).toBe("active");
+    });
+  });
+
+  describe("action grants", () => {
+    const DAY = 24 * 3600 * 1000;
+    const bound = (s: Awaited<ReturnType<typeof setup>>, sessionId: string) => s.client.forBoundSession(sessionId, s.identityId, s.membershipId)!;
+    const row = (s: Awaited<ReturnType<typeof setup>>, id: string) =>
+      s.control.prepare("SELECT idle_expires_at, absolute_expires_at, status, revoked_reason FROM delegation_grants WHERE id = ?").get(id) as {
+        idle_expires_at: string;
+        absolute_expires_at: string;
+        status: string;
+        revoked_reason: string | null;
+      };
+
+    it("an action grant's idle expiry equals its absolute expiry, however far away that is, and stays so after an exchange", async () => {
+      const s = await setup();
+      const { sessionId } = await s.launch();
+      const absolute = new Date(s.clock().getTime() + 20 * DAY).toISOString();
+
+      const issued = await bound(s, sessionId).issue({ kind: "action", oneonActionId: "act-1", scope: ["jobs.read"], absoluteExpiresAt: absolute });
+
+      expect(row(s, issued.grantId)).toMatchObject({ idle_expires_at: absolute, absolute_expires_at: absolute });
+      s.advance(DAY);
+      await s.client.forGrant(issued.grantId).accessToken({ oneonActionId: "act-1" });
+      expect(row(s, issued.grantId).idle_expires_at).toBe(absolute);
+    });
+
+    it("a schedule grant's idle expiry is 14 days or its absolute expiry, whichever comes first", async () => {
+      const s = await setup();
+      const { sessionId } = await s.launch();
+      const far = new Date(s.clock().getTime() + 60 * DAY).toISOString();
+      const near = new Date(s.clock().getTime() + 3 * DAY).toISOString();
+
+      const long = await bound(s, sessionId).issue({ kind: "schedule", scope: ["jobs.read"], absoluteExpiresAt: far });
+      const short = await bound(s, sessionId).issue({ kind: "schedule", scope: ["jobs.read"], absoluteExpiresAt: near });
+
+      expect(row(s, long.grantId).idle_expires_at).toBe(new Date(s.clock().getTime() + 14 * DAY).toISOString());
+      expect(row(s, short.grantId).idle_expires_at).toBe(near);
+    });
+
+    it("an issue ImpressoRx refuses (unattended access is off) leaves the attended grant usable", async () => {
+      const s = await setup();
+      const { grantId, sessionId } = await s.launch();
+      s.fake.allowUnattended = false;
+      const expires = new Date(s.clock().getTime() + DAY).toISOString();
+
+      await expect(bound(s, sessionId).issue({ kind: "action", oneonActionId: "act-1", scope: ["jobs.read"], absoluteExpiresAt: expires })).rejects.toBeInstanceOf(
+        ImpressoRxUnauthorizedError,
+      );
+
+      // The refused issue is not left behind as a pending exchange to be replayed (and refused again) by the next token call.
+      expect(await bound(s, sessionId).accessToken({ oneonActionId: "act-1" })).toEqual(expect.any(String));
+      expect(s.grants.find(grantId)!.status).toBe("active");
+      expect(s.fake.theftRevocations).toEqual([]);
+      expect(s.fake.tokenRequests.filter((r) => r.grantType === "issue")).toHaveLength(1);
+    });
+
+    it("forActionGrant serves the action's own active grant, and nothing for an action without one", async () => {
+      const s = await setup();
+      const { sessionId } = await s.launch();
+      const issued = await bound(s, sessionId).issue({ kind: "action", oneonActionId: "act-1", scope: ["jobs.read"], absoluteExpiresAt: new Date(s.clock().getTime() + DAY).toISOString() });
+
+      expect(s.client.forActionGrant("act-2")).toBeNull();
+      expect(await s.client.forActionGrant("act-1")!.accessToken()).toEqual(expect.any(String));
+      expect(s.grants.find(issued.grantId)!.status).toBe("active");
+    });
+
+    it("revokeActionGrant revokes locally, evicts its tokens and tells ImpressoRx, and a second call sends nothing", async () => {
+      const s = await setup();
+      const { sessionId } = await s.launch();
+      const issued = await bound(s, sessionId).issue({ kind: "action", oneonActionId: "act-1", scope: ["jobs.read"], absoluteExpiresAt: new Date(s.clock().getTime() + DAY).toISOString() });
+      await s.client.forActionGrant("act-1")!.accessToken(); // cached
+      const rotations = s.fake.rotations;
+
+      await s.client.revokeActionGrant("act-1", "action_completed");
+
+      expect(row(s, issued.grantId)).toMatchObject({ status: "revoked", revoked_reason: "action_completed" });
+      expect(s.fake.grants.get(issued.grantId)!.status).toBe("revoked");
+      expect(s.client.forActionGrant("act-1")).toBeNull();
+      await expect(s.client.forGrant(issued.grantId).accessToken()).rejects.toBeInstanceOf(ImpressoRxRefusedError); // no cached token survives
+      expect(s.fake.rotations).toBe(rotations);
+
+      s.fake.grants.get(issued.grantId)!.status = "active";
+      await s.client.revokeActionGrant("act-1", "again");
+      expect(s.fake.grants.get(issued.grantId)!.status).toBe("active"); // nothing was sent
+    });
+
+    it("revokeActionGrant never throws when ImpressoRx cannot be reached: it is revoked here and the failure is logged", async () => {
+      const s = await setup();
+      const { sessionId } = await s.launch();
+      const issued = await bound(s, sessionId).issue({ kind: "action", oneonActionId: "act-1", scope: ["jobs.read"], absoluteExpiresAt: new Date(s.clock().getTime() + DAY).toISOString() });
+      s.fake.unavailable = true;
+
+      await expect(s.client.revokeActionGrant("act-1", "action_failed")).resolves.toBeUndefined();
+
+      expect(row(s, issued.grantId).status).toBe("revoked");
+      expect(s.logged.join("\n")).toContain("Revoking a grant at ImpressoRx failed");
+    });
+
+    it("tRPC carries the action id on an attended grant, so ImpressoRx can attribute the write", async () => {
+      const s = await setup();
+      const { sessionId } = await s.launch();
+      const seen: string[] = [];
+      const original = s.fake.fetch;
+      vi.spyOn(s.fake, "fetch").mockImplementation(async (input, init) => {
+        const auth = new Headers(init?.headers).get("authorization");
+        if (String(input).includes("/api/trpc/") && auth) seen.push(String(decodeJwt(auth.slice(7)).oneonActionId));
+        return original(input, init);
+      });
+
+      await bound(s, sessionId).trpc("inventory.transfer", { n: 1 }, "mutation", { oneonActionId: "act-1" }).catch(() => undefined);
+
+      expect(seen).toEqual(["act-1"]);
     });
   });
 

@@ -1,8 +1,31 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
-import type { ContextDb, Logger, TenantDb } from "@oneon/domain";
-import { createDatabase, runMigrations } from "@oneon/infrastructure";
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import express from "express";
+import request from "supertest";
+import { z } from "zod";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import type { ActionInstance, ContextDb, Logger, TenantDb } from "@oneon/domain";
+import {
+  ContextDbGate,
+  EnrolmentService,
+  FakeImpressorx,
+  MembershipRepository,
+  SqliteIdentityRepository,
+  TenantRegistrationRepository,
+  createDatabase,
+  createImpressoRxClient,
+  ensureIdentityAnchor,
+  openControlDb,
+  runMigrations,
+} from "@oneon/infrastructure";
+import type { AnyActionDefinition } from "@oneon/application";
 import { createActionsFor, createActionsModule, runActionRecovery, runActionStartupTasks, runTenantActionRecovery, type ActionsModule } from "./actions-wiring.js";
-import { activeMembershipLookup } from "./context-wiring.js";
+import { activeMembershipLookup, actorForContext } from "./context-wiring.js";
+import { createSnapshotRefresher } from "./middleware/active-context.js";
+import { createActionsRouter } from "./routes/actions.route.js";
+import { createTenantDelegation } from "./tenant-delegation.js";
 
 vi.mock("@oneon/infrastructure", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@oneon/infrastructure")>()),
@@ -238,5 +261,512 @@ describe("activeMembershipLookup", () => {
     const none = { listActiveForIdentity: () => [] } as never;
     expect(activeMembershipLookup({ findByTenantId: () => null }, { listActiveForIdentity: () => [membership] } as never).activeFor("i1", "t-a")).toBeNull();
     expect(activeMembershipLookup({ findByTenantId: () => ({ id: "r1" }) }, none).activeFor("i1", "t-a")).toBeNull();
+  });
+});
+
+describe("tenant actions against the fake ImpressoRx (spec 7, 9.2, 9.3)", () => {
+  const HOUR = 3_600_000;
+  const ORIGIN = "https://acme.example";
+  const CODE = "ABCD-EFGH-JKLM";
+  const SUSPENDED = "This pharmacy has switched Oneon off, or your account is inactive.";
+  const dirs: string[] = [];
+  const closers: Array<() => void> = [];
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-08T10:00:00.000Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    for (const close of closers.splice(0)) close();
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  type Exec = NonNullable<AnyActionDefinition["execute"]>;
+  const succeed: Exec = async () => ({ kind: "succeeded", result: { done: true }, undoData: null });
+
+  /** A tenant definition that exists only in these tests: B-core registers no tenant action types. */
+  function transfer(execute: Exec): AnyActionDefinition {
+    const floor = {
+      risk: "L2" as const,
+      approval: { mode: "always" as const, thresholds: {} },
+      requiredPermissions: ["impressorx:inventory.transfer"],
+      approverRoles: ["manager"],
+      expiryHours: 48,
+    };
+    return {
+      type: "inventory_transfer",
+      version: "1",
+      scope: "tenant",
+      label: "Transfer stock",
+      description: "Moves stock between locations.",
+      inputSchema: z.object({ n: z.number() }).strict(),
+      effects: { reads: [], writes: ["ImpressoRx inventory"] },
+      floor,
+      defaults: { ...floor, enabled: true },
+      thresholdMetrics: {},
+      rollbackClass: "irreversible",
+      recoveryThresholdMs: 60_000,
+      executionTimeoutMs: 5_000,
+      disableWarning: null,
+      unavailableReason: null,
+      consequenceKeys: ["metrics"],
+      idempotencyKey: (_input: { n: number }, ctx) => (ctx.source === "chat" ? ctx.turnId : ctx.resourceId),
+      preconditions: async () => [],
+      resolve: async () => ({ ok: true, resolved: { metrics: {} } }),
+      riskFor: (_r, f) => f,
+      describe: (_r, input: { n: number }) => `Transfer ${input.n}`,
+      execute,
+      postconditions: async () => ({ effectCheckId: "effect", checks: [{ id: "effect", passed: true }] }),
+      undo: null,
+    };
+  }
+
+  async function setup(executor: Exec = succeed) {
+    const dir = mkdtempSync(join(tmpdir(), "tenant-actions-"));
+    dirs.push(dir);
+    const control = openControlDb(join(dir, "control.db"));
+    const gate = new ContextDbGate({ control, personalPath: join(dir, "personal.db"), tenantDir: join(dir, "tenants") });
+    closers.push(() => gate.close(), () => control.close());
+
+    const identities = new SqliteIdentityRepository(control, (id) => gate.openTenant(id));
+    const identityId = identities.createWithLogin({ kind: "impressorx", subject: "reg:staff-1" }).id;
+    const registrations = new TenantRegistrationRepository(control);
+    const memberships = new MembershipRepository(control);
+    const fake = new FakeImpressorx(ORIGIN, "acme", CODE);
+    fake.snapshots.set("staff-1", { userId: "staff-1", role: "manager", permissions: ["inventory.transfer"], locationIds: [], tokenVersion: 1, tenantStatus: "Active" });
+    const hooks: { afterToken?: (grantType: string) => void } = {};
+    const fetchImpl = async (input: string | URL, init?: RequestInit) => {
+      const res = await fake.fetch(input, init);
+      if (String(input).endsWith("/api/oneon/token")) hooks.afterToken?.(fake.tokenRequests.at(-1)!.grantType);
+      return res;
+    };
+    const enrolment = new EnrolmentService({ repo: registrations, oneonOrigin: "https://oneon.example", masterKeyB64: randomBytes(32).toString("base64"), fetchImpl });
+    const registration = await enrolment.enrol({ origin: ORIGIN, tenantSlug: "acme", enrolmentCode: CODE, enrolledBy: identityId });
+    gate.createTenantFile(registration.id, registration.tenantId);
+    const tenantDb = gate.openTenant(registration.id);
+    ensureIdentityAnchor(tenantDb, identityId);
+    const logger = fakeLogger();
+    const client = createImpressoRxClient({
+      control,
+      grantMasterKeyB64: randomBytes(32).toString("base64"),
+      enrolment,
+      onSnapshot: (id, snapshot) => memberships.applySnapshot(id, snapshot),
+      fetchImpl,
+      logger,
+      sleep: async () => undefined,
+    });
+    const membership = memberships.upsertFromHandoff({ identityId, tenantRegistrationId: registration.id, externalUserId: "staff-1", role: "manager" });
+    const sessionId = "session-1";
+    const { grantId: attendedGrantId } = await client.exchangeHandoff(registration.id, await fake.mintHandoff("staff-1"), sessionId, identityId, membership.id, "staff-1");
+
+    const lookup = activeMembershipLookup(registrations, memberships);
+    const snapshots = createSnapshotRefresher({ memberships, registrations, client, logger });
+    const delegation = createTenantDelegation({ client, memberships: lookup, snapshots, logger });
+    const executed = vi.fn(executor);
+    const actions = createActionsModule({
+      context: tenantDb,
+      memberships: lookup,
+      delegation,
+      definitions: () => [transfer(executed)],
+      publicUrl: "https://oneon.test",
+      calendarId: "primary",
+      calendarCacheTtlMs: 60_000,
+      oauthTokenRepo: null,
+      deadlines: { findById: () => null },
+      notificationRepo: {} as never,
+      preferenceRepo: {} as never,
+      notificationPort: {} as never,
+      notificationWriter: {} as never,
+      createGoogleTokenProvider: () => null,
+      logger,
+    });
+    const ctx = { kind: "tenant" as const, identityId, membershipId: membership.id, tenantId: tenantDb.tenantId, registrationId: registration.id };
+    const actor = actorForContext(ctx, memberships)!;
+    const session = { sessionId, identityId };
+    const propose = async () => {
+      const outcome = await actions.orchestrator.requestAction({
+        type: "inventory_transfer",
+        input: { n: 1 },
+        actor,
+        initiator: "user",
+        keyContext: { source: "rule", resourceId: `r-${Math.random()}` },
+        evidence: [],
+        resourceRef: null,
+        session,
+      });
+      if (outcome.kind === "refused") throw new Error(outcome.issues.join());
+      expect(outcome.instance.status).toBe("awaiting_approval");
+      return outcome.instance;
+    };
+    const find = (id: string): ActionInstance => actions.instanceRepo.findById(tenantDb.tenantId, id)!;
+    const grantRows = () =>
+      control
+        .prepare("SELECT id, kind, action_id, scope_json, status, revoked_reason, idle_expires_at, absolute_expires_at FROM delegation_grants WHERE kind = 'action'")
+        .all() as Array<{
+        id: string;
+        kind: string;
+        action_id: string;
+        scope_json: string;
+        status: string;
+        revoked_reason: string | null;
+        idle_expires_at: string;
+        absolute_expires_at: string;
+      }>;
+    const attendedStatus = () => (control.prepare("SELECT status FROM delegation_grants WHERE id = ?").get(attendedGrantId) as { status: string }).status;
+    const events = (id: string) => actions.instanceRepo.listEvents(tenantDb.tenantId, id);
+    const app = (opts: { sessionId?: string } = { sessionId }) => {
+      const a = express();
+      a.use(express.json());
+      a.use((req, _res, next) => {
+        req.identityId = identityId;
+        req.sessionId = opts.sessionId;
+        req.activeContext = ctx;
+        req.contextDb = tenantDb;
+        next();
+      });
+      a.use("/api/actions", createActionsRouter({ actionsFor: () => actions, actorFor: (c) => actorForContext(c, memberships), logger }));
+      return a;
+    };
+    return {
+      control, fake, hooks, client, memberships, membership, actions, actor, session, ctx, propose, find, grantRows, attendedGrantId, attendedStatus,
+      events, executed, logger, app, delegation, identityId, registration,
+      sweep: () => actions.orchestrator.sweep(tenantDb.tenantId),
+    };
+  }
+
+  /** ImpressoRx goes away right after the action grant was issued: the action is approved and its grant is live. */
+  const dropAfterIssue = (s: Awaited<ReturnType<typeof setup>>) => {
+    s.hooks.afterToken = (grantType) => {
+      if (grantType === "issue") s.fake.unavailable = true;
+    };
+  };
+
+  it("approving a tenant action issues an action-bound grant scoped to its permissions", async () => {
+    const s = await setup();
+    dropAfterIssue(s);
+    const instance = await s.propose();
+
+    const approved = await s.actions.orchestrator.approve(s.actor, instance.id, s.session);
+
+    expect(approved.status).toBe("approved"); // ImpressoRx went away, so it waits; the grant it was issued is the proof of the issue
+    const [grant] = s.grantRows();
+    expect(s.grantRows()).toHaveLength(1);
+    expect(grant).toMatchObject({ kind: "action", action_id: instance.id, status: "active", scope_json: JSON.stringify(["inventory.transfer"]) });
+    const approvedAt = s.events(instance.id).find((e) => e.toStatus === "approved" && e.fromStatus !== "approved")!.createdAt;
+    expect(grant!.absolute_expires_at).toBe(new Date(Date.parse(approvedAt) + 24 * HOUR).toISOString());
+    expect(grant!.idle_expires_at).toBe(grant!.absolute_expires_at); // idle expiry equals absolute expiry for an action grant
+    expect(s.fake.grants.get(grant!.id)).toMatchObject({ unattended: true, scope: ["inventory.transfer"] });
+  });
+
+  it("approval checks the approver live and refuses a role changed since the snapshot", async () => {
+    const s = await setup();
+    const instance = await s.propose();
+    s.fake.snapshots.set("staff-1", { userId: "staff-1", role: "viewer", permissions: ["inventory.transfer"], locationIds: [], tokenVersion: 2, tenantStatus: "Active" });
+
+    const res = await request(s.app()).post(`/api/actions/${instance.id}/approve`);
+
+    expect(res.status).toBe(403);
+    expect(s.find(instance.id).status).toBe("awaiting_approval");
+    expect(s.memberships.findById(s.membership.id)!.role).toBe("viewer"); // the live snapshot was applied to the membership
+    expect(s.fake.tokenRequests.filter((r) => r.grantType === "issue")).toHaveLength(0);
+    expect(s.executed).not.toHaveBeenCalled();
+  });
+
+  it("approves through the route when the live check passes, executing in the request", async () => {
+    const s = await setup();
+    const instance = await s.propose();
+
+    const res = await request(s.app()).post(`/api/actions/${instance.id}/approve`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("completed");
+    expect(s.executed).toHaveBeenCalledTimes(1);
+    expect(s.fake.tokenRequests.map((r) => r.grantType)).toEqual(["handoff", "issue", "grant"]);
+  });
+
+  it("a remote 401 on the live check suspends the membership, revokes its grants, answers 403 and records nothing", async () => {
+    const s = await setup();
+    const instance = await s.propose();
+    const before = s.events(instance.id).length;
+    s.fake.grants.get(s.attendedGrantId)!.status = "revoked";
+
+    const res = await request(s.app()).post(`/api/actions/${instance.id}/approve`);
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "membership_suspended", message: SUSPENDED });
+    expect(s.memberships.findById(s.membership.id)!.status).toBe("suspended");
+    expect(s.attendedStatus()).toBe("revoked");
+    expect(s.find(instance.id).status).toBe("awaiting_approval");
+    expect(s.events(instance.id)).toHaveLength(before);
+  });
+
+  it.each([404, 400, 302])("a %i from the live check is launch_required, with no side effects", async (status) => {
+    const s = await setup();
+    const instance = await s.propose();
+    s.fake.meStatus = status;
+
+    const res = await request(s.app()).post(`/api/actions/${instance.id}/approve`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("launch_required");
+    expect(s.memberships.findById(s.membership.id)!.status).toBe("active");
+    expect(s.attendedStatus()).toBe("active");
+    expect(s.find(instance.id).status).toBe("awaiting_approval");
+  });
+
+  it("an approval from a session that holds no grant for this membership is launch_required", async () => {
+    const s = await setup();
+    const instance = await s.propose();
+
+    const res = await request(s.app({ sessionId: "somebody-else" })).post(`/api/actions/${instance.id}/approve`);
+    const none = await request(s.app({})).post(`/api/actions/${instance.id}/approve`);
+
+    expect(res.body.error).toBe("launch_required");
+    expect(none.body.error).toBe("launch_required");
+    expect(s.find(instance.id).status).toBe("awaiting_approval");
+  });
+
+  it("an unreachable ImpressoRx at approval answers 503 impressorx_unreachable and records nothing", async () => {
+    const s = await setup();
+    const instance = await s.propose();
+    const before = s.events(instance.id).length;
+    s.fake.unavailable = true;
+
+    const res = await request(s.app()).post(`/api/actions/${instance.id}/approve`);
+
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ error: "impressorx_unreachable", message: expect.stringMatching(/ImpressoRx/) });
+    expect(s.memberships.findById(s.membership.id)!.status).toBe("active");
+    expect(s.attendedStatus()).toBe("active");
+    expect(s.find(instance.id).status).toBe("awaiting_approval");
+    expect(s.events(instance.id)).toHaveLength(before);
+  });
+
+  it("every attended call goes through the grant bound to the session, identity and membership, never the unbound lookup", async () => {
+    const s = await setup();
+    const unbound = vi.spyOn(s.client, "forSession");
+    const bound = vi.spyOn(s.client, "forBoundSession");
+    const instance = await s.propose();
+
+    await s.actions.orchestrator.approve(s.actor, instance.id, s.session);
+
+    expect(unbound).not.toHaveBeenCalled();
+    expect(bound.mock.calls.length).toBeGreaterThanOrEqual(3); // the live check, the issue and the token for the executor
+    for (const call of bound.mock.calls) expect(call).toEqual([s.session.sessionId, s.identityId, s.membership.id]);
+  });
+
+  it("outside a request the executor uses the action grant, not the attended one", async () => {
+    const s = await setup();
+    dropAfterIssue(s);
+    const instance = await s.propose();
+    await s.actions.orchestrator.approve(s.actor, instance.id, s.session);
+    const grantId = s.grantRows()[0]!.id;
+    s.fake.unavailable = false;
+    s.hooks.afterToken = undefined;
+    const attendedGeneration = s.fake.grants.get(s.attendedGrantId)!.generation;
+    const actionGeneration = s.fake.grants.get(grantId)!.generation;
+    vi.setSystemTime(Date.now() + 10 * 60_000);
+
+    await s.sweep();
+
+    expect(s.find(instance.id).status).toBe("completed");
+    expect(s.executed).toHaveBeenCalledTimes(1);
+    expect(s.fake.grants.get(grantId)!.generation).toBe(actionGeneration + 1);
+    expect(s.fake.grants.get(s.attendedGrantId)!.generation).toBe(attendedGeneration);
+  });
+
+  it("a request whose session holds another membership's grant falls back to the action grant", async () => {
+    const s = await setup();
+    dropAfterIssue(s);
+    const instance = await s.propose();
+    await s.actions.orchestrator.approve(s.actor, instance.id, s.session);
+    const grantId = s.grantRows()[0]!.id;
+    s.fake.unavailable = false;
+    const attendedGeneration = s.fake.grants.get(s.attendedGrantId)!.generation;
+
+    await s.delegation.open(s.find(instance.id), { sessionId: "another-session", identityId: s.identityId });
+
+    expect(s.fake.grants.get(s.attendedGrantId)!.generation).toBe(attendedGeneration);
+    expect(s.fake.grants.get(grantId)!.generation).toBeGreaterThan(1);
+  });
+
+  it("with no grant it fails delegation_revoked", async () => {
+    const s = await setup();
+    s.fake.allowUnattended = false; // no action grant can be issued
+    s.hooks.afterToken = (grantType) => {
+      if (grantType === "issue") s.fake.unavailable = true; // and ImpressoRx is down for the in-request attempt
+    };
+    const instance = await s.propose();
+    await s.actions.orchestrator.approve(s.actor, instance.id, s.session);
+    expect(s.find(instance.id).status).toBe("approved");
+    expect(s.grantRows()).toEqual([]);
+    s.fake.unavailable = false;
+    vi.setSystemTime(Date.now() + 10 * 60_000);
+
+    await s.sweep();
+
+    expect(s.find(instance.id)).toMatchObject({ status: "failed", error: { code: "delegation_revoked", stage: "recheck" } });
+    expect(s.executed).not.toHaveBeenCalled();
+  });
+
+  it("when ImpressoRx refuses to issue (unattended access off) the approval stands and the action runs in the request with the attended token", async () => {
+    const s = await setup();
+    s.fake.allowUnattended = false;
+    const instance = await s.propose();
+
+    const done = await s.actions.orchestrator.approve(s.actor, instance.id, s.session);
+
+    expect(done.status).toBe("completed");
+    expect(s.grantRows()).toEqual([]);
+    expect(s.attendedStatus()).toBe("active");
+    expect(s.fake.theftRevocations).toEqual([]);
+    expect(s.executed).toHaveBeenCalledTimes(1);
+  });
+
+  it("a refused exchange fails delegation_revoked and revokes the local grant", async () => {
+    const s = await setup();
+    dropAfterIssue(s);
+    const instance = await s.propose();
+    await s.actions.orchestrator.approve(s.actor, instance.id, s.session);
+    const grantId = s.grantRows()[0]!.id;
+    s.fake.unavailable = false;
+    s.fake.grants.get(grantId)!.status = "revoked"; // ImpressoRx says no: e.g. unattended access was switched off
+    vi.setSystemTime(Date.now() + 10 * 60_000);
+
+    await s.sweep();
+
+    expect(s.find(instance.id)).toMatchObject({ status: "failed", error: { code: "delegation_revoked" } });
+    expect(s.grantRows()[0]).toMatchObject({ id: grantId, status: "revoked" });
+    expect(s.executed).not.toHaveBeenCalled();
+  });
+
+  it("a locally revoked grant is a refusal too: delegation_revoked", async () => {
+    const s = await setup();
+    dropAfterIssue(s);
+    const instance = await s.propose();
+    await s.actions.orchestrator.approve(s.actor, instance.id, s.session);
+    s.fake.unavailable = false;
+    s.control.prepare("UPDATE delegation_grants SET status = 'revoked', revoked_reason = 'test' WHERE kind = 'action'").run();
+    vi.setSystemTime(Date.now() + 10 * 60_000);
+
+    await s.sweep();
+
+    expect(s.find(instance.id)).toMatchObject({ status: "failed", error: { code: "delegation_revoked" } });
+  });
+
+  it("an unreachable ImpressoRx keeps the action approved and retries, then approval_stale after the limit", async () => {
+    const s = await setup();
+    dropAfterIssue(s);
+    const instance = await s.propose();
+    await s.actions.orchestrator.approve(s.actor, instance.id, s.session);
+    const notes = () => s.events(instance.id).filter((e) => e.fromStatus === "approved" && e.toStatus === "approved");
+    expect(notes()).toHaveLength(1);
+    expect(notes()[0]!.data).toEqual({ retry: "impressorx_unreachable" });
+
+    vi.setSystemTime(Date.now() + 10 * 60_000);
+    await s.sweep();
+    expect(s.find(instance.id).status).toBe("approved");
+    expect(notes()).toHaveLength(2);
+
+    vi.setSystemTime(Date.now() + 24 * HOUR);
+    await s.sweep();
+
+    expect(s.find(instance.id)).toMatchObject({ status: "failed", error: { code: "approval_stale", stage: "recheck" } });
+    expect(s.executed).not.toHaveBeenCalled();
+    expect(s.grantRows()[0]).toMatchObject({ status: "revoked" }); // revoked here even though ImpressoRx could not be told
+    await vi.waitFor(() => expect(s.logger.warn).toHaveBeenCalledWith(expect.stringContaining("ImpressoRx"), expect.anything()));
+  });
+
+  it("a permanent refusal from the executor's call (tRPC FORBIDDEN) fails the action once, without retrying", async () => {
+    const s = await setup(async (ctx) => {
+      await ctx.impressorx!.trpc("inventory.transfer", { n: 1 }, "mutation"); // B-core: every procedure refuses agents
+      return { kind: "succeeded", result: {}, undoData: null };
+    });
+    const instance = await s.propose();
+
+    const done = await s.actions.orchestrator.approve(s.actor, instance.id, s.session);
+
+    expect(done).toMatchObject({ status: "failed", error: { code: "impressorx_refused", stage: "execution" } });
+    vi.setSystemTime(Date.now() + 25 * HOUR);
+    await s.sweep();
+    expect(s.find(instance.id)).toMatchObject({ status: "failed", error: { code: "impressorx_refused" } });
+    expect(s.executed).toHaveBeenCalledTimes(1);
+  });
+
+  it("a remote 401 during the executor's call revokes that grant and fails delegation_revoked", async () => {
+    const holder: { s?: Awaited<ReturnType<typeof setup>> } = {};
+    const s = await setup(async (ctx) => {
+      holder.s!.fake.grants.get(holder.s!.attendedGrantId)!.status = "revoked"; // taken back while the action runs
+      await ctx.impressorx!.trpc("inventory.transfer", { n: 1 }, "mutation");
+      return { kind: "succeeded", result: {}, undoData: null };
+    });
+    holder.s = s;
+    const instance = await s.propose();
+
+    const done = await s.actions.orchestrator.approve(s.actor, instance.id, s.session);
+
+    expect(done).toMatchObject({ status: "failed", error: { code: "delegation_revoked" } });
+    expect(s.attendedStatus()).toBe("revoked");
+  });
+
+  it("an unreachable ImpressoRx during the executor's call is an unknown outcome and goes to verification", async () => {
+    const holder: { s?: Awaited<ReturnType<typeof setup>> } = {};
+    const s = await setup(async (ctx) => {
+      holder.s!.fake.unavailable = true;
+      await ctx.impressorx!.trpc("inventory.transfer", { n: 1 }, "mutation");
+      return { kind: "succeeded", result: {}, undoData: null };
+    });
+    holder.s = s;
+    const instance = await s.propose();
+
+    await s.actions.orchestrator.approve(s.actor, instance.id, s.session);
+
+    const verifying = s.events(instance.id).find((e) => e.toStatus === "verifying")!;
+    expect(verifying.data).toMatchObject({ outcome: "unknown", code: "impressorx_unreachable" });
+  });
+
+  it("reaching completed revokes the action grant at ImpressoRx", async () => {
+    const s = await setup();
+    const instance = await s.propose();
+
+    const done = await s.actions.orchestrator.approve(s.actor, instance.id, s.session);
+
+    expect(done.status).toBe("completed");
+    const [grant] = s.grantRows();
+    expect(grant).toMatchObject({ action_id: instance.id, status: "revoked", revoked_reason: "action_completed" });
+    await vi.waitFor(() => expect(s.fake.grants.get(grant!.id)!.status).toBe("revoked"));
+  });
+
+  it("failed, rejected and cancelled actions release their grant too, and an action that never had one is fine", async () => {
+    const s = await setup(async () => ({ kind: "definite_failure", code: "nope", message: "no" }));
+    const failing = await s.propose();
+    await s.actions.orchestrator.approve(s.actor, failing.id, s.session);
+    expect(s.find(failing.id).status).toBe("failed");
+    const [grant] = s.grantRows();
+    expect(grant).toMatchObject({ status: "revoked", revoked_reason: "action_failed" });
+    await vi.waitFor(() => expect(s.fake.grants.get(grant!.id)!.status).toBe("revoked"));
+
+    const rejected = await s.propose();
+    await expect(s.actions.orchestrator.reject(s.actor, rejected.id)).resolves.toMatchObject({ status: "rejected" });
+    const cancelled = await s.propose();
+    await expect(s.actions.orchestrator.cancel(s.actor, cancelled.id)).resolves.toMatchObject({ status: "cancelled" });
+    expect(s.grantRows()).toHaveLength(1);
+  });
+
+  it("a failed delegation_revoked action keeps the Retry operation and tells the person to reconnect", async () => {
+    const s = await setup();
+    dropAfterIssue(s);
+    const instance = await s.propose();
+    await s.actions.orchestrator.approve(s.actor, instance.id, s.session);
+    s.fake.unavailable = false;
+    s.control.prepare("UPDATE delegation_grants SET status = 'revoked' WHERE kind = 'action'").run();
+    vi.setSystemTime(Date.now() + 10 * 60_000);
+    await s.sweep();
+
+    const res = await request(s.app()).get(`/api/actions/${instance.id}`);
+
+    expect(res.body).toMatchObject({ status: "failed", error: { code: "delegation_revoked" }, allowedOperations: ["retry"] });
+    expect(res.body.error.message).toMatch(/reconnect/i);
   });
 });

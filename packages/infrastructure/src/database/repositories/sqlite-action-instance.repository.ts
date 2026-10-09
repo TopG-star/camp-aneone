@@ -17,6 +17,7 @@ import {
   type JsonObject,
   type LifecycleStatus,
   type NewActionInstance,
+  type NoteRequest,
   type TransitionRequest,
 } from "@oneon/domain";
 import { rawDb } from "../context-db-gate.js";
@@ -256,6 +257,28 @@ export class SqliteActionInstanceRepository implements ActionInstanceRepository 
       this.db.prepare(`UPDATE action_instances SET ${sets.join(", ")} WHERE id = ?`).run(...params, row.id);
       return this.mustFind(row.id);
     })();
+  }
+
+  recordNote(request: NoteRequest): void {
+    this.db.transaction((): void => {
+      const row = this.db.prepare("SELECT * FROM action_instances WHERE id = ?").get(request.actionId) as InstanceRow | undefined;
+      if (!row) throw new ActionNotFoundError(request.actionId);
+      assertRowTenant(this.context, row.tenant_id, "action_instances");
+      if (row.status !== request.expectedStatus) throw new TransitionConflictError(request.actionId, request.expectedStatus, row.status);
+      const seq = row.last_event_seq + 1;
+      this.insertEvent(row.id, seq, row.status, row.status, request.actor, request.data ?? {}, this.clock().toISOString());
+      this.db.prepare("UPDATE action_instances SET last_event_seq = ? WHERE id = ?").run(seq, row.id);
+    })();
+  }
+
+  approvedAt(actionId: string): string | null {
+    // The first such event is the approval; later events that leave the status at approved are notes.
+    const row = this.db
+      .prepare("SELECT tenant_id, created_at FROM action_events WHERE action_id = ? AND to_status = 'approved' ORDER BY seq LIMIT 1")
+      .get(actionId) as { tenant_id: string | null; created_at: string } | undefined;
+    if (!row) return null;
+    assertRowTenant(this.context, row.tenant_id, "action_events");
+    return row.created_at;
   }
 
   recordHeartbeat(actionId: string, at: string): void {

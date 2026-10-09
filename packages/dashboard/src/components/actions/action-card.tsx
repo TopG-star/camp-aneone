@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Zap } from "lucide-react";
-import { GROUP_BADGE, actorLabel, evidenceSummary, operationLabel, statusLabel, undoNote, verifyingNote } from "@/lib/action-ui";
+import { GROUP_BADGE, actorLabel, evidenceSummary, needsReconnect, operationLabel, statusLabel, undoNote, verifyingNote } from "@/lib/action-ui";
 
 type Operation = ActionView["allowedOperations"][number];
 
@@ -31,6 +31,7 @@ export function ActionCard(props: {
           </CardTitle>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant={GROUP_BADGE[view.group]}>{statusLabel(view.status)}</Badge>
+            {needsReconnect(view) && <Badge variant="warning">Needs reconnect</Badge>}
             <Badge variant="default">Risk {view.risk}</Badge>
           </div>
         </div>

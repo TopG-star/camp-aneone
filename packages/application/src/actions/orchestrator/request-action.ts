@@ -1,10 +1,10 @@
 import type { ActionInstance, ActorRef } from "@oneon/domain";
 import { retryKey } from "../idempotency.js";
-import type { ActionRequest, OrchestratorDeps, RequestOutcome } from "./types.js";
+import type { ActionRequest, OrchestratorDeps, RequestOutcome, RequestSession } from "./types.js";
 
 export function createRequestAction(
   deps: OrchestratorDeps,
-  advance: (ownerId: string, actionId: string) => Promise<ActionInstance>,
+  advance: (ownerId: string, actionId: string, session?: RequestSession) => Promise<ActionInstance>,
 ) {
   return async function requestAction(req: ActionRequest): Promise<RequestOutcome> {
     if (!deps.registry.has(req.type)) {
@@ -51,6 +51,6 @@ export function createRequestAction(
       { initiator: req.initiator },
     );
     if (!created) return { kind: "duplicate", instance };
-    return { kind: "created", instance: await advance(ownerId, instance.id) };
+    return { kind: "created", instance: await advance(ownerId, instance.id, req.session) };
   };
 }

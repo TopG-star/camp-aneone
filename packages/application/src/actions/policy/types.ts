@@ -15,7 +15,15 @@ export interface PolicyFloor {
   requiredPermissions: string[];
   approverRoles: string[];
   expiryHours: number;
+  /**
+   * Spec §7.6: the longest an approval may wait before the action acts on it. Tenant-scope definitions get a floor of
+   * TENANT_MAX_APPROVAL_AGE_HOURS from the registry; configuration may lower it, never raise it. Absent for personal actions.
+   */
+  maxApprovalAgeHours?: number;
 }
+
+/** The floor of `maxApprovalAgeHours` for every tenant-scope action (spec §7.6). */
+export const TENANT_MAX_APPROVAL_AGE_HOURS = 24;
 
 export interface EffectivePolicy extends PolicyFloor {
   enabled: boolean;

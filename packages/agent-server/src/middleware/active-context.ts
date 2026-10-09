@@ -29,11 +29,16 @@ const PERSONAL_UNAVAILABLE_FROM_PHARMACY = {
 export type ContextRefusal =
   | { error: "launch_required" | "membership_suspended"; message: string }
   | typeof UNAVAILABLE;
-const LAUNCH_REQUIRED: ContextRefusal = {
+export const LAUNCH_REQUIRED: ContextRefusal = {
   error: "launch_required",
   message: "Your pharmacy details are out of date. Open Oneon from ImpressoRx again to continue.",
 };
-const SUSPENDED: ContextRefusal = { error: "membership_suspended", message: SUSPENDED_MESSAGE };
+export const SUSPENDED: ContextRefusal = { error: "membership_suspended", message: SUSPENDED_MESSAGE };
+/** The 503 body when a decision needs a live answer from ImpressoRx and it cannot be reached. */
+export const IMPRESSORX_UNREACHABLE = {
+  error: "impressorx_unreachable",
+  message: "Oneon can't reach ImpressoRx right now, so it can't check your access. Nothing was changed. Try again in a moment.",
+} as const;
 
 export type RefreshResult = { ok: true } | { ok: false; refusal: ContextRefusal };
 const OK: RefreshResult = { ok: true };
@@ -41,9 +46,19 @@ const OK: RefreshResult = { ok: true };
 /** After ImpressoRx cannot be reached, the cached snapshot is used and no new refresh is tried for this long. */
 const UNREACHABLE_COOLDOWN_MS = 30_000;
 
+export type LiveResult =
+  | { ok: true; membership: Membership }
+  | { ok: false; reason: "membership_suspended" | "launch_required" | "impressorx_unreachable" };
+
 export interface SnapshotRefresher {
   /** Resolves ok when the membership's snapshot is fresh (refreshing it first when it is older than 5 minutes). */
   ensureFresh(input: { sessionId: string | undefined; membership: Membership }): Promise<RefreshResult>;
+  /**
+   * Spec §9.3: asks ImpressoRx now, however fresh the stored snapshot is, and answers with the membership as the snapshot left it.
+   * Classified exactly like ensureFresh (only ImpressoRx's own 401 suspends; any other refusal is launch_required and changes nothing),
+   * except that an unreachable ImpressoRx is the answer here: a decision needs the live snapshot, not the cached one, and no cooldown applies.
+   */
+  checkLive(input: { sessionId: string | undefined; membership: Pick<Membership, "id" | "identityId"> }): Promise<LiveResult>;
 }
 
 export interface SnapshotRefresherDeps {
@@ -76,38 +91,72 @@ export function createSnapshotRefresher(deps: SnapshotRefresherDeps): SnapshotRe
   const inflight = new Map<string, Promise<RefreshResult>>();
   const cooldownUntil = new Map<string, number>();
 
-  const suspend = (membership: Membership, why: string): RefreshResult => {
+  const suspend = (membership: Pick<Membership, "id">, why: string): RefreshResult => {
     if (deps.memberships.findById(membership.id)?.status === "active") deps.memberships.setStatus(membership.id, "suspended");
     deps.client?.revokeForMembership(membership.id, "membership_suspended");
     deps.logger.warn("Membership suspended", { membershipId: membership.id, why });
     return { ok: false, refusal: SUSPENDED };
   };
 
+  /**
+   * Why a me() call failed, with the side effect each kind has (one classification for the refresh and the live check): only
+   * ImpressoRx's own 401 suspends the membership; any other refusal (a local one, an unexpected status) changes nothing.
+   */
+  function classifyFailure(membership: Pick<Membership, "id">, error: unknown): "unreachable" | "suspended" | "refused" {
+    if (error instanceof ImpressoRxUnreachableError) return "unreachable";
+    if (error instanceof ImpressoRxUnauthorizedError) {
+      suspend(membership, "unauthorized");
+      return "suspended";
+    }
+    if (error instanceof ImpressoRxRefusedError) {
+      deps.logger.warn("Membership snapshot refresh refused without a 401; keeping the membership", {
+        membershipId: membership.id,
+        status: error.status,
+        reason: error.message,
+      });
+      return "refused";
+    }
+    throw error;
+  }
+
   async function refresh(membership: Membership, calls: { me(): Promise<unknown> }): Promise<RefreshResult> {
     try {
       await calls.me();
     } catch (error) {
-      if (error instanceof ImpressoRxUnreachableError) {
+      const failure = classifyFailure(membership, error);
+      if (failure === "unreachable") {
         cooldownUntil.set(membership.id, clock().getTime() + UNREACHABLE_COOLDOWN_MS);
         deps.logger.warn("ImpressoRx unreachable; keeping the cached membership snapshot", { membershipId: membership.id });
         return OK;
       }
-      if (error instanceof ImpressoRxUnauthorizedError) return suspend(membership, "unauthorized");
-      if (error instanceof ImpressoRxRefusedError) {
-        deps.logger.warn("Membership snapshot refresh refused without a 401; keeping the membership", {
-          membershipId: membership.id,
-          status: error.status,
-          reason: error.message,
-        });
-        return { ok: false, refusal: LAUNCH_REQUIRED };
-      }
-      throw error;
+      return { ok: false, refusal: failure === "suspended" ? SUSPENDED : LAUNCH_REQUIRED };
     }
     // The snapshot was written by the client; it may say the tenant is no longer serviceable.
     return deps.memberships.findById(membership.id)?.status === "active" ? OK : suspend(membership, "snapshot");
   }
 
   return {
+    async checkLive({ sessionId, membership }) {
+      const calls = sessionId && deps.client ? deps.client.forBoundSession(sessionId, membership.identityId, membership.id) : null;
+      if (!calls) return { ok: false, reason: "launch_required" };
+      try {
+        await calls.me();
+      } catch (error) {
+        const failure = classifyFailure(membership, error);
+        if (failure === "unreachable") {
+          deps.logger.warn("ImpressoRx unreachable; the live membership check could not be made", { membershipId: membership.id });
+          return { ok: false, reason: "impressorx_unreachable" };
+        }
+        return { ok: false, reason: failure === "suspended" ? "membership_suspended" : "launch_required" };
+      }
+      // The client wrote the snapshot just now; it may say the tenant is no longer serviceable.
+      const fresh = deps.memberships.findById(membership.id);
+      if (fresh?.status !== "active") {
+        suspend(membership, "snapshot");
+        return { ok: false, reason: "membership_suspended" };
+      }
+      return { ok: true, membership: fresh };
+    },
     async ensureFresh({ sessionId, membership }) {
       // NaN (an unreadable time) counts as stale.
       if (clock().getTime() - Date.parse(membership.snapshotAt) <= SNAPSHOT_MAX_AGE_MS) return OK;

@@ -27,6 +27,8 @@ import {
   importLegacyProposals,
   type ActionOrchestrator,
   type ActionRegistry,
+  type AnyActionDefinition,
+  type TenantDelegation,
 } from "@oneon/application";
 import {
   GCalHttpClient,
@@ -42,6 +44,10 @@ export interface ActionsWiringDeps {
   context: ContextDb;
   /** Current active membership of an identity at a tenant (registry tenant id). Defaults to none, so a tenant action fails closed. */
   memberships?: { activeFor(identityId: string, tenantId: string): MembershipLike | null };
+  /** The person's delegated access to a pharmacy's ImpressoRx. Without it a tenant action can be neither approved nor executed. */
+  delegation?: TenantDelegation;
+  /** Every action definition this process registers. Defaults to the production set; tests register their own tenant definitions. */
+  definitions?: () => AnyActionDefinition[];
   publicUrl: string;
   calendarId: string;
   calendarCacheTtlMs: number;
@@ -73,7 +79,7 @@ export interface ActionsModule {
 export function createActionsModule(deps: ActionsWiringDeps): ActionsModule {
   const isTenant = deps.context.kind === "tenant";
   // B-core has no tenant action types, so a tenant handle gets an empty registry (R1: a type exists only if registered).
-  const registry = createActionRegistry(createActionDefinitions().filter((d) => (d.scope === "tenant") === isTenant));
+  const registry = createActionRegistry((deps.definitions?.() ?? createActionDefinitions()).filter((d) => (d.scope === "tenant") === isTenant));
   const repos = contextRepos(deps.context);
   const { actionInstances: instanceRepo, actionConfigs: configRepo } = repos;
   const calendars = new Map<string, GoogleCalendarAdapter>();
@@ -140,6 +146,7 @@ export function createActionsModule(deps: ActionsWiringDeps): ActionsModule {
     repo: instanceRepo,
     configRepo,
     memberships: deps.memberships ?? { activeFor: () => null },
+    delegation: isTenant ? deps.delegation : undefined,
     capabilities: capabilitiesFor,
     // Tenant notifications are not part of B-core; the personal notifier would address a personal inbox.
     notifier: isTenant ? { awaitingApproval: async () => {}, rollbackFailed: async () => {} } : createActionNotifier(deps.notificationPort, deps.logger),

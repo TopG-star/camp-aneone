@@ -48,6 +48,14 @@ const IDLE_MS: Record<GrantKind, number> = {
   action: Number.POSITIVE_INFINITY,
 };
 
+/**
+ * The one place a grant's idle expiry is worked out, for a new grant and for every exchange (ImpressoRx agrees): attended 30 minutes,
+ * schedule 14 days, action = its absolute expiry. Never beyond the absolute expiry.
+ */
+export function idleExpiryFor(kind: GrantKind, fromMs: number, absoluteExpiresAt: string): string {
+  return new Date(Math.min(fromMs + IDLE_MS[kind], Date.parse(absoluteExpiresAt))).toISOString();
+}
+
 export class GrantInactiveError extends Error {
   constructor() {
     super("Grant is not active");
@@ -152,8 +160,7 @@ export class GrantStore {
         | undefined;
       if (!row) throw new GrantInactiveError();
       const now = this.clock();
-      const absolute = Date.parse(row.absolute_expires_at);
-      const idle = new Date(Math.min(now.getTime() + IDLE_MS[row.kind], absolute)).toISOString();
+      const idle = idleExpiryFor(row.kind, now.getTime(), row.absolute_expires_at);
       const sealed = sealSecret(newValue, this.masterKeyB64);
       const result = this.db
         .prepare(
@@ -166,6 +173,19 @@ export class GrantStore {
       if (result.changes !== 1) throw new GrantInactiveError();
       if (issued) this.insertRow(issued);
     }).immediate();
+  }
+
+  /**
+   * Forgets a pending exchange ImpressoRx answered 401 to. A refusal applies nothing, so the stored request must not be replayed
+   * (and refused again) by the next exchange of this grant. Only the pending request with this id is cleared.
+   */
+  abandonExchange(id: string, requestId: string): void {
+    this.db
+      .prepare(
+        `UPDATE delegation_grants SET pending_request_id = NULL, pending_since = NULL, pending_request_json = NULL
+          WHERE id = ? AND pending_request_id = ?`,
+      )
+      .run(id, requestId);
   }
 
   revoke(id: string, reason: string): void {

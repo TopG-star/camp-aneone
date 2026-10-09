@@ -157,6 +157,48 @@ describe("SqliteActionInstanceRepository", () => {
     expect(repo.markUndoStarted("act-1", "2026-10-01T12:03:00.000Z")).toBe(false);
     expect(repo.findById("user-A", "act-1")!.undoStartedAt).toBe("2026-10-01T12:02:00.000Z");
   });
+
+  describe("approvedAt and notes (spec 7.6)", () => {
+    const at = (iso: string) => new SqliteActionInstanceRepository(asPersonal(db), () => new Date(iso));
+
+    it("returns the time of the event that moved the action to approved, and null before that", () => {
+      at("2026-10-01T12:00:00.000Z").create(newInstance(), USER);
+      expect(repo.approvedAt("act-1")).toBeNull();
+      at("2026-10-01T12:01:00.000Z").appendTransition({ actionId: "act-1", expectedStatus: "proposed", toStatus: "validating", actor: SYSTEM });
+      at("2026-10-01T12:02:00.000Z").appendTransition({ actionId: "act-1", expectedStatus: "validating", toStatus: "approved", actor: SYSTEM });
+      expect(repo.approvedAt("act-1")).toBe("2026-10-01T12:02:00.000Z");
+      expect(repo.approvedAt("nobody")).toBeNull();
+    });
+
+    it("records a note as an event that leaves the status, the clock and the rest of the row alone", () => {
+      at("2026-10-01T12:00:00.000Z").create(newInstance(), USER);
+      at("2026-10-01T12:01:00.000Z").appendTransition({ actionId: "act-1", expectedStatus: "proposed", toStatus: "validating", actor: SYSTEM });
+      at("2026-10-01T12:02:00.000Z").appendTransition({ actionId: "act-1", expectedStatus: "validating", toStatus: "approved", actor: USER });
+      const before = repo.findById("user-A", "act-1")!;
+
+      at("2026-10-01T13:00:00.000Z").recordNote({ actionId: "act-1", expectedStatus: "approved", actor: SYSTEM, data: { retry: "impressorx_unreachable" } });
+
+      const after = repo.findById("user-A", "act-1")!;
+      expect(after).toMatchObject({ status: "approved", updatedAt: before.updatedAt, lastEventSeq: before.lastEventSeq + 1 });
+      expect(repo.listEvents("user-A", "act-1").at(-1)).toMatchObject({
+        seq: before.lastEventSeq + 1,
+        fromStatus: "approved",
+        toStatus: "approved",
+        actor: SYSTEM,
+        data: { retry: "impressorx_unreachable" },
+        createdAt: "2026-10-01T13:00:00.000Z",
+      });
+      // The note is not the approval: the age is still measured from the first approved event.
+      expect(repo.approvedAt("act-1")).toBe("2026-10-01T12:02:00.000Z");
+      expect(runActionDriftCheck(db, logger)).toBe(0);
+    });
+
+    it("refuses a note when the action has moved on, and records nothing", () => {
+      repo.create(newInstance(), USER);
+      expect(() => repo.recordNote({ actionId: "act-1", expectedStatus: "approved", actor: SYSTEM, data: {} })).toThrow(TransitionConflictError);
+      expect(repo.listEvents("user-A", "act-1")).toHaveLength(1);
+    });
+  });
 });
 
 describe("runActionDriftCheck", () => {

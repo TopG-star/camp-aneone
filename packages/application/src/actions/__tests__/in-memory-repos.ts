@@ -15,6 +15,7 @@ import {
   type InstanceListFilter,
   type JsonObject,
   type NewActionInstance,
+  type NoteRequest,
   type TransitionRequest,
 } from "@oneon/domain";
 
@@ -89,6 +90,19 @@ export class InMemoryActionRepo implements ActionInstanceRepository {
     this.events.push({ id: `e${this.events.length + 1}`, actionId: i.id, seq, fromStatus: i.status, toStatus: req.toStatus, actor: req.actor, data: req.data ?? {}, createdAt: now });
     Object.assign(i, clone(req.patch ?? {}), { status: req.toStatus, lastEventSeq: seq, updatedAt: now });
     return clone(i);
+  }
+
+  approvedAt(actionId: string): string | null {
+    return this.events.find((e) => e.actionId === actionId && e.toStatus === "approved")?.createdAt ?? null;
+  }
+
+  recordNote(req: NoteRequest): void {
+    const i = this.instances.get(req.actionId);
+    if (!i) throw new ActionNotFoundError(req.actionId);
+    if (i.status !== req.expectedStatus) throw new TransitionConflictError(req.actionId, req.expectedStatus, i.status);
+    const seq = i.lastEventSeq + 1;
+    this.events.push({ id: `e${this.events.length + 1}`, actionId: i.id, seq, fromStatus: i.status, toStatus: i.status, actor: req.actor, data: req.data ?? {}, createdAt: this.clock().toISOString() });
+    i.lastEventSeq = seq;
   }
 
   recordHeartbeat(actionId: string, at: string): void {

@@ -15,13 +15,16 @@ export function createSweeper(
       case "verifying":
         await advance(instance.ownerId, instance.id);
         return;
-      case "approved":
-        if (now - Date.parse(instance.updatedAt) > expiryHoursOf(deps, instance, def) * HOUR) {
+      case "approved": {
+        // A tenant approval has its own age limit (spec §7.6), which fails the action as approval_stale when it is re-checked;
+        // an approval waiting for ImpressoRx must not be cancelled by the older rule below before that.
+        if (instance.scope !== "tenant" && now - Date.parse(instance.updatedAt) > expiryHoursOf(deps, instance, def) * HOUR) {
           move(deps, instance, "cancelled", SWEEPER, { reason: "stale_approval" });
           return;
         }
         await advance(instance.ownerId, instance.id);
         return;
+      }
       case "executing":
         // Never re-run the executor; verification decides (spec §7.4).
         move(deps, instance, "verifying", SWEEPER, { reason: "recovered_after_interruption" });

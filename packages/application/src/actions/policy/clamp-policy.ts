@@ -16,6 +16,7 @@ const ConfigSchema = z
     requiredPermissions: z.array(z.string().min(1)).optional(),
     approverRoles: z.array(z.string().min(1)).optional(),
     expiryHours: z.number().positive().optional(),
+    maxApprovalAgeHours: z.number().positive().optional(),
   })
   .strict();
 
@@ -74,8 +75,12 @@ function merge(defaults: EffectivePolicy, config: StoredConfig): EffectivePolicy
     requiredPermissions: config.requiredPermissions ?? defaults.requiredPermissions,
     approverRoles: config.approverRoles ?? defaults.approverRoles,
     expiryHours: config.expiryHours ?? defaults.expiryHours,
+    ...withAge(config.maxApprovalAgeHours ?? defaults.maxApprovalAgeHours),
   };
 }
+
+/** The age limit is a key only when there is one, so a personal policy stays exactly as it was. */
+const withAge = (maxApprovalAgeHours: number | undefined) => (maxApprovalAgeHours === undefined ? {} : { maxApprovalAgeHours });
 
 function clampFields(floor: PolicyFloor, p: EffectivePolicy): { policy: EffectivePolicy; clamped: string[] } {
   const clamped: string[] = [];
@@ -106,8 +111,13 @@ function clampFields(floor: PolicyFloor, p: EffectivePolicy): { policy: Effectiv
   const expiryHours = Math.min(p.expiryHours, floor.expiryHours);
   if (expiryHours !== p.expiryHours) clamped.push("expiryHours");
 
+  // Lowering is allowed, raising is not: a floor makes the limit apply even where nothing was configured.
+  const maxApprovalAgeHours =
+    floor.maxApprovalAgeHours === undefined ? p.maxApprovalAgeHours : Math.min(p.maxApprovalAgeHours ?? floor.maxApprovalAgeHours, floor.maxApprovalAgeHours);
+  if (p.maxApprovalAgeHours !== undefined && maxApprovalAgeHours !== p.maxApprovalAgeHours) clamped.push("maxApprovalAgeHours");
+
   return {
-    policy: { enabled: p.enabled, risk, approval: { mode, thresholds }, requiredPermissions, approverRoles, expiryHours },
+    policy: { enabled: p.enabled, risk, approval: { mode, thresholds }, requiredPermissions, approverRoles, expiryHours, ...withAge(maxApprovalAgeHours) },
     clamped,
   };
 }
@@ -164,6 +174,9 @@ export function validateConfigWrite(input: {
   }
   if (config.expiryHours !== undefined && config.expiryHours > floor.expiryHours) {
     errors.push({ field: "expiryHours", message: `Expiry cannot exceed ${floor.expiryHours} hours.` });
+  }
+  if (config.maxApprovalAgeHours !== undefined && floor.maxApprovalAgeHours !== undefined && config.maxApprovalAgeHours > floor.maxApprovalAgeHours) {
+    errors.push({ field: "maxApprovalAgeHours", message: `An approval cannot stay valid for more than ${floor.maxApprovalAgeHours} hours.` });
   }
 
   return errors.length > 0 ? { ok: false, errors } : { ok: true, configJson: JSON.stringify(config) };

@@ -7,9 +7,10 @@ import {
   type ContextDb,
   type Logger,
 } from "@oneon/domain";
-import { ActionOperationError, clampPolicy, type RequestOutcome } from "@oneon/application";
+import { ActionOperationError, ApprovalCheckError, clampPolicy, type RequestOutcome } from "@oneon/application";
 import type { ActionsModule } from "../actions-wiring.js";
 import { ownerOf } from "../context-wiring.js";
+import { IMPRESSORX_UNREACHABLE, LAUNCH_REQUIRED, SUSPENDED } from "../middleware/active-context.js";
 import { toActionView } from "./action-views.js";
 
 const LEGACY_MAX_LIMIT = 100;
@@ -30,7 +31,10 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
   const scoped = (req: Request) => {
     const ctx = req.activeContext!;
     const actions = deps.actionsFor(req.contextDb!);
-    return { ctx, actions, actor: deps.actorFor(ctx), owner: ownerOf(ctx).ownerId };
+    // A pharmacy request carries the hand-off session its attended grant is bound to: the approval is checked through it, and the
+    // action may run now with it (spec §9.2, §9.3).
+    const session = ctx.kind === "tenant" && req.sessionId ? { sessionId: req.sessionId, identityId: ctx.identityId } : undefined;
+    return { ctx, actions, actor: deps.actorFor(ctx), owner: ownerOf(ctx).ownerId, session };
   };
 
   const view = (s: ReturnType<typeof scoped>, instance: ActionInstance) => {
@@ -56,6 +60,12 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
     if (error instanceof ActionOperationError) {
       const status = error.code === "not_found" ? 404 : error.code === "not_allowed" ? 403 : 409;
       res.status(status).json({ error: error.message });
+      return;
+    }
+    // Spec §9.3: the approval could not be checked with ImpressoRx, so nothing was recorded.
+    if (error instanceof ApprovalCheckError) {
+      if (error.reason === "impressorx_unreachable") res.status(503).json(IMPRESSORX_UNREACHABLE);
+      else res.status(403).json(error.reason === "membership_suspended" ? SUSPENDED : LAUNCH_REQUIRED);
       return;
     }
     deps.logger.error("Action request failed", { ...context, error: error instanceof Error ? error.message : String(error) });
@@ -161,7 +171,7 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
 
   type Op = "approve" | "reject" | "cancel" | "undo";
   const run: Record<Op, (s: ReturnType<typeof scoped>, id: string, body: { reason?: unknown }) => Promise<ActionInstance>> = {
-    approve: (s, id) => s.actions.orchestrator.approve(s.actor!, id),
+    approve: (s, id) => s.actions.orchestrator.approve(s.actor!, id, s.session),
     reject: (s, id, b) => s.actions.orchestrator.reject(s.actor!, id, typeof b.reason === "string" ? b.reason : undefined),
     cancel: (s, id) => s.actions.orchestrator.cancel(s.actor!, id),
     undo: (s, id) => s.actions.orchestrator.requestUndo(s.actor!, id),
@@ -186,7 +196,7 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
   router.post("/:id/retry", async (req, res) => {
     const s = scoped(req);
     try {
-      const outcome: RequestOutcome = await s.actions.orchestrator.retry(s.actor!, req.params.id);
+      const outcome: RequestOutcome = await s.actions.orchestrator.retry(s.actor!, req.params.id, s.session);
       if (outcome.kind === "refused") {
         res.status(422).json({ error: "Retry refused", issues: outcome.issues });
         return;

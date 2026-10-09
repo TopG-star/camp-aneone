@@ -36,6 +36,15 @@ export interface CheckContext<I> {
   now: Date;
 }
 
+/**
+ * A tenant action's way to the pharmacy's ImpressoRx, as the person who approved it, for this one action (spec §9.2). The wiring
+ * picks the token (the approver's session in the request, else the action's own grant) and turns what goes wrong into the errors
+ * the orchestrator understands: DelegationRevokedError, DelegationUnreachableError, or an ExternalCallError for any other refusal.
+ */
+export interface ImpressoRxCalls {
+  trpc<T>(path: string, input: unknown, type: "query" | "mutation"): Promise<T>;
+}
+
 export interface ExecuteContext<I, R> {
   instanceId: string;
   input: I;
@@ -43,6 +52,8 @@ export interface ExecuteContext<I, R> {
   actor: ActorContext;
   executorRequestId: string;
   writers: ActionWriters;
+  /** Present for tenant actions only. */
+  impressorx?: ImpressoRxCalls;
   /** Aborted when the definition's timeout passes (spec §10.4); pass it to every writer call. */
   signal: AbortSignal;
   heartbeat: () => void;

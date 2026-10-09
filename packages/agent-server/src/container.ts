@@ -81,6 +81,8 @@ import { dirname } from "node:path";
 import type { BackgroundLoop } from "./background-loop.js";
 import { createActionsFor, type ActionsModule } from "./actions-wiring.js";
 import { activeMembershipLookup } from "./context-wiring.js";
+import { createSnapshotRefresher, type SnapshotRefresher } from "./middleware/active-context.js";
+import { createTenantDelegation } from "./tenant-delegation.js";
 import { createModelWiring } from "./model-wiring.js";
 import type { AiDataChoiceRepository, ModelAuditRepository, ModelGateway, ModelRouting, ProviderId, ProviderOverride } from "@oneon/application";
 
@@ -113,6 +115,8 @@ export interface AppContainer {
   handoffJti: UsedHandoffJti;
   /** The sole holder of delegation grants; null until ONEON_GRANT_MASTER_KEY is set. */
   impressorx: ImpressoRxClient | null;
+  /** Keeps memberships' snapshots fresh and checks an approver live. One per process, so a membership's refresh is single-flight across its users. */
+  snapshots: SnapshotRefresher;
   /** The personal database handle (the same one the personal repositories were built from). */
   openPersonal: () => import("@oneon/domain").PersonalDb;
   /** Opens a tenant's database through the gate (refuses when the registration is not active). */
@@ -210,6 +214,12 @@ export function createContainer(env: Env): AppContainer {
       })
     : null;
   if (!impressorx) logger.warn("ImpressoRx hand-off: disabled (missing ONEON_GRANT_MASTER_KEY)");
+  const snapshots = createSnapshotRefresher({
+    memberships,
+    registrations: tenantRegistrations,
+    client: impressorx,
+    logger: new StructuredLogger("active-context", env.LOG_LEVEL),
+  });
   logger.info("Database ready", { path: env.DATABASE_PATH });
 
   const modelWiring = createModelWiring(env, { context: personal, logger });
@@ -447,8 +457,15 @@ export function createContainer(env: Env): AppContainer {
     },
   };
 
+  const activeMemberships = activeMembershipLookup(tenantRegistrations, memberships);
   const actionsFor = createActionsFor({
-    memberships: activeMembershipLookup(tenantRegistrations, memberships),
+    memberships: activeMemberships,
+    delegation: createTenantDelegation({
+      client: impressorx,
+      memberships: activeMemberships,
+      snapshots,
+      logger: new StructuredLogger("tenant-delegation", env.LOG_LEVEL),
+    }),
     publicUrl: env.PUBLIC_URL,
     calendarId: env.CALENDAR_ID,
     calendarCacheTtlMs: env.CALENDAR_CACHE_TTL_MS,
@@ -506,6 +523,7 @@ export function createContainer(env: Env): AppContainer {
     memberships,
     handoffJti,
     impressorx,
+    snapshots,
     openPersonal: () => personal,
     openTenant: (registrationId) => gate.openTenant(registrationId),
     createTenantFile: (registrationId, tenantId) => void gate.createTenantFile(registrationId, tenantId),

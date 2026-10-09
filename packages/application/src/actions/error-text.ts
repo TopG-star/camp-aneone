@@ -20,6 +20,9 @@ const TEXT: Record<string, string> = {
     "What this action would do changed after it was approved, so Oneon didn't run it. Try again to review the new version.",
   approval_required_now: "This action now needs approval, so Oneon didn't run it. Try again to send it for approval.",
   policy_refused_now: "Your settings no longer allow this action, so Oneon didn't run it.",
+  approval_stale: "This approval is too old to act on. Ask for it again.",
+  delegation_revoked: "Your access to this pharmacy has ended, so Oneon didn't run this. Open Oneon from ImpressoRx to reconnect, then try again.",
+  impressorx_refused: "ImpressoRx refused the change, so nothing was changed.",
   // Execution: definite failures (nothing changed)
   missing_version: "Google didn't report the event's version, so Oneon didn't change it.",
   changed_since: "Someone changed the event after Oneon checked it, so Oneon didn't change it.",
@@ -32,6 +35,7 @@ const TEXT: Record<string, string> = {
   google_unavailable: "Google didn't confirm the change. Oneon is checking whether it went through.",
   google_unreachable: "Oneon couldn't reach Google to confirm the change. Oneon is checking whether it went through.",
   already_exists: "Google says this event may already exist. Oneon is checking whether it went through.",
+  impressorx_unreachable: "Oneon couldn't reach ImpressoRx to confirm the change. Oneon is checking whether it went through.",
   unexpected_error: "Something went wrong while sending the change. Oneon is checking whether it went through.",
   // Verification
   effect_absent: "Oneon checked and the change isn't there, so nothing was changed.",

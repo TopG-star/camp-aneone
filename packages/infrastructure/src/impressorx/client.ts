@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Logger } from "@oneon/domain";
 import { signJws } from "../crypto/jws.js";
-import { GrantInactiveError, GrantStore, type GrantRecord, type InsertGrant, type PendingOp } from "../database/control/grant-store.js";
+import { GrantInactiveError, GrantStore, idleExpiryFor, type GrantRecord, type InsertGrant, type PendingOp } from "../database/control/grant-store.js";
 import type { ControlDb } from "../database/control/open-control-db.js";
 import { TenantRegistrationRepository } from "../database/control/tenant-registration-repository.js";
 import type { TenantRegistration } from "../database/control/tenant-registration-repository.js";
@@ -50,7 +50,8 @@ export interface GrantCalls {
   accessToken(opts?: { oneonActionId?: string }): Promise<string>;
   me(): Promise<MembershipSnapshot>;
   revoke(): Promise<void>;
-  trpc<T>(path: string, input: unknown, type: "query" | "mutation"): Promise<T>;
+  /** `oneonActionId` names the Oneon action the call belongs to, so ImpressoRx can attribute the write; an action grant already carries it. */
+  trpc<T>(path: string, input: unknown, type: "query" | "mutation", opts?: { oneonActionId?: string }): Promise<T>;
 }
 
 export interface SessionCalls extends GrantCalls {
@@ -80,8 +81,6 @@ const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 500;
 const TOKEN_REFRESH_MARGIN_MS = 30_000;
 const ATTENDED_ABSOLUTE_MS = 12 * 60 * 60 * 1000;
-const ATTENDED_IDLE_MS = 30 * 60 * 1000;
-const UNATTENDED_IDLE_MS = 14 * 24 * 60 * 60 * 1000;
 
 type GrantTriple = { id: string; value: string; generation: number };
 type TokenResponse = {
@@ -127,6 +126,7 @@ export class ImpressoRxClient {
       throw new ImpressoRxRefusedError("Hand-off is for a different user");
     }
     const now = this.clock().getTime();
+    const absoluteExpiresAt = new Date(now + ATTENDED_ABSOLUTE_MS).toISOString();
     this.deps.grants.insert({
       id: res.grant.id,
       identityId,
@@ -137,8 +137,8 @@ export class ImpressoRxClient {
       value: res.grant.value,
       generation: res.grant.generation,
       sessionId,
-      idleExpiresAt: new Date(now + ATTENDED_IDLE_MS).toISOString(),
-      absoluteExpiresAt: new Date(now + ATTENDED_ABSOLUTE_MS).toISOString(),
+      idleExpiresAt: idleExpiryFor("attended", now, absoluteExpiresAt),
+      absoluteExpiresAt,
     });
     this.cacheToken(res.grant.id, undefined, res);
     this.deps.onSnapshot(membershipId, res.snapshot);
@@ -194,6 +194,24 @@ export class ImpressoRxClient {
     return new Handle(this, grantId);
   }
 
+  /** Unattended calls through the active grant issued for this one action; null when it has none. */
+  forActionGrant(actionId: string): GrantCalls | null {
+    const grantId = this.deps.grants.findActionGrant(actionId);
+    return grantId ? new Handle(this, grantId) : null;
+  }
+
+  /**
+   * Revokes the action's grant when the action is over: here first, so it is never used again, then at ImpressoRx on a best-effort basis
+   * (releaseGrants also drops its cached tokens and logs a failure at warn). Never throws for an unreachable deployment; a call for an
+   * action with no active grant sends nothing.
+   */
+  async revokeActionGrant(actionId: string, reason: string): Promise<void> {
+    const grantId = this.deps.grants.findActionGrant(actionId);
+    if (!grantId) return;
+    this.deps.grants.revoke(grantId, reason);
+    await this.releaseGrants([grantId]);
+  }
+
   // ---- used by Handle ----
 
   /** @internal */
@@ -239,10 +257,10 @@ export class ImpressoRxClient {
    * @internal tRPC with the Bearer token. A refusal here (FORBIDDEN while no procedure allows agents, or 401) is a
    * refusal for this call only; it never revokes the grant.
    */
-  async trpc<T>(grantId: string, path: string, input: unknown, type: "query" | "mutation"): Promise<T> {
+  async trpc<T>(grantId: string, path: string, input: unknown, type: "query" | "mutation", oneonActionId?: string): Promise<T> {
     const record = this.activeGrant(grantId);
     const registration = this.registration(record.tenantRegistrationId);
-    const token = await this.accessToken(grantId);
+    const token = await this.accessToken(grantId, oneonActionId);
     const base = `${registration.origin}/api/trpc/${path}`;
     // ImpressoRx's tRPC uses the superjson envelope: input is sent as { json } and the result comes back as { json }.
     const wrapped = input === undefined ? undefined : { json: input };
@@ -321,7 +339,15 @@ export class ImpressoRxClient {
             requestId: begin.requestId,
             ...(op.oneonActionId ? { oneonActionId: op.oneonActionId } : {}),
           };
-    const res = await this.postToken(registration, claims, true, Date.parse(begin.pendingSince));
+    let res: TokenResponse;
+    try {
+      res = await this.postToken(registration, claims, true, Date.parse(begin.pendingSince));
+    } catch (error) {
+      // ImpressoRx's own refusal (for example an issue while unattended access is off) applied nothing. The stored request must not be
+      // replayed, and refused again, by the next exchange of this grant, which is still good for what it is allowed to do.
+      if (error instanceof ImpressoRxUnauthorizedError) this.deps.grants.abandonExchange(record.id, begin.requestId);
+      throw error;
+    }
 
     let issued: InsertGrant | undefined;
     if (op.grantType === "issue" && res.issued) {
@@ -336,7 +362,7 @@ export class ImpressoRxClient {
         value: res.issued.value,
         generation: res.issued.generation,
         actionId: op.oneonActionId,
-        idleExpiresAt: new Date(Math.min(now + UNATTENDED_IDLE_MS, Date.parse(op.absoluteExpiresAt))).toISOString(),
+        idleExpiresAt: idleExpiryFor(op.kind, now, op.absoluteExpiresAt),
         absoluteExpiresAt: op.absoluteExpiresAt,
       };
     }
@@ -517,8 +543,8 @@ class Handle implements SessionCalls {
   revoke(): Promise<void> {
     return this.client.revoke(this.grantId);
   }
-  trpc<T>(path: string, input: unknown, type: "query" | "mutation"): Promise<T> {
-    return this.client.trpc<T>(this.grantId, path, input, type);
+  trpc<T>(path: string, input: unknown, type: "query" | "mutation", opts?: { oneonActionId?: string }): Promise<T> {
+    return this.client.trpc<T>(this.grantId, path, input, type, opts?.oneonActionId);
   }
   issue(input: { kind: "action" | "schedule"; oneonActionId?: string; scope: string[]; absoluteExpiresAt: string }): Promise<{ grantId: string }> {
     return this.client.issue(this.grantId, input);
@@ -569,6 +595,8 @@ export function createImpressoRxClient(opts: {
   fetchImpl?: FetchLike;
   logger?: Logger;
   clock?: () => Date;
+  /** Pause between retries of a transient failure; tests pass a no-op. */
+  sleep?: (ms: number) => Promise<void>;
 }): ImpressoRxClient {
   return new ImpressoRxClient({
     registrations: new TenantRegistrationRepository(opts.control),
@@ -578,5 +606,6 @@ export function createImpressoRxClient(opts: {
     fetchImpl: opts.fetchImpl,
     logger: opts.logger,
     clock: opts.clock,
+    sleep: opts.sleep,
   });
 }

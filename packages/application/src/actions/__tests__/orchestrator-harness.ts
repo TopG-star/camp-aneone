@@ -57,7 +57,11 @@ export function probeDefinition(overrides: Partial<ActionDefinition<any, any>> =
 
 export function harness(
   definitions: AnyActionDefinition[] = [probeDefinition()],
-  options: { capabilities?: () => ActionCapabilities; memberships?: OrchestratorDeps["memberships"] } = {},
+  options: {
+    capabilities?: () => ActionCapabilities;
+    memberships?: OrchestratorDeps["memberships"];
+    delegation?: OrchestratorDeps["delegation"];
+  } = {},
 ) {
   let now = new Date("2026-10-01T12:00:00.000Z");
   const clock = () => now;
@@ -73,6 +77,7 @@ export function harness(
     repo,
     configRepo,
     memberships: options.memberships ?? { activeFor: () => null },
+    delegation: options.delegation,
     capabilities: options.capabilities ?? (() => ({ readers: fakeReaders(), writers: fakeWriters() })),
     notifier,
     logger: silentLogger,

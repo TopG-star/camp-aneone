@@ -30,7 +30,7 @@ import { createIdentityLinkRouter, createIdentitySessionRouter } from "./identit
 import { createTokenAuthMiddleware } from "../middleware/auth.js";
 import { createSessionAuthMiddleware } from "../middleware/session-auth.js";
 import { requireUser } from "../middleware/require-user.js";
-import { createSnapshotRefresher, requirePersonalContext, resolveActiveContext } from "../middleware/active-context.js";
+import { requirePersonalContext, resolveActiveContext } from "../middleware/active-context.js";
 import { actorForContext, contextRepos } from "../context-wiring.js";
 import {
   LocalDocMemoryProvider,
@@ -103,14 +103,10 @@ export function registerRoutes(app: Express, container: AppContainer): void {
   // gets 403 personal_context_required, so a route added later cannot reach personal data by accident.
   const userAuth: RequestHandler[] = [sessionAuth, requireUser, requirePersonalContext];
 
-  // One refresher for the middleware and the picker's validate call, so a membership's refresh is single-flight across both.
+  // One refresher (built with the container) for the middleware, the picker's validate call and the approval's live check, so a
+  // membership's refresh is single-flight across the first two. The live check always asks ImpressoRx itself.
   const activeContextLogger = new StructuredLogger("active-context", env.LOG_LEVEL);
-  const snapshots = createSnapshotRefresher({
-    memberships: container.memberships,
-    registrations: container.tenantRegistrations,
-    client: container.impressorx,
-    logger: activeContextLogger,
-  });
+  const snapshots = container.snapshots;
 
   // Context-aware routes: the one active context is resolved from the session and its database opened for the request.
   // Only routes that read their repositories from contextRepos(req.contextDb) may use this chain.

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { STATUS_GROUPS } from "@oneon/contracts";
 import {
-  GROUP_BADGE, GROUP_FILTERS, actionsQuery, actorLabel, chatChip, evidenceSummary, operationLabel, statusLabel, undoNote, verifyingNote,
+  GROUP_BADGE, GROUP_FILTERS, actionsQuery, actorLabel, chatChip, evidenceSummary, needsReconnect, operationLabel, statusLabel, undoNote, verifyingNote,
 } from "./action-ui";
 
 describe("action UI helpers", () => {
@@ -30,6 +30,14 @@ describe("action UI helpers", () => {
       title: "Chat",
       lines: ['"set up a call"', "Model: anthropic:claude"],
     });
+  });
+
+  it("marks an action that failed because the person's pharmacy access ended as needing a reconnect (spec 7.7)", () => {
+    const view = (status: string, code: string | null) => ({ status, error: code ? { code, stage: "recheck", message: "x" } : null }) as never;
+    expect(needsReconnect(view("failed", "delegation_revoked"))).toBe(true);
+    expect(needsReconnect(view("failed", "approval_stale"))).toBe(false);
+    expect(needsReconnect(view("failed", null))).toBe(false);
+    expect(needsReconnect(view("completed", "delegation_revoked"))).toBe(false);
   });
 
   it("names actors and operations in plain words", () => {

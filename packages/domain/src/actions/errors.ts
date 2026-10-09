@@ -41,3 +41,15 @@ export class DelegationRevokedError extends Error {
     this.name = "DelegationRevokedError";
   }
 }
+
+/**
+ * ImpressoRx could not be reached (network, timeout, 5xx, 503) while Oneon needed it for a tenant action. Never a revocation.
+ * Before the executor runs the action stays approved and the sweeper retries it; once the executor has begun, the outcome is unknown.
+ */
+export class DelegationUnreachableError extends Error {
+  readonly code = "impressorx_unreachable";
+  constructor() {
+    super("impressorx_unreachable");
+    this.name = "DelegationUnreachableError";
+  }
+}

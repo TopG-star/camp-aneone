@@ -2,16 +2,27 @@ import {
   LifecycleTransitionError,
   TransitionConflictError,
   maxRisk,
+  tenantActor,
   type ActionInstance,
   type ActorContext,
   type JsonObject,
 } from "@oneon/domain";
-import { canAct, canApprove, decide } from "../policy/index.js";
+import { canAct, canApprove, decide, type EffectivePolicy } from "../policy/index.js";
 import type { AnyActionDefinition } from "../definition.js";
-import { POLICY, SYSTEM, approvalExpired, effectivePolicyFor, expiryHoursOf, move } from "./shared.js";
-import { ActionOperationError, type ActionRequest, type OrchestratorDeps, type RequestOutcome } from "./types.js";
+import { HOUR, POLICY, SYSTEM, approvalAgeLimitHours, approvalExpired, effectivePolicyFor, expiryHoursOf, move } from "./shared.js";
+import {
+  ActionOperationError,
+  ApprovalCheckError,
+  type ActionRequest,
+  type OrchestratorDeps,
+  type RequestOutcome,
+  type RequestSession,
+} from "./types.js";
 
 const CANCELLABLE = new Set(["proposed", "validating", "awaiting_approval", "approved"]);
+
+/** A tenant actor's permissions carry this prefix (domain tenantActor); ImpressoRx knows them without it. */
+const IMPRESSORX_PREFIX = "impressorx:";
 
 export function loadOwned(deps: OrchestratorDeps, actor: ActorContext, actionId: string) {
   const ownerId = actor.scope === "personal" ? actor.userId : actor.tenantId ?? "";
@@ -34,10 +45,29 @@ export function guard<T>(fn: () => T): T {
 
 export function createDecisions(
   deps: OrchestratorDeps,
-  advance: (ownerId: string, actionId: string) => Promise<ActionInstance>,
+  advance: (ownerId: string, actionId: string, session?: RequestSession) => Promise<ActionInstance>,
   requestAction: (req: ActionRequest) => Promise<RequestOutcome>,
 ) {
-  async function approve(actor: ActorContext, actionId: string): Promise<ActionInstance> {
+  /**
+   * Spec §9.3: the stored snapshot only offers and refuses early. A tenant approval is checked with ImpressoRx now, before anything is
+   * recorded, and judged on what it says: the approver's live role must be one of the action's approverRoles.
+   */
+  async function liveApprover(actor: ActorContext, instance: ActionInstance, policy: EffectivePolicy, session: RequestSession | undefined): Promise<ActorContext> {
+    const tenantId = instance.tenantId!;
+    const live = deps.delegation ? await deps.delegation.liveApprover(session, tenantId) : ({ ok: false, refusal: "launch_required" } as const);
+    if (!live.ok) throw new ApprovalCheckError(live.refusal);
+    const approver = tenantActor({
+      identityId: actor.userId,
+      tenantId,
+      role: live.membership.role,
+      permissions: live.membership.permissions,
+      locationIds: live.membership.locationIds,
+    });
+    if (!canApprove(approver, instance, policy)) throw new ActionOperationError("not_allowed", "You can't approve this action.");
+    return approver;
+  }
+
+  async function approve(actor: ActorContext, actionId: string, session?: RequestSession): Promise<ActionInstance> {
     const { instance, def, ownerId, policy } = loadOwned(deps, actor, actionId);
     if (instance.status !== "awaiting_approval") throw new ActionOperationError("conflict", `Cannot approve an action that is ${instance.status}.`);
     if (!canApprove(actor, instance, policy)) throw new ActionOperationError("not_allowed", "You can't approve this action.");
@@ -45,12 +75,13 @@ export function createDecisions(
     if (approvalExpired(deps, instance, def, deps.clock().getTime())) {
       return guard(() => move(deps, instance, "expired", SYSTEM, { expiryHours: expiryHoursOf(deps, instance, def), attemptedBy: actor.userId }));
     }
+    const approver = instance.scope === "tenant" ? await liveApprover(actor, instance, policy, session) : actor;
     const resolved = instance.resolved ?? { metrics: {} };
     const decision = decide({
       scope: def.scope,
       executorAvailable: def.execute !== null,
       policy,
-      actor,
+      actor: approver,
       metrics: (resolved as { metrics: Record<string, number> }).metrics,
       risk: maxRisk(def.riskFor(resolved, policy.risk), policy.risk),
       now: deps.clock(),
@@ -62,7 +93,19 @@ export function createDecisions(
     const approved = guard(() =>
       move(deps, instance, "approved", { kind: "user", userId: actor.userId }, { decision: recorded }, { decision: recorded }),
     );
-    return advance(ownerId, approved.id);
+    // Spec §7.1: the approval is what lets the action run later without the person. If ImpressoRx refuses the grant (unattended access
+    // is off), the approval stands and the action runs now, in this request, with the person's own session.
+    const ageLimit = approvalAgeLimitHours(approved, policy);
+    if (ageLimit !== null && session) {
+      const approvedAt = deps.repo.approvedAt(approved.id) ?? approved.updatedAt;
+      await deps.delegation?.issueActionGrant({
+        instance: approved,
+        session,
+        scope: policy.requiredPermissions.map((p) => (p.startsWith(IMPRESSORX_PREFIX) ? p.slice(IMPRESSORX_PREFIX.length) : p)),
+        absoluteExpiresAt: new Date(Date.parse(approvedAt) + ageLimit * HOUR).toISOString(),
+      });
+    }
+    return advance(ownerId, approved.id, session);
   }
 
   async function reject(actor: ActorContext, actionId: string, reason?: string): Promise<ActionInstance> {
@@ -79,7 +122,7 @@ export function createDecisions(
     return guard(() => move(deps, instance, "cancelled", { kind: "user", userId: actor.userId }, { reason }));
   }
 
-  async function retry(actor: ActorContext, actionId: string): Promise<RequestOutcome> {
+  async function retry(actor: ActorContext, actionId: string, session?: RequestSession): Promise<RequestOutcome> {
     const { instance, def, policy } = loadOwned(deps, actor, actionId);
     if (instance.status !== "failed" && instance.status !== "expired") {
       throw new ActionOperationError("not_allowed", "Only failed or expired actions can be tried again.");
@@ -99,6 +142,7 @@ export function createDecisions(
       ],
       resourceRef: instance.resourceRef,
       retryOf: { id: instance.id, attemptNumber: instance.attemptNumber, idempotencyKey: instance.idempotencyKey },
+      session,
     });
   }
 
