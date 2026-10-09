@@ -1,7 +1,8 @@
 import NextAuth, { CredentialsSignin, type NextAuthResult } from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import Google from "next-auth/providers/google";
-import { redeemHandoff, signOutHandoff, type HandoffReason } from "./handoff";
+import { redeemHandoff, type HandoffReason } from "./handoff";
+import { onSignOut } from "./sign-out";
 import { applyContextUpdate, applySignIn } from "./session-token";
 import { validateContextChoice } from "./context-validate";
 import { parseContextChoice, type ContextChoice } from "./context";
@@ -18,8 +19,6 @@ declare module "next-auth" {
   interface Session {
     /** The context the session holds now; absent for personal. Lets update() tell whether a switch was accepted. */
     activeContext?: ContextChoice;
-    /** Which sign-in produced the session; /auth/link/complete needs it to tell a Google login from a hand-off. */
-    provider?: "google" | "impressorx";
   }
 }
 
@@ -110,16 +109,13 @@ export const {
       }
       const activeContext = parseContextChoice(token.activeContext);
       if (activeContext) session.activeContext = activeContext;
-      session.provider = token.provider === "impressorx" ? "impressorx" : "google";
       return session;
     },
   },
   events: {
+    // Revokes a hand-off session's grant and drops any pending link intent (see onSignOut).
     async signOut(message) {
-      const token = "token" in message ? message.token : null;
-      if (token?.provider === "impressorx" && typeof token.sessionId === "string") {
-        await signOutHandoff(token.sessionId);
-      }
+      await onSignOut(message);
     },
   },
   pages: {

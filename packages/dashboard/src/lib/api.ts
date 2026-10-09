@@ -21,7 +21,10 @@ async function readErrorMessage(res: Response): Promise<string> {
 
   if (shouldAttemptJson(contentType)) {
     const body = await res.json().catch(() => ({}));
-    if (body.error === PERSONAL_CONTEXT_REQUIRED) return PERSONAL_CONTEXT_MESSAGE;
+    // A hand-off session is told by the server that Personal is not on offer for it; a Google session in a pharmacy can just switch.
+    if (body.error === PERSONAL_CONTEXT_REQUIRED) {
+      return typeof body.message === "string" && body.message.trim().length > 0 ? body.message : PERSONAL_CONTEXT_MESSAGE;
+    }
     // A context that cannot open explains itself to the person (the code alone is not a message).
     if (typeof body.message === "string" && body.message.trim().length > 0 && (isContextRefusal(body.error) || body.error === "context_unavailable")) {
       return body.message;

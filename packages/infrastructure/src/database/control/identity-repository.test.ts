@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { openControlDb, type ControlDb } from "./open-control-db.js";
-import { SqliteIdentityRepository } from "./identity-repository.js";
+import { LinkUnavailableError, SqliteIdentityRepository } from "./identity-repository.js";
 import { ContextDbGate, ensureIdentityAnchor, rawDb } from "../context-db-gate.js";
 import { backfillIdentities } from "./backfill-identities.js";
 import { createDatabase, runMigrations } from "../connection.js";
@@ -168,7 +168,11 @@ describe("linking identities", () => {
     const control = openControlDb(join(dir, "control.db"));
     const gate = new ContextDbGate({ control, personalPath: join(dir, "personal.db"), tenantDir: join(dir, "tenants") });
     closers.push(() => control.close(), () => gate.close());
-    const repo = new SqliteIdentityRepository(control, (registrationId) => gate.openTenant(registrationId));
+    const opened: string[] = [];
+    const repo = new SqliteIdentityRepository(control, (registrationId) => {
+      opened.push(registrationId);
+      return gate.openTenant(registrationId);
+    });
 
     const google = repo.createWithLogin({ kind: "google", subject: "g-sub", email: "gerry@x.com" });
     const colleague = repo.createWithLogin({ kind: "impressorx", subject: "colleague-login" });
@@ -259,7 +263,7 @@ describe("linking identities", () => {
       )
       .run(NOW, a.tenantId);
 
-    return { control, gate, repo, raw, google, staff, colleague, a, b, staffMembershipA, staffMembershipB, colleagueMembershipA, staffGrantA, colleagueGrantA };
+    return { control, gate, repo, raw, opened, google, staff, colleague, a, b, staffMembershipA, staffMembershipB, colleagueMembershipA, staffGrantA, colleagueGrantA };
   }
 
   const owners = (db: Database.Database) => ({
@@ -326,22 +330,27 @@ describe("linking identities", () => {
     expect(tenantA.prepare("SELECT status FROM model_call_outcomes").get()).toEqual({ status: "answered" });
   });
 
-  it("revokes every grant of the old identity and leaves other grants alone", () => {
+  it("revokes every grant of the old identity, reports which, and leaves other grants alone", () => {
     const s = setup();
 
-    s.repo.mergeInto(s.staff.id, s.google.id, s.google.id);
+    const merged = s.repo.mergeInto(s.staff.id, s.google.id, s.google.id);
 
+    expect(merged.revokedGrantIds).toEqual([s.staffGrantA]);
     const status = (id: string) => s.control.prepare("SELECT status, revoked_reason FROM delegation_grants WHERE id = ?").get(id);
     expect(status(s.staffGrantA)).toEqual({ status: "revoked", revoked_reason: "identity_merged" });
     expect(status(s.colleagueGrantA)).toEqual({ status: "active", revoked_reason: null });
   });
 
+  // A file the merge can open but not update (the registration itself is fine).
+  const breakFile = (s: ReturnType<typeof setup>, reg: { id: string }) => s.raw(reg).exec("ALTER TABLE conversations RENAME TO conversations_broken");
+  const repairFile = (s: ReturnType<typeof setup>, reg: { id: string }) => s.raw(reg).exec("ALTER TABLE conversations_broken RENAME TO conversations");
+
   it("can be repeated after a failure: a tenant file an earlier attempt already updated is not a problem", () => {
     const s = setup();
-    s.control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = ?").run(s.b.id);
+    breakFile(s, s.b);
     expect(() => s.repo.mergeInto(s.staff.id, s.google.id, s.google.id)).toThrow();
 
-    s.control.prepare("UPDATE tenant_registrations SET status = 'active' WHERE id = ?").run(s.b.id);
+    repairFile(s, s.b);
     s.repo.mergeInto(s.staff.id, s.google.id, s.google.id);
 
     expect(s.repo.findById(s.staff.id)).toEqual({ id: s.staff.id, status: "disabled" });
@@ -351,7 +360,7 @@ describe("linking identities", () => {
 
   it("leaves the control database unchanged when a tenant file cannot be updated", () => {
     const s = setup();
-    s.control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = ?").run(s.b.id);
+    breakFile(s, s.b);
     const before = snapshotOfControl(s.control);
 
     expect(() => s.repo.mergeInto(s.staff.id, s.google.id, s.google.id)).toThrow();
@@ -367,6 +376,39 @@ describe("linking identities", () => {
     expect(() => s.repo.mergeInto(s.staff.id, s.google.id, s.google.id)).toThrow(/boom/);
 
     expect(snapshotOfControl(s.control)).toEqual(before);
+  });
+
+  it("moves the memberships of a removed registration without opening its file", () => {
+    const s = setup();
+    s.control.prepare("UPDATE tenant_registrations SET status = 'removed' WHERE id = ?").run(s.b.id);
+
+    s.repo.mergeInto(s.staff.id, s.google.id, s.google.id);
+
+    expect(s.opened).toEqual([s.a.id]);
+    expect(s.repo.listMemberships(s.google.id).map((m) => m.id).sort()).toEqual([s.staffMembershipA, s.staffMembershipB].sort());
+    expect(s.repo.findById(s.staff.id)).toEqual({ id: s.staff.id, status: "disabled" });
+    // The removed pharmacy's file is retained only for deletion: its rows keep the old id.
+    s.control.prepare("UPDATE tenant_registrations SET status = 'active' WHERE id = ?").run(s.b.id);
+    expect(s.raw(s.b).prepare("SELECT user_id FROM conversations").all()).toEqual([{ user_id: s.staff.id }]);
+  });
+
+  it.each(["suspended_by_operator", "disabled_by_tenant"])("refuses up front, changing nothing, while a registration is %s", (status) => {
+    const s = setup();
+    s.control.prepare("UPDATE tenant_registrations SET status = ? WHERE id = ?").run(status, s.b.id);
+    const before = snapshotOfControl(s.control);
+
+    expect(() => s.repo.mergeInto(s.staff.id, s.google.id, s.google.id)).toThrow(LinkUnavailableError);
+
+    expect(snapshotOfControl(s.control)).toEqual(before);
+    expect(s.opened).toEqual([]);
+    expect(owners(s.raw(s.a)).conversations).toContainEqual({ id: "c-staff", user_id: s.staff.id });
+    expect(s.repo.registrationsOf(s.staff.id).map((r) => r.status).sort()).toEqual(["active", status].sort());
+  });
+
+  it("names the Google email of an identity", () => {
+    const s = setup();
+    expect(s.repo.googleEmailOf(s.google.id)).toBe("gerry@x.com");
+    expect(s.repo.googleEmailOf(s.staff.id)).toBeNull();
   });
 
   it("refuses to merge an identity into itself, a missing identity, or a disabled one", () => {
@@ -420,6 +462,7 @@ describe("linking identities", () => {
 
     const detached = s.repo.unlink(s.google.id, loginA, s.google.id);
 
+    expect(detached.revokedGrantIds).toEqual(["g-after"]);
     expect(detached.identityId).not.toBe(s.google.id);
     expect(s.repo.findById(detached.identityId)).toEqual({ id: detached.identityId, status: "active" });
     expect(s.repo.findByLogin("impressorx", `${s.a.id}:staff-1`)).toEqual({ id: detached.identityId, status: "active" });

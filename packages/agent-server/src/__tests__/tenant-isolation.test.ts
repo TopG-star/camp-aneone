@@ -434,7 +434,12 @@ describe("personal routes refuse a tenant session", () => {
     try {
       const res = await request(app).get(path);
       expect(res.status).toBe(403);
-      expect(res.body).toEqual({ error: CONTEXT_AWARE.includes(path) ? "context_unavailable" : "personal_context_required" });
+      // The test's tenant session is a hand-off session, which never gets the personal context.
+      expect(res.body).toEqual(
+        CONTEXT_AWARE.includes(path)
+          ? { error: "context_unavailable" }
+          : { error: "personal_context_required", message: "Personal isn't available when you open Oneon from a pharmacy. Sign in with Google to use it." },
+      );
     } finally {
       container.shutdown();
     }

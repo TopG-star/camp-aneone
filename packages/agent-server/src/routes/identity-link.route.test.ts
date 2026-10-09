@@ -9,6 +9,7 @@ import {
   ContextDbGate,
   LinkIntentRepository,
   SqliteIdentityRepository,
+  TenantRegistrationRepository,
   backfillIdentities,
   ensureIdentityAnchor,
   openControlDb,
@@ -99,7 +100,13 @@ describe("identity linking routes", () => {
       }
       next();
     });
-    const deps = { identities, intents, ensurePersonalUser, logger };
+    // Session proofs the server accepts for the hand-off direction: (session id, identity id, membership id).
+    const proofs: Array<[string, string, string]> = [["s1", staff.id, membershipA]];
+    const hasAttendedGrant = vi.fn((sessionId: string, identityId: string, membershipId: string) =>
+      proofs.some(([s1, i, m]) => s1 === sessionId && i === identityId && m === membershipId),
+    );
+    const releaseGrants = vi.fn(async (_grantIds: string[]) => undefined);
+    const deps = { identities, intents, registrations: new TenantRegistrationRepository(control), ensurePersonalUser, hasAttendedGrant, releaseGrants, logger };
     app.use("/api/identity/link", createTokenAuthMiddleware(TOKEN), createIdentityLinkRouter(deps));
     app.use("/api/identity", requireUser, createIdentitySessionRouter(deps));
 
@@ -115,7 +122,15 @@ describe("identity linking routes", () => {
       return (token ? req.set("Authorization", `Bearer ${token}`) : req).send(body);
     };
     const googleLogin = (subject = "gerry-sub", email = "gerry@x.com") => ({ kind: "google", subject, email });
-
+    const impressorxLogin = (over: Record<string, unknown> = {}) => ({ kind: "impressorx", identityId: staff.id, sessionId: "s1", membershipId: membershipA, ...over });
+    const preview = (body: Record<string, unknown>, token: string | null = TOKEN) => {
+      const req = request(app).post("/api/identity/link/preview");
+      return (token ? req.set("Authorization", `Bearer ${token}`) : req).send(body);
+    };
+    const intentUsed = (id: string) => (control.prepare("SELECT used_at FROM link_intents WHERE id = ?").get(id) as { used_at: string | null }).used_at !== null;
+    // A file the merge can open but not update (the registration itself is fine).
+    const breakFile = (reg: { id: string }) => rawDb(gate.openTenant(reg.id)).exec("ALTER TABLE conversations RENAME TO conversations_broken");
+    const repairFile = (reg: { id: string }) => rawDb(gate.openTenant(reg.id)).exec("ALTER TABLE conversations_broken RENAME TO conversations");
     const state = () => ({
       identities: control.prepare("SELECT id, status, merged_into FROM identities ORDER BY id").all(),
       logins: control.prepare("SELECT id, identity_id FROM login_identities ORDER BY id").all(),
@@ -127,6 +142,7 @@ describe("identity linking routes", () => {
 
     return {
       app, control, gate, identities, intents, personal, gerry, staff, a, b, membershipA, grantId, logger, ensurePersonalUser,
+      hasAttendedGrant, releaseGrants, proofs, preview, intentUsed, breakFile, repairFile, impressorxLogin,
       advance: (ms: number) => (now += ms), asSession, startIntent, link, googleLogin, state, conversationOwner, registration,
     };
   }
@@ -177,7 +193,7 @@ describe("identity linking routes", () => {
       const s = setup();
       const intent = await s.startIntent(s.gerry.id);
 
-      const res = await s.link({ linkIntentId: intent.linkIntentId, secret: intent.secret, login: { kind: "impressorx", identityId: s.staff.id } });
+      const res = await s.link({ linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.impressorxLogin() });
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ linked: true, merged: true, identityId: s.gerry.id });
@@ -286,16 +302,29 @@ describe("identity linking routes", () => {
     it("refuses with link_conflict when neither identity holds a Google login, or one is disabled", async () => {
       const s = setup();
       const second = s.identities.createWithLogin({ kind: "impressorx", subject: `${s.b.id}:staff-2` });
+      s.proofs.push(["s2", second.id, "m2"]);
       let intent = await s.startIntent(s.staff.id, true);
-      let res = await s.link({ linkIntentId: intent.linkIntentId, secret: intent.secret, login: { kind: "impressorx", identityId: second.id } });
-      expect(res.body).toEqual({ error: "link_conflict" });
+      let res = await s.link({ linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.impressorxLogin({ identityId: second.id, sessionId: "s2", membershipId: "m2" }) });
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual({ error: "link_needs_google" });
 
       s.control.prepare("UPDATE identities SET status = 'disabled' WHERE id = ?").run(s.gerry.id);
       intent = await s.startIntent(s.staff.id, true);
       res = await s.link({ linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.googleLogin() });
       expect(res.status).toBe(409);
-      expect(res.body).toEqual({ error: "link_conflict" });
+      expect(res.body).toEqual({ error: "link_account_disabled" });
       expect(s.identities.findById(s.staff.id)).toEqual({ id: s.staff.id, status: "active" });
+    });
+
+    it("a refusal does not spend the intent", async () => {
+      const s = setup();
+      s.identities.createWithLogin({ kind: "google", subject: "other-sub", email: "other@x.com" });
+      const intent = await s.startIntent(s.gerry.id);
+
+      const refused = await s.link({ linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.googleLogin("other-sub", "other@x.com") });
+
+      expect(refused.body).toEqual({ error: "link_conflict" });
+      expect(s.intentUsed(intent.linkIntentId)).toBe(false);
     });
 
     it("returns link_incomplete with the control database unchanged when a tenant file cannot be updated, and a fresh intent completes the link", async () => {
@@ -307,7 +336,7 @@ describe("identity linking routes", () => {
           "INSERT INTO memberships (id, identity_id, tenant_registration_id, external_user_id, role, permissions_json, location_ids_json, status, snapshot_at, created_at) VALUES (?, ?, ?, 'staff-9', 'manager', '[]', '[]', 'active', ?, ?)",
         )
         .run(membershipB, s.staff.id, s.b.id, NOW, NOW);
-      s.control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = ?").run(s.b.id);
+      s.breakFile(s.b);
       const intent = await s.startIntent(s.staff.id, true);
       const before = s.state();
 
@@ -321,7 +350,7 @@ describe("identity linking routes", () => {
       // The intent is spent, so the same one cannot be replayed.
       expect((await s.link({ linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.googleLogin() })).body).toEqual({ error: "link_expired" });
 
-      s.control.prepare("UPDATE tenant_registrations SET status = 'active' WHERE id = ?").run(s.b.id);
+      s.repairFile(s.b);
       const fresh = await s.startIntent(s.staff.id, true);
       const retry = await s.link({ linkIntentId: fresh.linkIntentId, secret: fresh.secret, login: s.googleLogin() });
       expect(retry.status).toBe(200);
@@ -374,6 +403,150 @@ describe("identity linking routes", () => {
       expect((await s.link({ linkIntentId: 5, secret: intent.secret, login: body.login })).status).toBe(400);
       expect(s.identities.findById(s.staff.id)).toEqual({ id: s.staff.id, status: "active" });
     });
+    it("refuses a hand-off the server cannot prove: the service token alone is not enough", async () => {
+      const s = setup();
+      const intent = await s.startIntent(s.gerry.id);
+      const body = (login: Record<string, unknown>) => ({ linkIntentId: intent.linkIntentId, secret: intent.secret, login });
+      const before = s.state();
+
+      for (const login of [
+        s.impressorxLogin({ sessionId: "someone-elses-session" }),
+        s.impressorxLogin({ membershipId: "another-membership" }),
+        s.impressorxLogin({ identityId: s.gerry.id }),
+      ]) {
+        const res = await s.link(body(login));
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({ error: "link_expired" });
+      }
+      expect((await s.link(body({ kind: "impressorx", identityId: s.staff.id }))).status).toBe(400);
+      expect(s.hasAttendedGrant).toHaveBeenCalledWith("someone-elses-session", s.staff.id, s.membershipA);
+      expect(s.state()).toEqual(before);
+      expect(s.intentUsed(intent.linkIntentId)).toBe(false);
+
+      expect((await s.link(body(s.impressorxLogin()))).status).toBe(200);
+    });
+
+    it("moves the memberships of a removed registration without opening its file", async () => {
+      const s = setup();
+      s.control.prepare("UPDATE tenant_registrations SET status = 'removed' WHERE id = ?").run(s.a.id);
+      const intent = await s.startIntent(s.staff.id, true);
+
+      const res = await s.link({ linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.googleLogin() });
+
+      expect(res.status).toBe(200);
+      expect(s.control.prepare("SELECT identity_id FROM memberships WHERE id = ?").get(s.membershipA)).toEqual({ identity_id: s.gerry.id });
+      expect(s.identities.findById(s.staff.id)).toEqual({ id: s.staff.id, status: "disabled" });
+    });
+
+    it.each(["suspended_by_operator", "disabled_by_tenant"])(
+      "refuses with link_unavailable while a pharmacy is %s, changing nothing and keeping the intent for later",
+      async (status) => {
+        const s = setup();
+        s.control.prepare("UPDATE tenant_registrations SET status = ? WHERE id = ?").run(status, s.a.id);
+        const intent = await s.startIntent(s.staff.id, true);
+        const before = s.state();
+        const body = { linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.googleLogin() };
+
+        const res = await s.link(body);
+        const previewed = await s.preview(body);
+
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({ error: "link_unavailable" });
+        expect(previewed.status).toBe(409);
+        expect(previewed.body).toEqual({ error: "link_unavailable" });
+        expect(s.state()).toEqual(before);
+        expect(s.intentUsed(intent.linkIntentId)).toBe(false);
+        expect(s.releaseGrants).not.toHaveBeenCalled();
+
+        s.control.prepare("UPDATE tenant_registrations SET status = 'active' WHERE id = ?").run(s.a.id);
+        expect((await s.link(body)).status).toBe(200);
+      },
+    );
+
+    it("after the commit, forgets and revokes the old identity's grants, best effort: a failure there does not fail the link", async () => {
+      const s = setup();
+      s.releaseGrants.mockRejectedValueOnce(new Error("ImpressoRx is down"));
+      const intent = await s.startIntent(s.staff.id, true);
+
+      const res = await s.link({ linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.googleLogin() });
+
+      expect(res.status).toBe(200);
+      expect(s.releaseGrants).toHaveBeenCalledWith([s.grantId]);
+      await vi.waitFor(() => expect(s.logger.warn).toHaveBeenCalled());
+      expect(s.control.prepare("SELECT status FROM delegation_grants WHERE id = ?").get(s.grantId)).toEqual({ status: "revoked" });
+    });
+
+    it("never attaches a Google login to another identity because they share an email, even with a valid intent", async () => {
+      const s = setup();
+      // Same email, different subject: one on a Google login, one on an ImpressoRx login.
+      const sameGoogle = s.identities.createWithLogin({ kind: "google", subject: "someone-elses-sub", email: "shared@x.com" });
+      const sameImpressorx = s.identities.createWithLogin({ kind: "impressorx", subject: `${s.b.id}:shared`, email: "shared@x.com" });
+      const intent = await s.startIntent(s.staff.id, true);
+
+      const res = await s.link({ linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.googleLogin("my-own-sub", "shared@x.com") });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ linked: true, merged: false, identityId: s.staff.id });
+      expect(s.identities.findByLogin("google", "my-own-sub")).toEqual({ id: s.staff.id, status: "active" });
+      for (const other of [sameGoogle, sameImpressorx]) {
+        expect(s.identities.findById(other.id)).toEqual({ id: other.id, status: "active" });
+        expect(s.control.prepare("SELECT COUNT(*) AS n FROM login_identities WHERE identity_id = ?").get(other.id)).toEqual({ n: 1 });
+      }
+      expect(s.identities.findByLogin("google", "someone-elses-sub")).toEqual({ id: sameGoogle.id, status: "active" });
+    });
+  });
+
+  describe("POST /api/identity/link/preview", () => {
+    it("describes the link without making it or spending the intent: the pharmacy side, and the Google email", async () => {
+      const s = setup();
+      const intent = await s.startIntent(s.staff.id, true);
+      const before = s.state();
+      const body = { linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.googleLogin("gerry-sub", "Gerry@X.com") };
+
+      const res = await s.preview(body);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ googleEmail: "gerry@x.com", memberships: [{ role: "manager", pharmacyName: "a" }] });
+      expect(s.state()).toEqual(before);
+      expect(s.intentUsed(intent.linkIntentId)).toBe(false);
+      expect(s.ensurePersonalUser).not.toHaveBeenCalled();
+      expect(s.releaseGrants).not.toHaveBeenCalled();
+      expect(JSON.stringify(res.body)).not.toContain(intent.secret);
+      // It can be asked again, and the link can still be made.
+      expect((await s.preview(body)).status).toBe(200);
+      expect((await s.link(body)).status).toBe(200);
+    });
+
+    it("names the Google email of the identity that opened the intent when the hand-off came second", async () => {
+      const s = setup();
+      const intent = await s.startIntent(s.gerry.id);
+
+      const res = await s.preview({ linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.impressorxLogin() });
+
+      expect(res.body).toEqual({ googleEmail: "gerry@x.com", memberships: [{ role: "manager", pharmacyName: "a" }] });
+    });
+
+    it("refuses what the link would refuse: another browser's intent, an expired one, an unproven hand-off and a conflict", async () => {
+      const s = setup();
+      s.identities.createWithLogin({ kind: "google", subject: "other-sub", email: "other@x.com" });
+      const intent = await s.startIntent(s.gerry.id);
+
+      expect((await s.preview({ linkIntentId: intent.linkIntentId, secret: "x".repeat(43), login: s.googleLogin() })).body).toEqual({ error: "link_expired" });
+      expect((await s.preview({ linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.impressorxLogin({ sessionId: "nope" }) })).body).toEqual({ error: "link_expired" });
+      const conflict = await s.preview({ linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.googleLogin("other-sub", "other@x.com") });
+      expect(conflict.status).toBe(409);
+      expect(conflict.body).toEqual({ error: "link_conflict" });
+      s.advance(5 * 60 * 1000 + 1);
+      expect((await s.preview({ linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.googleLogin() })).body).toEqual({ error: "link_expired" });
+    });
+
+    it("takes the service token and a well-formed body", async () => {
+      const s = setup();
+      const intent = await s.startIntent(s.staff.id, true);
+      const body = { linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.googleLogin() };
+      expect((await s.preview(body, null)).status).toBe(401);
+      expect((await s.preview({ ...body, login: { kind: "google" } })).status).toBe(400);
+    });
   });
 
   describe("POST /api/identity/unlink", () => {
@@ -387,12 +560,21 @@ describe("identity linking routes", () => {
 
     it("unlink creates a new identity for the detached login, acting on the session's identity", async () => {
       const { s, loginId } = await linked();
+      s.control
+        .prepare(
+          `INSERT INTO delegation_grants (id, identity_id, membership_id, tenant_registration_id, kind, scope_json, encrypted_value, wrapped_key,
+             generation, status, session_id, created_at, absolute_expires_at)
+           VALUES ('g-after', ?, ?, ?, 'attended', '[]', 'c', 'w', 1, 'active', 's2', ?, '2099-01-01T00:00:00.000Z')`,
+        )
+        .run(s.gerry.id, s.membershipA, s.a.id, NOW);
       s.asSession(s.gerry.id);
 
       const res = await request(s.app).post("/api/identity/unlink").send({ loginIdentityId: loginId });
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ identityId: expect.any(String) });
+      // The moved membership's grants are forgotten and revoked at ImpressoRx too (best effort, after the commit).
+      expect(s.releaseGrants).toHaveBeenLastCalledWith(["g-after"]);
       expect(res.body.identityId).not.toBe(s.gerry.id);
       expect(s.identities.findByLogin("impressorx", `${s.a.id}:staff-1`)).toEqual({ id: res.body.identityId, status: "active" });
       expect(s.control.prepare("SELECT identity_id FROM memberships WHERE id = ?").get(s.membershipA)).toEqual({ identity_id: res.body.identityId });

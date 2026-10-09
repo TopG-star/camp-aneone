@@ -555,16 +555,21 @@ describe("requirePersonalContext", () => {
     return a;
   }
 
-  it("answers a tenant context with 403 personal_context_required, for a hand-off session and for a Google session that chose a pharmacy", async () => {
-    for (const session of [
-      { sessionId: "s1", sessionContext: { kind: "tenant" as const, membershipId: "m1" } },
-      { sessionContext: { kind: "tenant" as const, membershipId: "m1" } },
-      { sessionId: "s1" },
-    ]) {
+  it("tells a hand-off session that Personal is not available from a pharmacy, and to sign in with Google", async () => {
+    for (const session of [{ sessionId: "s1", sessionContext: { kind: "tenant" as const, membershipId: "m1" } }, { sessionId: "s1" }]) {
       const res = await request(guarded(session)).get("/");
       expect(res.status).toBe(403);
-      expect(res.body).toEqual({ error: "personal_context_required" });
+      expect(res.body).toEqual({
+        error: "personal_context_required",
+        message: "Personal isn't available when you open Oneon from a pharmacy. Sign in with Google to use it.",
+      });
     }
+  });
+
+  it("answers a Google session that chose a pharmacy with the bare code: it can switch to Personal", async () => {
+    const res = await request(guarded({ sessionContext: { kind: "tenant" as const, membershipId: "m1" } })).get("/");
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "personal_context_required" });
   });
 
   it("lets a personal context, or a request without a session, through", async () => {

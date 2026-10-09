@@ -57,12 +57,18 @@ describe("hand-off redemption", () => {
     const registration = await enrolment.enrol({ origin: ORIGIN, tenantSlug: "acme", enrolmentCode: CODE, enrolledBy: operatorId });
     gate.createTenantFile(registration.id, registration.tenantId);
 
+    // Lets a test act in the middle of a hand-off: right after ImpressoRx has answered the exchange, before Oneon stores it.
+    const hooks: { afterExchange?: () => void } = {};
     const client = createImpressoRxClient({
       control,
       grantMasterKeyB64: randomBytes(32).toString("base64"),
       enrolment,
       onSnapshot: (membershipId, snapshot) => memberships.applySnapshot(membershipId, snapshot),
-      fetchImpl: fake.fetch,
+      fetchImpl: async (input, init) => {
+        const res = await fake.fetch(input, init);
+        if (String(input).endsWith("/api/oneon/token")) hooks.afterExchange?.();
+        return res;
+      },
       clock,
     });
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
@@ -90,7 +96,7 @@ describe("hand-off redemption", () => {
         .send({ handoff, sessionId, ...(origin === null ? {} : { origin }) });
       return { res, sessionId };
     };
-    return { app, control, gate, client, fake, registration, registrations, identities, redeem, logger, advance: (ms: number) => (now += ms) };
+    return { app, control, gate, client, fake, registration, registrations, identities, hooks, redeem, logger, advance: (ms: number) => (now += ms) };
   }
 
   it("first hand-off creates an identity and membership, and an anchor row in the tenant file", async () => {
@@ -149,7 +155,49 @@ describe("hand-off redemption", () => {
     expect(rawDb(gate.openTenant(registration.id)).prepare("SELECT id FROM users WHERE id = ?").get(google.id)).toEqual({ id: google.id });
   });
 
-  it("after an email change in ImpressoRx, the same identity is used (email is never a key)", async () => {
+  it("a merge that lands while the hand-off is being exchanged refuses it and revokes the grant it just stored, here and at ImpressoRx", async () => {
+    const { control, identities, hooks, fake, client, redeem } = await setup();
+    const first = (await redeem(await fake.mintHandoff("staff-1"))).res;
+    const earlier = new Set(fake.grants.keys());
+    const google = identities.createWithLogin({ kind: "google", subject: "g-sub", email: "g@x.com" });
+    // The second hand-off finds the identity and membership, then the merge moves both before its grant is stored.
+    hooks.afterExchange = () => {
+      hooks.afterExchange = undefined;
+      identities.mergeInto(first.body.identityId, google.id, google.id);
+    };
+
+    const { res, sessionId } = await redeem(await fake.mintHandoff("staff-1"));
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: "handoff_rejected", reason: "generic" });
+    expect(client.forSession(sessionId)).toBeNull();
+    expect(control.prepare("SELECT COUNT(*) AS n FROM delegation_grants WHERE status = 'active'").get()).toEqual({ n: 0 });
+    const stored = [...fake.grants].filter(([id]) => !earlier.has(id));
+    expect(stored).toHaveLength(1);
+    expect(stored[0]![1].status).toBe("revoked");
+  });
+
+  it("an identity disabled while the hand-off is being exchanged is refused the same way", async () => {
+    const { control, identities, hooks, fake, client, redeem } = await setup();
+    const first = (await redeem(await fake.mintHandoff("staff-1"))).res;
+    const earlier = new Set(fake.grants.keys());
+    hooks.afterExchange = () => {
+      hooks.afterExchange = undefined;
+      control.prepare("UPDATE identities SET status = 'disabled' WHERE id = ?").run(first.body.identityId);
+    };
+
+    const { res, sessionId } = await redeem(await fake.mintHandoff("staff-1"));
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: "handoff_rejected", reason: "generic" });
+    expect(client.forSession(sessionId)).toBeNull();
+    expect(identities.findById(first.body.identityId)?.status).toBe("disabled");
+    const stored = [...fake.grants].filter(([id]) => !earlier.has(id));
+    expect(stored).toHaveLength(1);
+    expect(stored[0]![1].status).toBe("revoked");
+  });
+
+  it("after an email change, the same identity is used (email is never a key)", async () => {
     const { control, fake, redeem } = await setup();
     const first = (await redeem(await fake.mintHandoff("staff-1"))).res;
     // The hand-off carries the staff user id only; whatever email the user has at ImpressoRx does not enter the lookup.

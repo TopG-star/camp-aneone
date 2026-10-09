@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { linkCookie, serializeLinkIntent, startLinkIntent } from "../../../../lib/link-intent";
+import { linkCookie, serializeLinkIntent } from "../../../../lib/link-cookie";
+import { startLinkIntent } from "../../../../lib/link-intent";
 import { sessionCookie } from "../../../../lib/session-cookie";
 
 // Starting a link is a POST from the Settings page; every other method is refused.

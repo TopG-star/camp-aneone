@@ -71,7 +71,23 @@ describe("link intents", () => {
     expect(intents.consume(stale.id, stale.secret)).toBeNull();
   });
 
-  it("is single-use across connections: of two concurrent consumers exactly one wins", () => {
+  it("peek checks an intent exactly as consume does, without spending it", () => {
+    const { intents, identity, advance } = setup();
+    const { id, secret } = intents.create(identity.id);
+
+    expect(intents.peek(id, secret)).toBe(identity.id);
+    expect(intents.peek(id, secret)).toBe(identity.id);
+    expect(intents.peek(id, "x".repeat(43))).toBeNull();
+    expect(intents.peek("unknown-id", secret)).toBeNull();
+    expect(intents.consume(id, secret)).toBe(identity.id);
+    expect(intents.peek(id, secret)).toBeNull();
+
+    const stale = intents.create(identity.id);
+    advance(5 * 60 * 1000);
+    expect(intents.peek(stale.id, stale.secret)).toBeNull();
+  });
+
+  it("is single-use across connections: a second connection cannot spend what the first spent", () => {
     const { path, intents, identity, advance } = setup();
     const second = openControlDb(path);
     dbs.push(second);
@@ -79,8 +95,43 @@ describe("link intents", () => {
     const { id, secret } = intents.create(identity.id);
     advance(1000);
 
-    const results = [intents.consume(id, secret), other.consume(id, secret)];
+    expect([intents.consume(id, secret), other.consume(id, secret)].filter((r) => r !== null)).toEqual([identity.id]);
+  });
 
-    expect(results.filter((r) => r !== null)).toEqual([identity.id]);
+  // A real race: the other consumer runs after this one has validated and before it writes. A consume that checks first
+  // and writes after (SELECT, then UPDATE) lets both win; one conditional UPDATE cannot.
+  it("is single-use when another consumer slips in between this one's check and its write", () => {
+    const { path, intents, identity, advance } = setup();
+    const second = openControlDb(path);
+    dbs.push(second);
+    const rival = new LinkIntentRepository(second, () => new Date(Date.parse("2026-10-08T10:00:00.000Z") + 1000));
+    const { id, secret } = intents.create(identity.id);
+    advance(1000);
+
+    let rivalResult: string | null | undefined;
+    const racing = new Proxy(dbs[0]!, {
+      get(target, prop) {
+        if (prop !== "prepare") return Reflect.get(target, prop, target);
+        return (sql: string) => {
+          const statement = target.prepare(sql);
+          if (!/^s*UPDATE/i.test(sql)) return statement;
+          return new Proxy(statement, {
+            get(st, method) {
+              const member = Reflect.get(st, method, st);
+              if (method !== "run" && method !== "get" && method !== "all") return typeof member === "function" ? member.bind(st) : member;
+              return (...args: unknown[]) => {
+                // The write is about to happen: the rival gets in first, once.
+                if (rivalResult === undefined) rivalResult = rival.consume(id, secret);
+                return (member as (...a: unknown[]) => unknown).apply(st, args);
+              };
+            },
+          });
+        };
+      },
+    });
+    const first = new LinkIntentRepository(racing as ControlDb, () => new Date(Date.parse("2026-10-08T10:00:00.000Z") + 1000)).consume(id, secret);
+
+    expect(rivalResult).toBe(identity.id);
+    expect(first).toBeNull();
   });
 });

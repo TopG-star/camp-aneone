@@ -312,6 +312,36 @@ describe("ImpressoRx client against the fake deployment", () => {
     await expect(s.client.forGrant(grantId).accessToken()).rejects.toBeInstanceOf(ImpressoRxRefusedError);
   });
 
+  it("releaseGrants forgets the cached tokens of grants revoked in SQL and revokes them at the deployment", async () => {
+    const s = await setup();
+    const { grantId } = await s.launch();
+    const direct = s.client.forGrant(grantId);
+    await direct.accessToken(); // cached since the hand-off
+    s.grants.revoke(grantId, "identity_merged"); // what a merge's transaction does
+    // The row says revoked, but the cached access token would still be used for up to 5 minutes.
+    await expect(direct.accessToken()).resolves.toEqual(expect.any(String));
+
+    await s.client.releaseGrants([grantId]);
+
+    await expect(direct.accessToken()).rejects.toBeInstanceOf(ImpressoRxRefusedError);
+    expect(s.fake.grants.get(grantId)!.status).toBe("revoked");
+    expect(s.grants.find(grantId)).toMatchObject({ status: "revoked", revokedReason: "identity_merged" });
+  });
+
+  it("releaseGrants still evicts when the deployment cannot be reached, warns, and never throws", async () => {
+    const s = await setup();
+    const { grantId } = await s.launch();
+    s.grants.revoke(grantId, "identity_unlinked");
+    s.fake.networkFailure = true;
+
+    await expect(s.client.releaseGrants([grantId, "unknown-grant"])).resolves.toBeUndefined();
+
+    s.fake.networkFailure = false;
+    await expect(s.client.forGrant(grantId).accessToken()).rejects.toBeInstanceOf(ImpressoRxRefusedError);
+    expect(s.logged.some((line) => line.includes("Revoking a grant at ImpressoRx failed"))).toBe(true);
+    expect(s.logged.join("\n")).not.toContain(s.fake.grantValue(grantId)!);
+  });
+
   it("never logs grant values or tokens", async () => {
     const s = await setup();
     const { grantId, sessionId } = await s.launch();

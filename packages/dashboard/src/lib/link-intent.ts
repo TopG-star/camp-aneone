@@ -1,63 +1,17 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { getToken } from "next-auth/jwt";
 import { sessionCookieOnly } from "./context-validate";
-
-/** What links a hand-off session and a Google session into one identity (spec §4.5). Server-side only. */
-export interface LinkIntent {
-  linkIntentId: string;
-  secret: string;
-}
-
-/** The second sign-in, as the agent-server wants it (a hand-off has no subject the dashboard knows: it names its identity). */
-export type LinkLogin = { kind: "google"; subject: string; email: string } | { kind: "impressorx"; identityId: string };
-
-export type LinkReason = "link_expired" | "link_conflict" | "link_incomplete";
-
-export const LINK_MESSAGES: Record<LinkReason, string> = {
-  link_expired: "That link request has expired or was already used. Start again from Settings.",
-  link_conflict: "These two accounts can't be linked: both already have a Google account, or one is switched off.",
-  link_incomplete: "Linking didn't finish and nothing was changed. Start again from Settings.",
-};
-
-export function isLinkReason(value: unknown): value is LinkReason {
-  return typeof value === "string" && Object.prototype.hasOwnProperty.call(LINK_MESSAGES, value);
-}
-
-interface CookieEnv {
-  NODE_ENV?: string;
-  AUTH_URL?: string;
-  NEXTAUTH_URL?: string;
-}
+import type { LinkIntent } from "./link-cookie";
+import { isLinkReason, type LinkReason } from "./link-messages";
+import { sessionCookie } from "./session-cookie";
 
 /**
- * Where the intent's secret waits between the two sign-ins: a cookie the page's scripts cannot read, sent to the link
- * pages only, for the 5 minutes an intent lives. It is SameSite=Lax like the session cookie, so a hand-off arriving as a
- * form POST from ImpressoRx does not carry it; /auth/link/complete, reached by a redirect (a GET), does.
+ * The second sign-in, as the agent-server wants it. A hand-off has no subject the dashboard knows: it names the identity the
+ * agent-server created for it, with the session id and membership of its sealed session, so the server can check them itself.
  */
-export function linkCookie(env: CookieEnv = process.env) {
-  const url = env.AUTH_URL ?? env.NEXTAUTH_URL ?? "";
-  const secure = env.NODE_ENV === "production" || url.startsWith("https://");
-  return {
-    name: secure ? "__Secure-oneon-link-intent" : "oneon-link-intent",
-    options: { httpOnly: true, sameSite: "lax" as const, secure, path: "/auth/link", maxAge: 300 },
-  };
-}
-
-const ID = /^[0-9a-f-]{36}$/i;
-const SECRET = /^[A-Za-z0-9_-]{32,128}$/;
-
-export function serializeLinkIntent(intent: LinkIntent): string {
-  return `${intent.linkIntentId}.${intent.secret}`;
-}
-
-/** The intent in a Cookie header, or null when it is absent or malformed. */
-export function readLinkIntent(cookieHeader: string, name: string): LinkIntent | null {
-  for (const part of cookieHeader.split(";")) {
-    const trimmed = part.trim();
-    if (!trimmed.startsWith(`${name}=`)) continue;
-    const [linkIntentId, secret, ...rest] = trimmed.slice(name.length + 1).split(".");
-    return rest.length === 0 && linkIntentId && secret && ID.test(linkIntentId) && SECRET.test(secret) ? { linkIntentId, secret } : null;
-  }
-  return null;
-}
+export type LinkLogin =
+  | { kind: "google"; subject: string; email: string }
+  | { kind: "impressorx"; identityId: string; sessionId: string; membershipId: string };
 
 interface AgentServerOptions {
   fetchImpl?: typeof fetch;
@@ -96,32 +50,135 @@ export async function startLinkIntent(
   }
 }
 
-interface SessionLike {
-  provider?: string;
-  user?: { sub?: string; email?: string | null } | null;
+/** What the sealed session cookie says about the sign-in that produced it. Read on the server; never sent to the browser. */
+export interface SealedSession {
+  provider: "google" | "impressorx";
+  sub: string;
+  email?: string | undefined;
+  /** Hand-off sessions only. */
+  identityId?: string | undefined;
+  sessionId?: string | undefined;
+  membershipId?: string | undefined;
+}
+
+type Env = Record<string, string | undefined>;
+
+/**
+ * Decrypts the request's own session cookie (the same cookie, name and secret Auth.js uses) and reads the sign-in out of it.
+ * Nothing about the session id or membership is exposed through the session object the browser can read.
+ */
+export async function readSealedSession(req: { headers: Headers }, env: Env = process.env): Promise<SealedSession | null> {
+  const secret = env.AUTH_SECRET ?? env.NEXTAUTH_SECRET;
+  if (!secret) return null;
+  const cookie = sessionCookie(env);
+  const token = await getToken({ req, secret, cookieName: cookie.name, salt: cookie.name, secureCookie: cookie.useSecureCookies });
+  if (!token || typeof token.sub !== "string" || !token.sub) return null;
+  const str = (value: unknown) => (typeof value === "string" && value ? value : undefined);
+  const context = token.activeContext as { membershipId?: unknown } | undefined;
+  return {
+    // A token from before `provider` existed is a Google one.
+    provider: token.provider === "impressorx" ? "impressorx" : "google",
+    sub: token.sub,
+    email: str(token.email),
+    identityId: str(token.identityId),
+    sessionId: str(token.sessionId),
+    membershipId: str(context?.membershipId),
+  };
+}
+
+/** Who just signed in for the second time, as the agent-server wants to hear it; null when the session lacks what it needs. */
+export function sessionLogin(sealed: SealedSession | null | undefined): LinkLogin | null {
+  if (!sealed?.sub) return null;
+  if (sealed.provider === "impressorx") {
+    return sealed.identityId && sealed.sessionId && sealed.membershipId
+      ? { kind: "impressorx", identityId: sealed.identityId, sessionId: sealed.sessionId, membershipId: sealed.membershipId }
+      : null;
+  }
+  return sealed.email ? { kind: "google", subject: sealed.sub, email: sealed.email } : null;
+}
+
+const CSRF_PREFIX = "oneon-link-confirm:";
+
+/**
+ * The token the confirm form carries. It is derived from the intent's secret, which only this browser's HttpOnly cookie
+ * holds, so a page on another site can neither read nor compute it; each intent has its own and it dies with the intent.
+ */
+export function linkCsrfToken(intent: LinkIntent): string {
+  return createHmac("sha256", intent.secret).update(`${CSRF_PREFIX}${intent.linkIntentId}`).digest("base64url");
+}
+
+export function linkCsrfMatches(intent: LinkIntent, presented: string): boolean {
+  const expected = Buffer.from(linkCsrfToken(intent));
+  const given = Buffer.from(presented);
+  return given.length === expected.length && timingSafeEqual(given, expected);
 }
 
 /**
- * Who just signed in, from the session the second sign-in produced. A token from before `provider` existed is a Google one;
- * a hand-off token's subject is its identity id (see applySignIn).
+ * True only for a request the dashboard's own page made: its Origin is this deployment's. The public URL (AUTH_URL) is
+ * trusted when configured; behind a proxy the forwarded host and protocol stand in for the internal URL.
  */
-export function sessionLogin(session: SessionLike | null | undefined): LinkLogin | null {
-  const sub = session?.user?.sub;
-  if (!sub) return null;
-  if (session.provider === "impressorx") return { kind: "impressorx", identityId: sub };
-  const email = session.user?.email;
-  return email ? { kind: "google", subject: sub, email } : null;
+export function isSameOrigin(req: Request, env: Env = process.env): boolean {
+  const origin = req.headers.get("origin");
+  if (!origin || origin === "null") return false;
+  const allowed = new Set<string>();
+  const url = new URL(req.url);
+  allowed.add(url.origin);
+  const publicUrl = env.AUTH_URL ?? env.NEXTAUTH_URL;
+  if (publicUrl) {
+    try {
+      allowed.add(new URL(publicUrl).origin);
+    } catch {
+      // A malformed setting trusts nothing extra.
+    }
+  }
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+  const proto = (req.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "")).split(",")[0]!.trim();
+  if (host) allowed.add(`${proto}://${host.split(",")[0]!.trim()}`);
+  return allowed.has(origin);
+}
+
+type ServiceOptions = AgentServerOptions & { token?: string | undefined };
+const tokenOf = (options: ServiceOptions) => ("token" in options ? options.token : process.env.API_TOKEN);
+
+export type PreviewResult =
+  | { ok: true; googleEmail: string; memberships: Array<{ role: string; pharmacyName: string }> }
+  | { ok: false; reason: LinkReason };
+
+const unexpected = { ok: false, reason: "link_incomplete" } as const;
+
+/** What the link would do, asked read-only (POST /api/identity/link/preview, service token): nothing is spent or changed. */
+export async function previewLink(intent: LinkIntent, login: LinkLogin, options: ServiceOptions = {}): Promise<PreviewResult> {
+  const token = tokenOf(options);
+  if (!token) return unexpected;
+  try {
+    const res = await (options.fetchImpl ?? fetch)(`${baseUrlOf(options)}/api/identity/link/preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({ linkIntentId: intent.linkIntentId, secret: intent.secret, login }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    const body = (await res.json().catch(() => null)) as { error?: unknown; googleEmail?: unknown; memberships?: unknown } | null;
+    if (res.status === 200 && typeof body?.googleEmail === "string" && Array.isArray(body.memberships)) {
+      const memberships = body.memberships.filter(
+        (m): m is { role: string; pharmacyName: string } => typeof m?.role === "string" && typeof m?.pharmacyName === "string",
+      );
+      return { ok: true, googleEmail: body.googleEmail, memberships };
+    }
+    return res.status === 409 && isLinkReason(body?.error) ? { ok: false, reason: body.error } : unexpected;
+  } catch {
+    return unexpected;
+  }
 }
 
 export type CompleteResult = { ok: true } | { ok: false; reason: LinkReason };
 
-/** Finishes the link (POST /api/identity/link, service token). The secret is only ever sent here and never logged. */
-export async function completeLink(
-  intent: LinkIntent,
-  login: LinkLogin,
-  options: AgentServerOptions & { token?: string | undefined } = {},
-): Promise<CompleteResult> {
-  const token = "token" in options ? options.token : process.env.API_TOKEN;
+/**
+ * Commits the link (POST /api/identity/link, service token). The secret is only ever sent here and to the preview, and never logged.
+ * A reply that never arrived (timeout, network error, a proxy's 502/504) is link_outcome_unknown, not a failure: the merge may
+ * have committed. Only an answer from the agent-server itself says it did not.
+ */
+export async function completeLink(intent: LinkIntent, login: LinkLogin, options: ServiceOptions = {}): Promise<CompleteResult> {
+  const token = tokenOf(options);
   if (!token) return { ok: false, reason: "link_incomplete" };
   try {
     const res = await (options.fetchImpl ?? fetch)(`${baseUrlOf(options)}/api/identity/link`, {
@@ -132,8 +189,8 @@ export async function completeLink(
     });
     if (res.status === 200) return { ok: true };
     const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
-    return { ok: false, reason: isLinkReason(body?.error) ? body.error : "link_incomplete" };
+    return { ok: false, reason: isLinkReason(body?.error) ? body.error : "link_outcome_unknown" };
   } catch {
-    return { ok: false, reason: "link_incomplete" };
+    return { ok: false, reason: "link_outcome_unknown" };
   }
 }

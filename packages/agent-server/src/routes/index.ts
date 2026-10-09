@@ -505,7 +505,12 @@ export function registerRoutes(app: Express, container: AppContainer): void {
   const identityLink = {
     identities: container.identityRepo,
     intents: container.linkIntents,
+    registrations: container.tenantRegistrations,
     ensurePersonalUser: container.ensurePersonalUser,
+    // Without the grant master key there are no grants: no hand-off can be proved and none has anything to release.
+    hasAttendedGrant: (sessionId: string, identityId: string, membershipId: string) =>
+      container.impressorx?.hasAttendedGrant(sessionId, identityId, membershipId) ?? false,
+    releaseGrants: (grantIds: string[]) => container.impressorx?.releaseGrants(grantIds) ?? Promise.resolve(),
     logger: new StructuredLogger("identity-link", env.LOG_LEVEL),
   };
   app.use("/api/identity/link", ...systemAuth, createIdentityLinkRouter(identityLink));

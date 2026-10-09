@@ -25,7 +25,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export interface HandoffRouterDeps {
   registrations: Pick<TenantRegistrationRepository, "findByIssuer">;
   enrolment: Pick<EnrolmentService, "verifyFromDeployment">;
-  identities: Pick<IdentityRepository, "findByLogin" | "createWithLogin">;
+  identities: Pick<IdentityRepository, "findByLogin" | "createWithLogin" | "findById">;
   memberships: Pick<MembershipRepository, "upsertFromHandoff" | "findById">;
   jti: Pick<UsedHandoffJti, "consume">;
   openTenant: (registrationId: string) => TenantDb;
@@ -152,6 +152,12 @@ async function redeem(
     throw error;
   }
 
+  // A merge can land between finding the identity and storing the grant. The grant was opened for an identity that is no
+  // longer the membership's owner (or no longer active): undo it here and at ImpressoRx, and have the person launch again.
+  if (deps.identities.findById(identity.id)?.status !== "active" || deps.memberships.findById(membership.id)?.identityId !== identity.id) {
+    await deps.client.forSession(sessionId)?.revoke().catch(() => undefined);
+    throw new Rejected("generic");
+  }
   if (deps.memberships.findById(membership.id)?.status !== "active") {
     await deps.client.forSession(sessionId)?.revoke().catch(() => undefined);
     throw new Rejected("membership_suspended");

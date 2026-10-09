@@ -27,6 +27,17 @@ export class LinkIntentRepository {
   }
 
   /**
+   * The identity that opened the intent when it could still be spent right now (same checks as consume), or null. Reads only:
+   * it is how a preview validates an intent without using it up.
+   */
+  peek(id: string, secret: string): string | null {
+    const row = this.db
+      .prepare("SELECT identity_id FROM link_intents WHERE id = ? AND binding_hash = ? AND used_at IS NULL AND expires_at > ?")
+      .get(id, bindingHash(secret), this.clock().toISOString()) as { identity_id: string } | undefined;
+    return row?.identity_id ?? null;
+  }
+
+  /**
    * Spends the intent and returns the identity that opened it, or null when it does not exist, has expired, was spent
    * already, or the secret does not match. It is one conditional UPDATE, so of any number of concurrent attempts, in this
    * process or another, exactly one wins. A wrong secret changes nothing: it cannot burn the intent of the real holder.

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { AlertTriangle } from "lucide-react";
 import { HANDOFF_MESSAGES, isHandoffReason } from "@/lib/handoff";
-import { LINK_MESSAGES, isLinkReason } from "@/lib/link-intent";
+import { LINK_MESSAGES, isLinkReason } from "@/lib/link-messages";
 
 function ErrorContent() {
   const params = useSearchParams();

@@ -170,6 +170,25 @@ export class ImpressoRxClient {
     for (const id of this.deps.grants.revokeForMembership(membershipId, reason)) this.dropTokens(id);
   }
 
+  /**
+   * For grants another module revoked in SQL (a merge or an unlink, in its own control transaction): forget their cached
+   * access tokens now, so none is used for the minutes it still has to live, then tell the deployment, best effort. A failure
+   * to reach ImpressoRx is logged at warn and never thrown; the grants are already unusable here.
+   */
+  async releaseGrants(grantIds: string[]): Promise<void> {
+    for (const id of grantIds) this.dropTokens(id);
+    for (const id of grantIds) {
+      const record = this.deps.grants.find(id);
+      const registration = record ? this.deps.registrations.findById(record.tenantRegistrationId) : null;
+      if (!record || !registration || registration.status !== "active") continue;
+      try {
+        await this.signedPost(registration, "/api/oneon/revoke", { grantId: id }, false);
+      } catch (error) {
+        this.deps.logger?.warn("Revoking a grant at ImpressoRx failed", { error: error instanceof Error ? error.name : "unknown" });
+      }
+    }
+  }
+
   /** Unattended calls (actions, schedules). */
   forGrant(grantId: string): GrantCalls {
     return new Handle(this, grantId);

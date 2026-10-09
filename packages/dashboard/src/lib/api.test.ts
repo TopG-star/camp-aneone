@@ -79,9 +79,16 @@ describe("apiFetch context refusals", () => {
 });
 
 describe("apiFetch personal-only routes", () => {
-  it("tells the person to switch to Personal and does not send them to sign-in", async () => {
+  it("tells a Google session in a pharmacy to switch to Personal and does not send them to sign-in", async () => {
     const assign = stubBrowser(403, { error: "personal_context_required" });
     await expect(apiFetch("/x")).rejects.toMatchObject({ status: 403, message: "Switch to Personal to use this." });
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it("shows a hand-off session the server's own message: Personal is not on offer there", async () => {
+    const message = "Personal isn't available when you open Oneon from a pharmacy. Sign in with Google to use it.";
+    const assign = stubBrowser(403, { error: "personal_context_required", message });
+    await expect(apiFetch("/x")).rejects.toMatchObject({ status: 403, message });
     expect(assign).not.toHaveBeenCalled();
   });
 });

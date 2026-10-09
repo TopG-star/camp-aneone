@@ -19,6 +19,12 @@ const SUSPENDED_MESSAGE = "This pharmacy has switched Oneon off, or your account
 /** A snapshot is fresh for 5 minutes (spec §4.6); older than that, it is refreshed before the context opens. */
 const SNAPSHOT_MAX_AGE_MS = 300_000;
 
+/** What a hand-off session is told when it reaches a personal-only route. */
+const PERSONAL_UNAVAILABLE_FROM_PHARMACY = {
+  error: "personal_context_required",
+  message: "Personal isn't available when you open Oneon from a pharmacy. Sign in with Google to use it.",
+} as const;
+
 /** Why a tenant context cannot open right now; sent as the 403 body. */
 export type ContextRefusal =
   | { error: "launch_required" | "membership_suspended"; message: string }
@@ -197,12 +203,13 @@ export function resolveActiveContext(deps: ActiveContextDeps): RequestHandler {
  * personal repositories, so a hand-off session is refused here. This is the default chain for browser routes
  * (userAuth); only a route that resolves its own context may use another chain, so a route added later is
  * personal-only until it opts in. Requests without a session pass, for the route's own auth to answer.
- * The answer is 403 personal_context_required: the session works in a pharmacy (a hand-off, or a Google session that chose
- * one), and the person can switch to Personal, so the dashboard shows that instead of sending them to sign in.
+ * The answer is 403 personal_context_required: the session works in a pharmacy, and the dashboard shows that instead of
+ * sending the person to sign in. A Google session that chose a pharmacy can switch to Personal (the dashboard's default
+ * message says so). A hand-off session never gets Personal, so it is told what will: sign in with Google.
  */
 export const requirePersonalContext: RequestHandler = (req, res, next) => {
   if (req.sessionContext || req.sessionId) {
-    res.status(403).json({ error: "personal_context_required" });
+    res.status(403).json(req.sessionId ? PERSONAL_UNAVAILABLE_FROM_PHARMACY : { error: "personal_context_required" });
     return;
   }
   next();

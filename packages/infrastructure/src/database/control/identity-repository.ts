@@ -34,13 +34,28 @@ export interface IdentityRepository {
    * (conversations, actions) are re-owned, its grants are revoked and it is disabled with `merged_into`. Tenant files first,
    * one at a time and idempotently; then one control transaction. Any failure throws and leaves the control database as it was.
    */
-  mergeInto(fromId: string, toId: string, actor: string): void;
-  /** Detaches an ImpressoRx login and its memberships into a new identity. Throws UnlinkRefusedError when it may not. */
-  unlink(identityId: string, loginIdentityId: string, actor: string): { identityId: string };
+  mergeInto(fromId: string, toId: string, actor: string): { revokedGrantIds: string[] };
+  /**
+   * Detaches an ImpressoRx login and its memberships into a new identity. Throws UnlinkRefusedError when it may not.
+   * Reports the grants it revoked so the caller can forget their cached tokens and revoke them at ImpressoRx.
+   */
+  unlink(identityId: string, loginIdentityId: string, actor: string): { identityId: string; revokedGrantIds: string[] };
+  /** The pharmacies an identity has memberships at, with each registration's status. */
+  registrationsOf(identityId: string): Array<{ id: string; status: string }>;
+  /** The email on the identity's (first) Google login, or null. */
+  googleEmailOf(identityId: string): string | null;
   listMemberships(identityId: string): Membership[];
 }
 
 export type UnlinkRefusal = "login_not_found" | "not_detachable" | "last_login";
+
+/** A pharmacy on the identity is suspended or switched off, so its file cannot be updated now: nothing was changed. */
+export class LinkUnavailableError extends Error {
+  constructor() {
+    super("link_unavailable");
+    this.name = "LinkUnavailableError";
+  }
+}
 
 export class UnlinkRefusedError extends Error {
   constructor(readonly reason: UnlinkRefusal) {
@@ -147,16 +162,21 @@ export class SqliteIdentityRepository implements IdentityRepository {
     return loginId;
   }
 
-  mergeInto(fromId: string, toId: string, actor: string): void {
+  mergeInto(fromId: string, toId: string, actor: string): { revokedGrantIds: string[] } {
     if (fromId === toId) throw new Error("cannot merge an identity into itself");
     if (this.findById(fromId)?.status !== "active" || this.findById(toId)?.status !== "active") {
       throw new Error("both identities must exist and be active");
     }
 
+    // A pharmacy that is suspended or switched off cannot have its file updated now and must not be skipped (its rows
+    // would be orphaned): refuse before anything changes. A removed one has no file to serve; its memberships just move.
+    const registrations = this.registrationsOf(fromId);
+    if (registrations.some((r) => r.status !== "active" && r.status !== "removed")) throw new LinkUnavailableError();
+
     // 1. The pharmacy files, one at a time, each in its own transaction. The updates are idempotent, so a merge that
     //    failed part-way and is tried again simply finds the earlier files already done.
-    const registrationIds = this.registrationIdsOf(fromId);
-    for (const registrationId of registrationIds) {
+    const registrationIds = registrations.map((r) => r.id);
+    for (const { id: registrationId } of registrations.filter((r) => r.status === "active")) {
       if (!this.openTenant) throw new Error("merging needs the tenant gate");
       const tenant = this.openTenant(registrationId);
       const raw = rawDb(tenant);
@@ -170,12 +190,12 @@ export class SqliteIdentityRepository implements IdentityRepository {
 
     // 2. One control transaction: either all of it happens or none. Append-only rows (action_events, model_call_*) keep
     //    the old identity id as history.
-    this.db.transaction(() => {
+    return this.db.transaction(() => {
       if (this.findById(fromId)?.status !== "active" || this.findById(toId)?.status !== "active") {
         throw new Error("an identity changed during the merge");
       }
       // A membership that appeared after step 1 has a file we have not re-owned: start over rather than skip it.
-      if (this.registrationIdsOf(fromId).some((id) => !registrationIds.includes(id))) {
+      if (this.registrationsOf(fromId).some((r) => !registrationIds.includes(r.id))) {
         throw new Error("memberships changed during the merge");
       }
       const logins = this.db.prepare("SELECT id FROM login_identities WHERE identity_id = ? ORDER BY created_at, id").all(fromId) as Array<{ id: string }>;
@@ -186,12 +206,12 @@ export class SqliteIdentityRepository implements IdentityRepository {
       for (const login of logins) {
         this.recordLinkEvent({ identityId: toId, loginId: login.id, event: "link", actor, now, detail: { mergedFrom: fromId } });
       }
-      this.revokeGrants("identity_id = ?", fromId, "identity_merged");
+      return { revokedGrantIds: this.revokeGrants("identity_id = ?", fromId, "identity_merged") };
     }).immediate();
   }
 
-  unlink(identityId: string, loginIdentityId: string, actor: string): { identityId: string } {
-    return this.db.transaction((): { identityId: string } => {
+  unlink(identityId: string, loginIdentityId: string, actor: string): { identityId: string; revokedGrantIds: string[] } {
+    return this.db.transaction((): { identityId: string; revokedGrantIds: string[] } => {
       const login = this.db
         .prepare("SELECT id, kind, subject FROM login_identities WHERE id = ? AND identity_id = ?")
         .get(loginIdentityId, identityId) as { id: string; kind: LoginKind; subject: string } | undefined;
@@ -214,20 +234,32 @@ export class SqliteIdentityRepository implements IdentityRepository {
                 .prepare("SELECT id FROM memberships WHERE identity_id = ? AND tenant_registration_id = ? AND external_user_id = ? ORDER BY id")
                 .all(identityId, login.subject.slice(0, separator), login.subject.slice(separator + 1)) as Array<{ id: string }>
             ).map((m) => m.id);
+      const revokedGrantIds: string[] = [];
       for (const membershipId of membershipIds) {
         this.db.prepare("UPDATE memberships SET identity_id = ? WHERE id = ?").run(newId, membershipId);
-        this.revokeGrants("membership_id = ?", membershipId, "identity_unlinked");
+        revokedGrantIds.push(...this.revokeGrants("membership_id = ?", membershipId, "identity_unlinked"));
       }
       // Earlier conversations stay with the identity they were created under (spec §16.6): no tenant file is touched.
       this.recordLinkEvent({ identityId, loginId: login.id, event: "unlink", actor, now, detail: { newIdentityId: newId, membershipIds } });
-      return { identityId: newId };
+      return { identityId: newId, revokedGrantIds };
     }).immediate();
   }
 
-  private registrationIdsOf(identityId: string): string[] {
-    return (
-      this.db.prepare("SELECT DISTINCT tenant_registration_id AS id FROM memberships WHERE identity_id = ? ORDER BY id").all(identityId) as Array<{ id: string }>
-    ).map((r) => r.id);
+  registrationsOf(identityId: string): Array<{ id: string; status: string }> {
+    return this.db
+      .prepare(
+        `SELECT DISTINCT r.id AS id, r.status AS status FROM memberships m
+           JOIN tenant_registrations r ON r.id = m.tenant_registration_id
+          WHERE m.identity_id = ? ORDER BY r.id`,
+      )
+      .all(identityId) as Array<{ id: string; status: string }>;
+  }
+
+  googleEmailOf(identityId: string): string | null {
+    const row = this.db
+      .prepare("SELECT email FROM login_identities WHERE identity_id = ? AND kind = 'google' ORDER BY created_at, id LIMIT 1")
+      .get(identityId) as { email: string | null } | undefined;
+    return row?.email ?? null;
   }
 
   private recordLinkEvent(e: { identityId: string; loginId: string; event: "link" | "unlink"; actor: string; now: string; detail?: object }): void {
@@ -242,13 +274,15 @@ export class SqliteIdentityRepository implements IdentityRepository {
    * Revokes the active grants matching `where`. This is GrantStore's revoke, written out here because a merge or unlink
    * must revoke in the same control transaction as the move, and only the ImpressoRx client may import the grant store (I4).
    */
-  private revokeGrants(where: "identity_id = ?" | "membership_id = ?", value: string, reason: string): void {
+  private revokeGrants(where: "identity_id = ?" | "membership_id = ?", value: string, reason: string): string[] {
+    const ids = (this.db.prepare(`SELECT id FROM delegation_grants WHERE ${where} AND status = 'active' ORDER BY id`).all(value) as Array<{ id: string }>).map((r) => r.id);
     this.db
       .prepare(
         `UPDATE delegation_grants SET status = 'revoked', revoked_reason = ?, pending_request_id = NULL, pending_since = NULL,
                 pending_request_json = NULL WHERE ${where} AND status = 'active'`,
       )
       .run(reason, value);
+    return ids;
   }
 
   listMemberships(identityId: string): Membership[] {
