@@ -5,18 +5,19 @@ const ID = "6f1c2c4e-7f0e-4c53-9a43-0f7b6c8f1a11";
 const SECRET = "A".repeat(43);
 
 describe("link intent cookie", () => {
-  it("is HttpOnly, SameSite=Lax, limited to the link pages, lives 5 minutes and is Secure over https and in production", () => {
+  it("over https and in production is a __Host- cookie: Secure, Path=/, no Domain, so a sibling subdomain cannot plant it", () => {
     for (const env of [{ AUTH_URL: "https://oneon.example" }, { NEXTAUTH_URL: "https://oneon.example" }, { NODE_ENV: "production" }]) {
       const cookie = linkCookie(env);
-      expect(cookie.name).toBe("__Secure-oneon-link-intent");
-      expect(cookie.options).toEqual({ httpOnly: true, sameSite: "lax", secure: true, path: "/auth/link", maxAge: 300 });
+      expect(cookie.name).toBe("__Host-oneon-link-intent");
+      expect(cookie.options).toEqual({ httpOnly: true, sameSite: "lax", secure: true, path: "/", maxAge: 300 });
+      expect(cookie.options).not.toHaveProperty("domain");
     }
   });
 
-  it("is not Secure only for plain-http development", () => {
+  it("is a plain, link-pages-only cookie for plain-http development only, where the __Host- prefix cannot be used", () => {
     const cookie = linkCookie({ NODE_ENV: "development", AUTH_URL: "http://localhost:3000" });
     expect(cookie.name).toBe("oneon-link-intent");
-    expect(cookie.options).toMatchObject({ httpOnly: true, sameSite: "lax", secure: false, maxAge: 300 });
+    expect(cookie.options).toEqual({ httpOnly: true, sameSite: "lax", secure: false, path: "/auth/link", maxAge: 300 });
   });
 
   it("round-trips the id and secret and ignores every other cookie", () => {
@@ -32,11 +33,13 @@ describe("link intent cookie", () => {
     }
   });
 
-  it("is cleared by expiring it on the path it was set on", () => {
+  it("is cleared by expiring it on the path it was set on, under the name it was set with", () => {
     const store = { set: vi.fn() };
 
     clearLinkIntentCookie(store, { NODE_ENV: "development" });
+    expect(store.set).toHaveBeenLastCalledWith("oneon-link-intent", "", expect.objectContaining({ path: "/auth/link", maxAge: 0, httpOnly: true, sameSite: "lax" }));
 
-    expect(store.set).toHaveBeenCalledWith("oneon-link-intent", "", expect.objectContaining({ path: "/auth/link", maxAge: 0, httpOnly: true, sameSite: "lax" }));
+    clearLinkIntentCookie(store, { NODE_ENV: "production" });
+    expect(store.set).toHaveBeenLastCalledWith("__Host-oneon-link-intent", "", expect.objectContaining({ path: "/", maxAge: 0, secure: true }));
   });
 });

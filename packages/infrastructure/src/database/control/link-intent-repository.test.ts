@@ -114,7 +114,7 @@ describe("link intents", () => {
         if (prop !== "prepare") return Reflect.get(target, prop, target);
         return (sql: string) => {
           const statement = target.prepare(sql);
-          if (!/^s*UPDATE/i.test(sql)) return statement;
+          if (!/^\s*UPDATE/i.test(sql)) return statement;
           return new Proxy(statement, {
             get(st, method) {
               const member = Reflect.get(st, method, st);

@@ -14,7 +14,18 @@ import { DELETE, GET, PATCH, POST, PUT } from "./route";
 const ID = "6f1c2c4e-7f0e-4c53-9a43-0f7b6c8f1a11";
 const SECRET = "A".repeat(43);
 const INTENT = { linkIntentId: ID, secret: SECRET };
-const GOOD_TOKEN = linkCsrfToken(INTENT);
+// The sessions the page can have previewed, and so the tokens its Confirm button can carry.
+const GERRY = { provider: "google", sub: "g-sub", email: "gerry@x.com" } as const;
+const BOB = { provider: "impressorx", sub: "bob-identity", identityId: "bob-identity", sessionId: "bob-session", membershipId: "bob-m" } as const;
+const CAROL = { provider: "impressorx", sub: "carol-identity", identityId: "carol-identity", sessionId: "carol-session", membershipId: "carol-m" } as const;
+const tokenFor = (session: typeof GERRY | typeof BOB | typeof CAROL) =>
+  linkCsrfToken(
+    INTENT,
+    session.provider === "google"
+      ? { kind: "google", subject: session.sub, email: session.email }
+      : { kind: "impressorx", identityId: session.identityId, sessionId: session.sessionId, membershipId: session.membershipId },
+  );
+const GOOD_TOKEN = tokenFor(GERRY);
 
 function confirm({
   origin = "https://oneon.example" as string | null,
@@ -37,7 +48,7 @@ describe("/auth/link/confirm", () => {
     signOut.mockReset();
     completeLink.mockReset();
     readSealedSession.mockReset();
-    readSealedSession.mockResolvedValue({ provider: "google", sub: "g-sub", email: "gerry@x.com" });
+    readSealedSession.mockResolvedValue(GERRY);
   });
 
   it.each([["GET", GET], ["PUT", PUT], ["PATCH", PATCH], ["DELETE", DELETE]])("rejects %s with 405: the link is only ever committed by a POST", async (_method, handler) => {
@@ -60,12 +71,45 @@ describe("/auth/link/confirm", () => {
     expect(completeLink).not.toHaveBeenCalled();
   });
 
-  it("refuses a POST without the token, with the wrong one, or with another intent's", async () => {
-    for (const csrf of [null, "", "wrong", linkCsrfToken({ linkIntentId: ID, secret: "B".repeat(43) })]) {
+  it("refuses a POST without the token, with a wrong one, or with another intent's, and sends the person back to the question", async () => {
+    for (const csrf of [null, "", "wrong", linkCsrfToken({ linkIntentId: ID, secret: "B".repeat(43) }, { kind: "google", subject: "g-sub", email: "gerry@x.com" })]) {
       const res = await POST(confirm({ csrf }));
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(303);
+      expect(location(res)).toBe("/auth/link/complete");
+      expect(res.headers.get("set-cookie")).toBeNull();
     }
     expect(completeLink).not.toHaveBeenCalled();
+    expect(signOut).not.toHaveBeenCalled();
+  });
+
+  // The page previewed one login; whoever is signed in when Confirm arrives is what would be linked. The token carries the
+  // previewed login, so a different one is refused and the person is shown the current pairing instead. Nothing is spent.
+  it.each([
+    ["a hand-off previewed, then Carol's hand-off replaces the session in another tab", BOB, CAROL],
+    ["a hand-off previewed, then a Google sign-in lands", BOB, GERRY],
+    ["a Google sign-in previewed, then a hand-off lands", GERRY, BOB],
+    ["a Google sign-in previewed, then another Google account signs in", GERRY, { ...GERRY, sub: "someone-elses-sub" }],
+  ])("refuses and re-previews when the session changed between the question and Confirm: %s", async (_name, previewed, now) => {
+    readSealedSession.mockResolvedValue(now);
+
+    const res = await POST(confirm({ csrf: tokenFor(previewed) }));
+
+    expect(res.status).toBe(303);
+    expect(location(res)).toBe("/auth/link/complete");
+    expect(completeLink).not.toHaveBeenCalled();
+    expect(signOut).not.toHaveBeenCalled();
+    // The intent is neither spent nor forgotten: the page now shows the current pairing, and the person can still decide.
+    expect(res.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("commits when the session is still the one that was previewed", async () => {
+    readSealedSession.mockResolvedValue(CAROL);
+    completeLink.mockResolvedValue({ ok: true, alreadyLinked: false });
+
+    const res = await POST(confirm({ csrf: tokenFor(CAROL) }));
+
+    expect(location(res)).toBe("/auth/linked");
+    expect(completeLink).toHaveBeenCalledWith(INTENT, { kind: "impressorx", identityId: "carol-identity", sessionId: "carol-session", membershipId: "carol-m" });
   });
 
   it("goes straight on when there is no link in progress", async () => {
@@ -87,7 +131,7 @@ describe("/auth/link/confirm", () => {
   });
 
   it("commits a Google sign-in, clears the intent cookie, ends the session and shows the linked page", async () => {
-    completeLink.mockResolvedValue({ ok: true });
+    completeLink.mockResolvedValue({ ok: true, alreadyLinked: false });
 
     const res = await POST(confirm());
 
@@ -99,16 +143,27 @@ describe("/auth/link/confirm", () => {
   });
 
   it("commits a hand-off with the session id and membership from the sealed session", async () => {
-    readSealedSession.mockResolvedValue({ provider: "impressorx", sub: "i-1", identityId: "i-1", sessionId: "s-1", membershipId: "m-1" });
-    completeLink.mockResolvedValue({ ok: true });
+    readSealedSession.mockResolvedValue(BOB);
+    completeLink.mockResolvedValue({ ok: true, alreadyLinked: false });
 
-    await POST(confirm());
+    await POST(confirm({ csrf: tokenFor(BOB) }));
 
-    expect(completeLink).toHaveBeenCalledWith(INTENT, { kind: "impressorx", identityId: "i-1", sessionId: "s-1", membershipId: "m-1" });
+    expect(completeLink).toHaveBeenCalledWith(INTENT, { kind: "impressorx", identityId: "bob-identity", sessionId: "bob-session", membershipId: "bob-m" });
+  });
+
+  it("when there was nothing to link, says so, keeps the session and does not claim the accounts were linked", async () => {
+    completeLink.mockResolvedValue({ ok: true, alreadyLinked: true });
+
+    const res = await POST(confirm());
+
+    expect(res.status).toBe(303);
+    expect(location(res)).toBe("/auth/already-linked");
+    expect(signOut).not.toHaveBeenCalled();
+    expect(cleared(res)).toBe(true);
   });
 
   it("still shows the linked page when ending the session fails", async () => {
-    completeLink.mockResolvedValue({ ok: true });
+    completeLink.mockResolvedValue({ ok: true, alreadyLinked: false });
     signOut.mockRejectedValue(new Error("no request"));
 
     const res = await POST(confirm());

@@ -70,7 +70,8 @@ const UnlinkBodySchema = z.object({ loginIdentityId: z.string().min(1).max(64) }
 
 type Refusal = "link_expired" | "link_conflict" | "link_needs_google" | "link_account_disabled" | "link_unavailable";
 
-type Summary = { googleEmail: string; memberships: Array<{ role: string; pharmacyName: string }> };
+/** `googleEmail` is null when the Google login has none on record: the caller words that, nothing is invented here. */
+type Summary = { googleEmail: string | null; memberships: Array<{ role: string; pharmacyName: string }> };
 
 /** What a link would do, decided without changing anything. */
 type Plan =
@@ -107,7 +108,7 @@ function plan(deps: IdentityLinkDeps, creatorId: string, login: Login): Plan {
   if (!creator || (login.kind === "impressorx" && !second)) return refuse("link_expired");
   if (creator.status !== "active" || (second && second.status !== "active")) return refuse("link_account_disabled");
 
-  const summaryOf = (impressorxSide: Identity, googleEmail: string): Summary => ({
+  const summaryOf = (impressorxSide: Identity, googleEmail: string | null): Summary => ({
     googleEmail,
     memberships: identities.listMemberships(impressorxSide.id).map((m) => ({
       role: m.role,
@@ -116,7 +117,7 @@ function plan(deps: IdentityLinkDeps, creatorId: string, login: Login): Plan {
   });
 
   if (second?.id === creator.id) {
-    const email = login.kind === "google" ? login.email : (identities.googleEmailOf(creator.id) ?? "");
+    const email = login.kind === "google" ? login.email : identities.googleEmailOf(creator.id);
     return { ok: true, creator, action: { kind: "none" }, summary: summaryOf(creator, email) };
   }
 
@@ -137,7 +138,7 @@ function plan(deps: IdentityLinkDeps, creatorId: string, login: Login): Plan {
   const [from, to] = creatorHasGoogle ? [second, creator] : [creator, second];
   // A paused pharmacy cannot have its file updated, and its rows must not be left behind: try again when it is back.
   if (paused(identities.registrationsOf(from.id))) return refuse("link_unavailable");
-  const googleEmail = login.kind === "google" ? login.email : (identities.googleEmailOf(to.id) ?? "");
+  const googleEmail = login.kind === "google" ? login.email : identities.googleEmailOf(to.id);
   return { ok: true, creator, action: { kind: "merge", from, to }, summary: summaryOf(from, googleEmail) };
 }
 
@@ -196,7 +197,8 @@ export function createIdentityLinkRouter(deps: IdentityLinkDeps): Router {
         release(deps, revokedGrantIds);
         return void res.json({ linked: true, merged: true, identityId: action.to.id });
       }
-      res.json({ linked: true, merged: false, identityId: creator.id });
+      // Nothing to do: the two logins already belong to one account. The caller must not tell the person it linked them.
+      res.json({ linked: true, merged: false, alreadyLinked: true, identityId: creator.id });
     } catch (error) {
       if (error instanceof LinkUnavailableError) return void res.status(409).json({ error: "link_unavailable" });
       // Neither the secret nor the login is logged.

@@ -239,7 +239,7 @@ describe("identity linking routes", () => {
       const res = await s.link({ linkIntentId: again.linkIntentId, secret: again.secret, login: s.googleLogin() });
 
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({ linked: true, merged: false, identityId: s.gerry.id });
+      expect(res.body).toEqual({ linked: true, merged: false, alreadyLinked: true, identityId: s.gerry.id });
       expect(s.state()).toEqual(before);
     });
 
@@ -515,6 +515,17 @@ describe("identity linking routes", () => {
       // It can be asked again, and the link can still be made.
       expect((await s.preview(body)).status).toBe(200);
       expect((await s.link(body)).status).toBe(200);
+    });
+
+    it("does not invent an email when the Google login has none on record", async () => {
+      const s = setup();
+      const noEmail = s.identities.createWithLogin({ kind: "google", subject: "no-email-sub" });
+      const intent = await s.startIntent(noEmail.id);
+
+      const res = await s.preview({ linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.impressorxLogin() });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ googleEmail: null, memberships: [{ role: "manager", pharmacyName: "a" }] });
     });
 
     it("names the Google email of the identity that opened the intent when the hand-off came second", async () => {

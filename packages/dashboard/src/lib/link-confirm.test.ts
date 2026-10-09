@@ -29,7 +29,7 @@ describe("loadLinkConfirmation (what GET /auth/link/complete shows; it never lin
     expect(result).toEqual({
       state: "ready",
       question: "Link Admin at Acme Pharmacy to gerry@x.com?",
-      csrf: linkCsrfToken({ linkIntentId: ID, secret: SECRET }),
+      csrf: linkCsrfToken({ linkIntentId: ID, secret: SECRET }, { kind: "google", subject: "g-sub", email: "gerry@x.com" }),
     });
     // Only the preview endpoint was asked: nothing was committed, nothing spent.
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -43,6 +43,18 @@ describe("loadLinkConfirmation (what GET /auth/link/complete shows; it never lin
     await loadLinkConfirmation(await cookies(handoff), opts(fetchImpl));
 
     expect(JSON.parse(fetchImpl.mock.calls[0]![1].body).login).toEqual({ kind: "impressorx", identityId: "i-1", sessionId: "s-1", membershipId: "m-1" });
+  });
+
+  it("gives the Confirm button a token for the login it previewed, so another sign-in landing later cannot use it", async () => {
+    const reply = () => answer(200, { googleEmail: "gerry@x.com", memberships: [{ role: "Admin", pharmacyName: "Acme" }] });
+
+    const forGoogle = await loadLinkConfirmation(await cookies(google), opts(reply()));
+    const forHandoff = await loadLinkConfirmation(await cookies(handoff), opts(reply()));
+    const forOtherHandoff = await loadLinkConfirmation(await cookies({ ...handoff, identityId: "i-2", sub: "i-2", sessionId: "s-2" }), opts(reply()));
+
+    const tokens = [forGoogle, forHandoff, forOtherHandoff].map((r) => (r.state === "ready" ? r.csrf : ""));
+    expect(new Set(tokens).size).toBe(3);
+    expect(tokens).not.toContain("");
   });
 
   it("has nothing to confirm without a link in progress, and asks for a sign-in without a session", async () => {
@@ -64,5 +76,10 @@ describe("confirmationQuestion", () => {
       "Link Admin at Acme and Pharmacist at Bolt to a@b.com?",
     );
     expect(confirmationQuestion([], "a@b.com")).toBe("Link your pharmacy account to a@b.com?");
+  });
+
+  it("does not ask 'to ?' when the Google account has no email on record", () => {
+    expect(confirmationQuestion([{ role: "Admin", pharmacyName: "Acme" }], null)).toBe("Link Admin at Acme to your Google account?");
+    expect(confirmationQuestion([], null)).toBe("Link your pharmacy account to your Google account?");
   });
 });

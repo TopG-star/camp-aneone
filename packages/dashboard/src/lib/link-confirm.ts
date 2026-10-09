@@ -12,9 +12,11 @@ export type Confirmation =
   | { state: "ready"; question: string; csrf: string };
 
 /** "Link <role> at <pharmacy> to <Google email>?" — naming each pharmacy sign-in that would be merged. */
-export function confirmationQuestion(memberships: Array<{ role: string; pharmacyName: string }>, googleEmail: string): string {
-  if (memberships.length === 0) return `Link your pharmacy account to ${googleEmail}?`;
-  return `Link ${memberships.map((m) => `${m.role} at ${m.pharmacyName}`).join(" and ")} to ${googleEmail}?`;
+export function confirmationQuestion(memberships: Array<{ role: string; pharmacyName: string }>, googleEmail: string | null): string {
+  // A Google login can be on record without an email.
+  const to = googleEmail ?? "your Google account";
+  if (memberships.length === 0) return `Link your pharmacy account to ${to}?`;
+  return `Link ${memberships.map((m) => `${m.role} at ${m.pharmacyName}`).join(" and ")} to ${to}?`;
 }
 
 /**
@@ -34,5 +36,5 @@ export async function loadLinkConfirmation(
   const { env: _env, ...service } = options;
   const preview = await previewLink(intent, login, service);
   if (!preview.ok) return { state: "refused", reason: preview.reason };
-  return { state: "ready", question: confirmationQuestion(preview.memberships, preview.googleEmail), csrf: linkCsrfToken(intent) };
+  return { state: "ready", question: confirmationQuestion(preview.memberships, preview.googleEmail), csrf: linkCsrfToken(intent, login) };
 }

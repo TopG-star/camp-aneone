@@ -16,16 +16,18 @@ interface CookieEnv {
 }
 
 /**
- * Where the intent's secret waits between the two sign-ins: a cookie the page's scripts cannot read, sent to the link
- * pages only, for the 5 minutes an intent lives. It is SameSite=Lax like the session cookie, so a hand-off arriving as a
- * form POST from ImpressoRx does not carry it; /auth/link/complete, reached by a redirect (a GET), does.
+ * Where the intent's secret waits between the two sign-ins: a cookie the page's scripts cannot read, for the 5 minutes an
+ * intent lives. Over https it is a __Host- cookie (Secure, Path=/, no Domain), which a browser only accepts from this exact
+ * host, so a sibling subdomain cannot plant one; plain-http development cannot use the prefix and keeps a plain name,
+ * limited to the link pages, as the session cookie's name is chosen. It is SameSite=Lax like the session cookie, so a
+ * hand-off arriving as a form POST from ImpressoRx does not carry it; /auth/link/complete, reached by a redirect (a GET), does.
  */
 export function linkCookie(env: CookieEnv = process.env) {
   const url = env.AUTH_URL ?? env.NEXTAUTH_URL ?? "";
   const secure = env.NODE_ENV === "production" || url.startsWith("https://");
   return {
-    name: secure ? "__Secure-oneon-link-intent" : "oneon-link-intent",
-    options: { httpOnly: true, sameSite: "lax" as const, secure, path: "/auth/link", maxAge: 300 },
+    name: secure ? "__Host-oneon-link-intent" : "oneon-link-intent",
+    options: { httpOnly: true, sameSite: "lax" as const, secure, path: secure ? "/" : "/auth/link", maxAge: 300 },
   };
 }
 

@@ -97,18 +97,23 @@ export function sessionLogin(sealed: SealedSession | null | undefined): LinkLogi
   return sealed.email ? { kind: "google", subject: sealed.sub, email: sealed.email } : null;
 }
 
-const CSRF_PREFIX = "oneon-link-confirm:";
+/** Who the token is for: Google's sub, or a hand-off's session and identity. The email and membership are not part of who signed in. */
+const loginBinding = (login: LinkLogin) =>
+  login.kind === "google" ? ["google", login.subject] : ["impressorx", login.sessionId, login.identityId];
 
 /**
- * The token the confirm form carries. It is derived from the intent's secret, which only this browser's HttpOnly cookie
- * holds, so a page on another site can neither read nor compute it; each intent has its own and it dies with the intent.
+ * The token the confirm form carries. An HMAC keyed by the intent's secret over the intent and the login the page just
+ * previewed, so it ties a Confirm to both: this link, and the sign-in that was asked about. The page's scripts and other
+ * sites cannot read the HttpOnly cookie that holds the secret, nor the form, so they cannot make one. The server recomputes
+ * it from the session present when Confirm arrives: if another sign-in has replaced the previewed one in the meantime
+ * (another tab, another person at a shared browser), it no longer matches and nothing is linked.
  */
-export function linkCsrfToken(intent: LinkIntent): string {
-  return createHmac("sha256", intent.secret).update(`${CSRF_PREFIX}${intent.linkIntentId}`).digest("base64url");
+export function linkCsrfToken(intent: LinkIntent, login: LinkLogin): string {
+  return createHmac("sha256", intent.secret).update(JSON.stringify(["oneon-link-confirm", intent.linkIntentId, ...loginBinding(login)])).digest("base64url");
 }
 
-export function linkCsrfMatches(intent: LinkIntent, presented: string): boolean {
-  const expected = Buffer.from(linkCsrfToken(intent));
+export function linkCsrfMatches(intent: LinkIntent, login: LinkLogin, presented: string): boolean {
+  const expected = Buffer.from(linkCsrfToken(intent, login));
   const given = Buffer.from(presented);
   return given.length === expected.length && timingSafeEqual(given, expected);
 }
@@ -141,7 +146,7 @@ type ServiceOptions = AgentServerOptions & { token?: string | undefined };
 const tokenOf = (options: ServiceOptions) => ("token" in options ? options.token : process.env.API_TOKEN);
 
 export type PreviewResult =
-  | { ok: true; googleEmail: string; memberships: Array<{ role: string; pharmacyName: string }> }
+  | { ok: true; googleEmail: string | null; memberships: Array<{ role: string; pharmacyName: string }> }
   | { ok: false; reason: LinkReason };
 
 const unexpected = { ok: false, reason: "link_incomplete" } as const;
@@ -158,7 +163,7 @@ export async function previewLink(intent: LinkIntent, login: LinkLogin, options:
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     const body = (await res.json().catch(() => null)) as { error?: unknown; googleEmail?: unknown; memberships?: unknown } | null;
-    if (res.status === 200 && typeof body?.googleEmail === "string" && Array.isArray(body.memberships)) {
+    if (res.status === 200 && (typeof body?.googleEmail === "string" || body?.googleEmail === null) && Array.isArray(body.memberships)) {
       const memberships = body.memberships.filter(
         (m): m is { role: string; pharmacyName: string } => typeof m?.role === "string" && typeof m?.pharmacyName === "string",
       );
@@ -170,7 +175,8 @@ export async function previewLink(intent: LinkIntent, login: LinkLogin, options:
   }
 }
 
-export type CompleteResult = { ok: true } | { ok: false; reason: LinkReason };
+/** `alreadyLinked`: there was nothing to do, because the two logins were one account already. */
+export type CompleteResult = { ok: true; alreadyLinked: boolean } | { ok: false; reason: LinkReason };
 
 /**
  * Commits the link (POST /api/identity/link, service token). The secret is only ever sent here and to the preview, and never logged.
@@ -187,8 +193,8 @@ export async function completeLink(intent: LinkIntent, login: LinkLogin, options
       body: JSON.stringify({ linkIntentId: intent.linkIntentId, secret: intent.secret, login }),
       signal: AbortSignal.timeout(30_000),
     });
-    if (res.status === 200) return { ok: true };
-    const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+    const body = (await res.json().catch(() => null)) as { error?: unknown; alreadyLinked?: unknown } | null;
+    if (res.status === 200) return { ok: true, alreadyLinked: body?.alreadyLinked === true };
     return { ok: false, reason: isLinkReason(body?.error) ? body.error : "link_outcome_unknown" };
   } catch {
     return { ok: false, reason: "link_outcome_unknown" };

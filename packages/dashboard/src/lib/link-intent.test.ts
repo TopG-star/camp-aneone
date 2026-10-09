@@ -1,6 +1,6 @@
 import { encode } from "next-auth/jwt";
 import { describe, expect, it, vi } from "vitest";
-import { completeLink, isSameOrigin, linkCsrfToken, previewLink, readSealedSession, sessionLogin, startLinkIntent } from "./link-intent";
+import { completeLink, isSameOrigin, linkCsrfMatches, linkCsrfToken, previewLink, readSealedSession, sessionLogin, startLinkIntent } from "./link-intent";
 
 const ID = "6f1c2c4e-7f0e-4c53-9a43-0f7b6c8f1a11";
 const SECRET = "A".repeat(43);
@@ -107,13 +107,43 @@ describe("sessionLogin (who just signed in for the second time)", () => {
 });
 
 describe("linkCsrfToken (the confirm form's token)", () => {
-  it("is tied to the intent's secret: only the browser holding the cookie can know it", () => {
-    const token = linkCsrfToken({ linkIntentId: ID, secret: SECRET });
+  const intent = { linkIntentId: ID, secret: SECRET };
+  const google = { kind: "google" as const, subject: "g-sub", email: "a@b.com" };
+  const handoff = { kind: "impressorx" as const, identityId: "i-1", sessionId: "s-1", membershipId: "m-1" };
+
+  it("is derived from the intent's secret, so each intent has its own", () => {
+    const token = linkCsrfToken(intent, google);
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(linkCsrfToken({ linkIntentId: ID, secret: SECRET })).toBe(token);
-    expect(linkCsrfToken({ linkIntentId: ID, secret: "B".repeat(43) })).not.toBe(token);
-    expect(linkCsrfToken({ linkIntentId: "7f1c2c4e-7f0e-4c53-9a43-0f7b6c8f1a11", secret: SECRET })).not.toBe(token);
+    expect(linkCsrfToken(intent, google)).toBe(token);
+    expect(linkCsrfToken({ ...intent, secret: "B".repeat(43) }, google)).not.toBe(token);
+    expect(linkCsrfToken({ ...intent, linkIntentId: "7f1c2c4e-7f0e-4c53-9a43-0f7b6c8f1a11" }, google)).not.toBe(token);
     expect(token).not.toContain(SECRET);
+  });
+
+  it("binds the login that was previewed: another Google account, another hand-off, or the other kind of sign-in gives another token", () => {
+    const token = linkCsrfToken(intent, google);
+    expect(linkCsrfToken(intent, { ...google, subject: "someone-else" })).not.toBe(token);
+    expect(linkCsrfToken(intent, { ...google, email: "other@b.com" })).toBe(token); // the sub is the login, not the email
+    const bound = linkCsrfToken(intent, handoff);
+    expect(bound).not.toBe(token);
+    expect(linkCsrfToken(intent, { ...handoff, sessionId: "s-2" })).not.toBe(bound);
+    expect(linkCsrfToken(intent, { ...handoff, identityId: "i-2" })).not.toBe(bound);
+    expect(linkCsrfToken(intent, { ...handoff, membershipId: "m-2" })).toBe(bound);
+  });
+
+  it("cannot be confused across fields: a sub that looks like another login's parts is still another login", () => {
+    expect(linkCsrfToken(intent, { kind: "google", subject: "a:b", email: "x@y.com" })).not.toBe(
+      linkCsrfToken(intent, { kind: "impressorx", identityId: "b", sessionId: "a", membershipId: "m" }),
+    );
+  });
+
+  it("matches only the token for exactly this intent and login", () => {
+    const token = linkCsrfToken(intent, google);
+    expect(linkCsrfMatches(intent, google, token)).toBe(true);
+    expect(linkCsrfMatches(intent, handoff, token)).toBe(false);
+    expect(linkCsrfMatches({ ...intent, secret: "B".repeat(43) }, google, token)).toBe(false);
+    expect(linkCsrfMatches(intent, google, "")).toBe(false);
+    expect(linkCsrfMatches(intent, google, token.slice(1))).toBe(false);
   });
 });
 
@@ -163,12 +193,22 @@ describe("previewLink and completeLink (the service-token calls)", () => {
   it("completeLink posts the intent, its secret and the second login with the service token", async () => {
     const fetchImpl = answer(200, { linked: true, merged: true, identityId: "i" });
 
-    expect(await completeLink(intent, login, opts(fetchImpl))).toEqual({ ok: true });
+    expect(await completeLink(intent, login, opts(fetchImpl))).toEqual({ ok: true, alreadyLinked: false });
 
     const [url, init] = fetchImpl.mock.calls[0]!;
     expect(url).toBe("http://agent:4000/api/identity/link");
     expect(init.headers.authorization).toBe("Bearer svc");
     expect(JSON.parse(init.body)).toEqual({ linkIntentId: ID, secret: SECRET, login });
+  });
+
+  it("completeLink says when there was nothing to link: the logins were already one account", async () => {
+    const fetchImpl = answer(200, { linked: true, merged: false, alreadyLinked: true, identityId: "i" });
+    expect(await completeLink(intent, login, opts(fetchImpl))).toEqual({ ok: true, alreadyLinked: true });
+  });
+
+  it("previewLink passes a Google account without an email on as null", async () => {
+    const fetchImpl = answer(200, { googleEmail: null, memberships: [{ role: "Admin", pharmacyName: "Acme" }] });
+    expect(await previewLink(intent, login, opts(fetchImpl))).toEqual({ ok: true, googleEmail: null, memberships: [{ role: "Admin", pharmacyName: "Acme" }] });
   });
 
   it.each([
