@@ -5,6 +5,8 @@ import type { ControlDb } from "./open-control-db.js";
 
 export type LoginKind = "google" | "impressorx";
 export type Identity = { id: string; status: "active" | "disabled" };
+/** A login as it may be shown: never its subject, which for an ImpressoRx login holds a staff user id. */
+export type LoginSummary = { id: string; kind: LoginKind; email: string | null; registrationId: string | null };
 export type Membership = {
   id: string;
   identityId: string;
@@ -45,6 +47,8 @@ export interface IdentityRepository {
   /** The email on the identity's (first) Google login, or null. */
   googleEmailOf(identityId: string): string | null;
   listMemberships(identityId: string): Membership[];
+  /** The identity's logins, oldest first. An ImpressoRx login names the pharmacy it is at (`registrationId`), never the staff user. */
+  listLogins(identityId: string): LoginSummary[];
 }
 
 export type UnlinkRefusal = "login_not_found" | "not_detachable" | "last_login";
@@ -283,6 +287,17 @@ export class SqliteIdentityRepository implements IdentityRepository {
       )
       .run(reason, value);
     return ids;
+  }
+
+  listLogins(identityId: string): LoginSummary[] {
+    const rows = this.db
+      .prepare("SELECT id, kind, subject, email FROM login_identities WHERE identity_id = ? ORDER BY created_at, id")
+      .all(identityId) as Array<{ id: string; kind: LoginKind; subject: string; email: string | null }>;
+    return rows.map((r) => {
+      // An ImpressoRx subject is "<registration id>:<staff user id>"; only the registration is for showing.
+      const separator = r.subject.indexOf(":");
+      return { id: r.id, kind: r.kind, email: r.email, registrationId: r.kind === "impressorx" && separator > 0 ? r.subject.slice(0, separator) : null };
+    });
   }
 
   listMemberships(identityId: string): Membership[] {

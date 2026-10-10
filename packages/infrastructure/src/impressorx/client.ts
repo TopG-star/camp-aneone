@@ -61,6 +61,22 @@ export interface GrantCalls {
   trpc<T>(path: string, input: unknown, type: "query" | "mutation", opts?: { oneonActionId?: string }): Promise<T>;
 }
 
+/** A grant as its owner sees it in Settings → Connections: metadata only, never the value. */
+export interface GrantSummary {
+  id: string;
+  tenantRegistrationId: string;
+  kind: GrantRecord["kind"];
+  scope: string[];
+  /** `expired` while the record still says active but its idle or absolute expiry has passed. */
+  status: "active" | "revoked" | "expired";
+  sessionId: string | null;
+  actionId: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+  /** The sooner of the idle and the absolute expiry: when the grant ends if nobody uses it. */
+  expiresAt: string;
+}
+
 export interface SessionCalls extends GrantCalls {
   issue(input: { kind: "action" | "schedule"; oneonActionId?: string; scope: string[]; absoluteExpiresAt: string }): Promise<{ grantId: string }>;
 }
@@ -184,16 +200,37 @@ export class ImpressoRxClient {
    */
   async releaseGrants(grantIds: string[]): Promise<void> {
     for (const id of grantIds) this.dropTokens(id);
-    for (const id of grantIds) {
-      const record = this.deps.grants.find(id);
-      const registration = record ? this.deps.registrations.findById(record.tenantRegistrationId) : null;
-      if (!record || !registration || registration.status !== "active") continue;
-      try {
-        await this.signedPost(registration, "/api/oneon/revoke", { grantId: id }, false);
-      } catch (error) {
-        this.deps.logger?.warn("Revoking a grant at ImpressoRx failed", { error: error instanceof Error ? error.name : "unknown" });
-      }
-    }
+    for (const id of grantIds) await this.revokeRemotely(id);
+  }
+
+  /** The identity's grants, oldest first, as metadata (Settings → Connections). Another identity's grants are never in it. */
+  listGrantsFor(identityId: string): GrantSummary[] {
+    return this.deps.grants.listForIdentity(identityId).map((g) => ({
+      id: g.id,
+      tenantRegistrationId: g.tenantRegistrationId,
+      kind: g.kind,
+      scope: g.scope,
+      status: g.status === "active" && this.pastExpiry(g) ? "expired" : g.status,
+      sessionId: g.sessionId,
+      actionId: g.actionId,
+      createdAt: g.createdAt,
+      lastUsedAt: g.lastUsedAt,
+      expiresAt: g.idleExpiresAt !== null && Date.parse(g.idleExpiresAt) < Date.parse(g.absoluteExpiresAt) ? g.idleExpiresAt : g.absoluteExpiresAt,
+    }));
+  }
+
+  /**
+   * The person gives up one of their own grants. It is revoked here first and its cached tokens forgotten, whatever happens next, so a
+   * revoke never depends on ImpressoRx being up; then ImpressoRx is told. `remote` says whether it confirmed. Null when the grant is
+   * not this identity's or does not exist (the caller cannot tell which). Revoking again is fine: nothing changes here, and the
+   * deployment is asked again, so an earlier `unreachable` can be finished (ImpressoRx answers 204 whether or not the grant was live).
+   */
+  async revokeGrantFor(identityId: string, grantId: string): Promise<{ remote: "revoked" | "unreachable" } | null> {
+    const record = this.deps.grants.find(grantId);
+    if (!record || record.identityId !== identityId) return null;
+    this.deps.grants.revoke(grantId, "revoked_by_person");
+    this.dropTokens(grantId);
+    return { remote: await this.revokeRemotely(grantId) };
   }
 
   /** Unattended calls (actions, schedules). */
@@ -394,6 +431,23 @@ export class ImpressoRxClient {
 
   private dropTokens(grantId: string): void {
     for (const key of [...this.tokens.keys()]) if (key.startsWith(`${grantId}:`)) this.tokens.delete(key);
+  }
+
+  /**
+   * Tells the grant's deployment to revoke it (one signed attempt). `unreachable` when it did not confirm: the deployment could not be
+   * asked (its registration is not active, or the grant is unknown here) or did not answer; a failure is logged at warn, never thrown.
+   */
+  private async revokeRemotely(grantId: string): Promise<"revoked" | "unreachable"> {
+    const record = this.deps.grants.find(grantId);
+    const registration = record ? this.deps.registrations.findById(record.tenantRegistrationId) : null;
+    if (!record || !registration || registration.status !== "active") return "unreachable";
+    try {
+      await this.signedPost(registration, "/api/oneon/revoke", { grantId }, false);
+      return "revoked";
+    } catch (error) {
+      this.deps.logger?.warn("Revoking a grant at ImpressoRx failed", { error: error instanceof Error ? error.name : "unknown" });
+      return "unreachable";
+    }
   }
 
   private async bestEffortRevoke(registration: TenantRegistration, grantId: string): Promise<void> {

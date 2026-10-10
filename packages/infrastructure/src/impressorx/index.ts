@@ -15,6 +15,7 @@ export {
   ImpressoRxUnreachableError,
   type ImpressoRxClientDeps,
   type GrantCalls,
+  type GrantSummary,
   type SessionCalls,
   type MembershipSnapshot,
 } from "./client.js";

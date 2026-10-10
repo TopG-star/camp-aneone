@@ -27,6 +27,7 @@ import { createPlatformRouter } from "./platform.route.js";
 import { createHandoffRouter } from "./handoff.route.js";
 import { createContextsRouter } from "./contexts.route.js";
 import { createIdentityLinkRouter, createIdentitySessionRouter } from "./identity-link.route.js";
+import { createConnectionsRouter } from "./connections.route.js";
 import { createTokenAuthMiddleware } from "../middleware/auth.js";
 import { createSessionAuthMiddleware } from "../middleware/session-auth.js";
 import { requireUser } from "../middleware/require-user.js";
@@ -511,6 +512,24 @@ export function registerRoutes(app: Express, container: AppContainer): void {
   };
   app.use("/api/identity/link", ...systemAuth, createIdentityLinkRouter(identityLink));
   app.use("/api/identity", sessionAuth, requireUser, createIdentitySessionRouter(identityLink));
+
+  // ── Settings → Connections ────────────────────────────────
+  // The person's own delegated access and the actions waiting for them to reconnect. Session and requireUser only, not
+  // requirePersonalContext: it acts on the session's identity alone, reads each pharmacy file itself through the gate, and a
+  // hand-off session must be able to see and revoke its own access.
+  app.use(
+    "/api/connections",
+    sessionAuth,
+    requireUser,
+    createConnectionsRouter({
+      client: container.impressorx,
+      memberships: container.memberships,
+      registrations: container.tenantRegistrations,
+      openTenant: container.openTenant,
+      actionsFor: container.actionsFor,
+      logger: new StructuredLogger("connections", env.LOG_LEVEL),
+    }),
+  );
 
   // ── Platform console (operators only) ─────────────────────
   const platformLogger = new StructuredLogger("platform", env.LOG_LEVEL);

@@ -33,6 +33,8 @@ export interface GrantRecord {
   revokedReason: string | null;
   sessionId: string | null;
   actionId: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
   idleExpiresAt: string | null;
   absoluteExpiresAt: string;
 }
@@ -80,6 +82,8 @@ type Row = {
   pending_request_id: string | null;
   pending_since: string | null;
   pending_request_json: string | null;
+  created_at: string;
+  last_used_at: string | null;
   idle_expires_at: string | null;
   absolute_expires_at: string;
 };
@@ -96,6 +100,8 @@ const toRecord = (r: Row): GrantRecord => ({
   revokedReason: r.revoked_reason,
   sessionId: r.session_id,
   actionId: r.action_id,
+  createdAt: r.created_at,
+  lastUsedAt: r.last_used_at,
   idleExpiresAt: r.idle_expires_at,
   absoluteExpiresAt: r.absolute_expires_at,
 });

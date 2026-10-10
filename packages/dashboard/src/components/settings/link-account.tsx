@@ -9,7 +9,7 @@ import { HANDOFF_NOTICE, requestLink } from "@/lib/link-account";
 
 /**
  * Spec §4.5: links the signed-in account to the other kind of sign-in in this same browser. The dashboard's server keeps
- * the intent; the answer says which sign-in finishes it. Until Settings → Connections exists (Task 20) this card lives on the Settings page.
+ * the intent; the answer says which sign-in finishes it. Settings → Connections, just above, lists the logins this makes up.
  */
 export function LinkAccountSettings() {
   const [busy, setBusy] = useState(false);

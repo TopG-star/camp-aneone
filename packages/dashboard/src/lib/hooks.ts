@@ -1,7 +1,7 @@
 "use client";
 
 import useSWR, { type SWRConfiguration } from "swr";
-import type { UserProfileResponse } from "@oneon/contracts";
+import type { ConnectionsView, LinkedLoginsView, UserProfileResponse } from "@oneon/contracts";
 import { apiFetch } from "@/lib/api";
 import type { ContextsResponse } from "@/lib/context";
 
@@ -154,6 +154,16 @@ export function useActionDefinitions(config?: SWRConfiguration) {
 /** Settings → AI data, and the paused-sorting notice on Today */
 export function useAiData(config?: SWRConfiguration) {
   return useSWR("/api/ai-data", fetcher, config);
+}
+
+/** Settings → Connections: the person's delegated access, and the actions waiting for them to reconnect */
+export function useConnections(config?: SWRConfiguration) {
+  return useSWR<ConnectionsView>("/api/connections", fetcher, config);
+}
+
+/** Settings → Connections: the logins that make up the person's account */
+export function useLinkedLogins(config?: SWRConfiguration) {
+  return useSWR<LinkedLoginsView>("/api/identity/logins", fetcher, config);
 }
 
 /** The context picker: the current context and the ones this session may switch to */

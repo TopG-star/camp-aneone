@@ -411,6 +411,27 @@ describe("linking identities", () => {
     expect(s.repo.googleEmailOf(s.staff.id)).toBeNull();
   });
 
+  it("lists an identity's logins with a safe handle: the Google email, or the pharmacy of an ImpressoRx login and never its staff id", () => {
+    const s = setup();
+    s.repo.mergeInto(s.staff.id, s.google.id, s.google.id);
+
+    const logins = s.repo.listLogins(s.google.id);
+
+    const byHandle = (l: { kind: string; registrationId: string | null }) => `${l.kind}:${l.registrationId}`;
+    expect([...logins].sort((x, y) => byHandle(x).localeCompare(byHandle(y)))).toEqual(
+      [
+        { id: expect.any(String), kind: "google", email: "gerry@x.com", registrationId: null },
+        { id: expect.any(String), kind: "impressorx", email: null, registrationId: s.a.id },
+        { id: expect.any(String), kind: "impressorx", email: null, registrationId: s.b.id },
+      ].sort((x, y) => byHandle(x).localeCompare(byHandle(y))),
+    );
+    expect(JSON.stringify(logins)).not.toContain("staff-1");
+    expect(JSON.stringify(logins)).not.toContain("staff-9");
+    // A subject that is not "<registration id>:<staff id>" names no pharmacy.
+    expect(s.repo.listLogins(s.colleague.id)).toEqual([{ id: expect.any(String), kind: "impressorx", email: null, registrationId: null }]);
+    expect(s.repo.listLogins("nobody")).toEqual([]);
+  });
+
   it("refuses to merge an identity into itself, a missing identity, or a disabled one", () => {
     const s = setup();
     expect(() => s.repo.mergeInto(s.staff.id, s.staff.id, s.google.id)).toThrow();

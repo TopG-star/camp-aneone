@@ -5,7 +5,7 @@ export { openControlDb, type ControlDb } from "./control/open-control-db.js";
 export { SqliteTransactionRunner } from "./transaction-runner.js";
 export * from "./repositories/index.js";
 export { runActionDriftCheck } from "./action-drift-check.js";
-export { SqliteIdentityRepository, LinkUnavailableError, UnlinkRefusedError, type IdentityRepository, type Identity, type Membership, type LoginKind, type UnlinkRefusal } from "./control/identity-repository.js";
+export { SqliteIdentityRepository, LinkUnavailableError, UnlinkRefusedError, type IdentityRepository, type Identity, type Membership, type LoginKind, type LoginSummary, type UnlinkRefusal } from "./control/identity-repository.js";
 export { LinkIntentRepository } from "./control/link-intent-repository.js";
 export { backfillIdentities } from "./control/backfill-identities.js";
 export { ensureIdentityForUser } from "./control/ensure-identity.js";

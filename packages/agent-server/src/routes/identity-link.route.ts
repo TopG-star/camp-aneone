@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
+import type { LinkedLoginsView } from "@oneon/contracts";
 import type { Logger } from "@oneon/domain";
 import {
   LinkUnavailableError,
@@ -23,6 +24,7 @@ export interface IdentityLinkDeps {
     | "listMemberships"
     | "registrationsOf"
     | "googleEmailOf"
+    | "listLogins"
   >;
   intents: Pick<LinkIntentRepository, "create" | "peek" | "consume">;
   registrations: Pick<TenantRegistrationRepository, "findById">;
@@ -212,7 +214,7 @@ export function createIdentityLinkRouter(deps: IdentityLinkDeps): Router {
 
 /**
  * The person's own link calls (session auth; mount after session auth and requireUser, and not personal-only: a hand-off
- * session starts a link too). Both act only on the session's identity.
+ * session starts a link too). All act only on the session's identity.
  */
 export function createIdentitySessionRouter(deps: IdentityLinkDeps): Router {
   const router = Router();
@@ -224,6 +226,24 @@ export function createIdentitySessionRouter(deps: IdentityLinkDeps): Router {
     // The Google-holding identity is the one that others merge into, so it is the one that waits for a hand-off.
     const next = deps.identities.hasLogin(identityId, "google") ? "handoff" : "google";
     res.set("Cache-Control", "no-store").json({ linkIntentId: id, secret, next });
+  });
+
+  // Settings → Connections lists these, so a person can see what is linked and unlink a pharmacy login. A label names the Google
+  // email or the pharmacy; the staff user inside an ImpressoRx login's subject never leaves the server.
+  router.get("/logins", (req, res) => {
+    const identityId = req.identityId;
+    if (!identityId) return void res.status(401).json({ error: "Authentication required" });
+    const body: LinkedLoginsView = {
+      logins: deps.identities.listLogins(identityId).map((login) => ({
+        id: login.id,
+        kind: login.kind,
+        label:
+          login.kind === "google"
+            ? (login.email ?? "Google account")
+            : `pharmacy staff login at ${(login.registrationId && deps.registrations.findById(login.registrationId)?.displayName) || "a pharmacy"}`,
+      })),
+    };
+    res.json(body);
   });
 
   router.post("/unlink", (req, res) => {

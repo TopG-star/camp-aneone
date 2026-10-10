@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { useThemeMode } from "@/components/theme-provider";
 import { ActionsSettings } from "@/components/settings/actions-settings";
 import { AiDataSettings } from "@/components/settings/ai-data-settings";
+import { ConnectionsSettings } from "@/components/settings/connections-settings";
 import { LinkAccountSettings } from "@/components/settings/link-account";
 import {
   Wifi,
@@ -727,6 +728,8 @@ export default function SettingsPage() {
       <ActionsSettings />
 
       <AiDataSettings />
+
+      <ConnectionsSettings />
 
       <LinkAccountSettings />
 

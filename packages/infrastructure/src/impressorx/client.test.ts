@@ -348,6 +348,111 @@ describe("ImpressoRx client against the fake deployment", () => {
     expect(s.logged.join("\n")).not.toContain(s.fake.grantValue(grantId)!);
   });
 
+  describe("a person's own grants (Settings → Connections)", () => {
+    it("lists the identity's grants as metadata with the earliest expiry, never another identity's and never a value", async () => {
+      const s = await setup();
+      const { grantId, sessionId } = await s.launch();
+      expect(s.client.listGrantsFor(s.identityId)[0]).toMatchObject({ id: grantId, lastUsedAt: null });
+      expireTokens(s);
+      await s.client.forGrant(grantId).accessToken(); // an exchange: the grant is used, and its idle expiry slides
+
+      const [grant, ...rest] = s.client.listGrantsFor(s.identityId);
+
+      expect(rest).toEqual([]);
+      expect(grant).toEqual({
+        id: grantId,
+        tenantRegistrationId: s.registration.id,
+        kind: "attended",
+        scope: [],
+        status: "active",
+        sessionId,
+        actionId: null,
+        createdAt: expect.any(String),
+        lastUsedAt: expect.any(String),
+        expiresAt: s.grants.find(grantId)!.idleExpiresAt,
+      });
+      expect(Date.parse(grant!.expiresAt)).toBeLessThan(Date.parse(s.grants.find(grantId)!.absoluteExpiresAt));
+      const other = new SqliteIdentityRepository(s.control).createWithLogin({ kind: "google", subject: "s2" }).id;
+      expect(s.client.listGrantsFor(other)).toEqual([]);
+      expect(JSON.stringify(grant)).not.toContain(s.fake.grantValue(grantId)!);
+    });
+
+    it("reports a grant past its expiry as expired, and a revoked one as revoked", async () => {
+      const s = await setup();
+      const { grantId } = await s.launch();
+      s.advance(31 * 60 * 1000); // past the 30-minute idle expiry
+      expect(s.client.listGrantsFor(s.identityId)[0]).toMatchObject({ id: grantId, status: "expired" });
+      s.grants.revoke(grantId, "test");
+      expect(s.client.listGrantsFor(s.identityId)[0]).toMatchObject({ id: grantId, status: "revoked" });
+    });
+
+    it("revokes locally first, forgets the cached token and revokes at the deployment", async () => {
+      const s = await setup();
+      const { grantId } = await s.launch();
+      const grant = s.client.forGrant(grantId);
+      await grant.accessToken(); // cached since the hand-off
+
+      const outcome = await s.client.revokeGrantFor(s.identityId, grantId);
+
+      expect(outcome).toEqual({ remote: "revoked" });
+      expect(s.grants.find(grantId)).toMatchObject({ status: "revoked", revokedReason: "revoked_by_person" });
+      expect(s.fake.grants.get(grantId)!.status).toBe("revoked");
+      await expect(grant.accessToken()).rejects.toBeInstanceOf(ImpressoRxRefusedError);
+    });
+
+    it("refuses a grant that is not the identity's, without touching it, and says the same for one that does not exist", async () => {
+      const s = await setup();
+      const { grantId } = await s.launch();
+      const other = new SqliteIdentityRepository(s.control).createWithLogin({ kind: "google", subject: "s2" }).id;
+
+      expect(await s.client.revokeGrantFor(other, grantId)).toBeNull();
+      expect(await s.client.revokeGrantFor(s.identityId, "no-such-grant")).toBeNull();
+
+      expect(s.grants.find(grantId)!.status).toBe("active");
+      expect(s.fake.grants.get(grantId)!.status).toBe("active");
+    });
+
+    it("an unreachable deployment does not stop the local revoke: the token is forgotten, the answer says so, and it is logged", async () => {
+      const s = await setup();
+      const { grantId } = await s.launch();
+      const grant = s.client.forGrant(grantId);
+      await grant.accessToken();
+      s.fake.networkFailure = true;
+
+      const outcome = await s.client.revokeGrantFor(s.identityId, grantId);
+
+      expect(outcome).toEqual({ remote: "unreachable" });
+      expect(s.grants.find(grantId)).toMatchObject({ status: "revoked", revokedReason: "revoked_by_person" });
+      s.fake.networkFailure = false;
+      await expect(grant.accessToken()).rejects.toBeInstanceOf(ImpressoRxRefusedError);
+      expect(s.fake.grants.get(grantId)!.status).toBe("active");
+      expect(s.logged.some((line) => line.includes("Revoking a grant at ImpressoRx failed"))).toBe(true);
+    });
+
+    it("a pharmacy that is no longer active cannot be asked: unreachable, and the grant is still revoked here", async () => {
+      const s = await setup();
+      const { grantId } = await s.launch();
+      s.control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = ?").run(s.registration.id);
+
+      expect(await s.client.revokeGrantFor(s.identityId, grantId)).toEqual({ remote: "unreachable" });
+
+      expect(s.grants.find(grantId)!.status).toBe("revoked");
+    });
+
+    it("is idempotent: revoking again succeeds, and finishes the remote revoke an unreachable deployment missed", async () => {
+      const s = await setup();
+      const { grantId } = await s.launch();
+      s.fake.networkFailure = true;
+      expect(await s.client.revokeGrantFor(s.identityId, grantId)).toEqual({ remote: "unreachable" });
+      s.fake.networkFailure = false;
+
+      expect(await s.client.revokeGrantFor(s.identityId, grantId)).toEqual({ remote: "revoked" });
+      expect(s.fake.grants.get(grantId)!.status).toBe("revoked");
+      expect(await s.client.revokeGrantFor(s.identityId, grantId)).toEqual({ remote: "revoked" });
+      expect(s.grants.find(grantId)).toMatchObject({ status: "revoked", revokedReason: "revoked_by_person" });
+    });
+  });
+
   it("never logs grant values or tokens", async () => {
     const s = await setup();
     const { grantId, sessionId } = await s.launch();

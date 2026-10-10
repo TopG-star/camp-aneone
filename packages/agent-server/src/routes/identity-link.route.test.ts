@@ -5,6 +5,7 @@ import { join } from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { LinkedLoginsViewSchema } from "@oneon/contracts";
 import {
   ContextDbGate,
   LinkIntentRepository,
@@ -620,6 +621,56 @@ describe("identity linking routes", () => {
       const { s, loginId } = await linked();
       s.asSession(undefined);
       expect((await request(s.app).post("/api/identity/unlink").send({ loginIdentityId: loginId })).status).toBe(401);
+    });
+  });
+
+  describe("GET /api/identity/logins", () => {
+    it("lists the session identity's logins with a label that is safe to show: the Google email, the pharmacy of a staff login", async () => {
+      const s = setup();
+      const intent = await s.startIntent(s.staff.id, true);
+      await s.link({ linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.googleLogin() });
+      s.asSession(s.gerry.id);
+
+      const res = await request(s.app).get("/api/identity/logins");
+
+      expect(res.status).toBe(200);
+      expect(LinkedLoginsViewSchema.safeParse(res.body).success).toBe(true);
+      const ids = Object.fromEntries(
+        (s.control.prepare("SELECT id, kind FROM login_identities WHERE identity_id = ?").all(s.gerry.id) as Array<{ id: string; kind: string }>).map((l) => [l.kind, l.id]),
+      );
+      expect([...res.body.logins].sort((x: { kind: string }, y: { kind: string }) => x.kind.localeCompare(y.kind))).toEqual([
+        { id: ids.google, kind: "google", label: "gerry@x.com" },
+        { id: ids.impressorx, kind: "impressorx", label: "pharmacy staff login at a" },
+      ]);
+      // The staff id inside the login's subject is not for the browser.
+      expect(JSON.stringify(res.body)).not.toContain("staff-1");
+      expect(JSON.stringify(res.body)).not.toContain("gerry-sub");
+    });
+
+    it("only ever shows the session's own logins", async () => {
+      const s = setup();
+      s.asSession(s.staff.id, true);
+
+      const res = await request(s.app).get("/api/identity/logins");
+
+      expect(res.body.logins).toEqual([{ id: expect.any(String), kind: "impressorx", label: "pharmacy staff login at a" }]);
+    });
+
+    it("words a login it cannot name without inventing anything", async () => {
+      const s = setup();
+      s.control.prepare("UPDATE login_identities SET email = NULL WHERE kind = 'google'").run();
+      const orphan = s.identities.createWithLogin({ kind: "impressorx", subject: "not-a-registration:staff-9" });
+      s.asSession(orphan.id);
+      expect((await request(s.app).get("/api/identity/logins")).body.logins).toEqual([{ id: expect.any(String), kind: "impressorx", label: "pharmacy staff login at a pharmacy" }]);
+
+      s.asSession(s.gerry.id);
+      expect((await request(s.app).get("/api/identity/logins")).body.logins).toEqual([{ id: expect.any(String), kind: "google", label: "Google account" }]);
+    });
+
+    it("needs a session", async () => {
+      const s = setup();
+      s.asSession(undefined);
+      expect((await request(s.app).get("/api/identity/logins")).status).toBe(401);
     });
   });
 });
