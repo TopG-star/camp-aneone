@@ -55,16 +55,19 @@ export function createTenantSettingsRouter(deps: TenantSettingsRouteDeps): Route
   });
 
   /**
-   * The providers that allow a raise to `maxClass`: configured, reviewed, holding a signed DPA for pharmacy data and with a tenant limit
-   * (after the platform's overrides) that reaches the class. Null when there are none.
+   * The providers that allow a raise to `maxClass` (spec 9.4): configured, with a tenant limit (after the platform's overrides) that
+   * reaches the class. A raise to D2 also needs the provider to be reviewed and to hold a signed DPA for pharmacy data, and the
+   * evidence then carries both. Null when no provider allows it.
    */
   function raiseEvidence(maxClass: TenantLimitClass): Record<string, unknown> | null {
+    const needsReview = classRank(maxClass) >= classRank("D2");
     const providers = PROVIDER_IDS.flatMap((id) => {
       const entry = registry[id];
       const ceiling = providerLimit(entry, "tenant", deps.overrides.get(id));
-      if (!deps.configuredProviders.includes(id) || entry.review !== "reviewed" || !entry.tenantDpa) return [];
-      if (ceiling === "suspended" || ceiling === "unknown" || classRank(ceiling) < classRank(maxClass)) return [];
-      return [{ id, review: entry.review, tenantCeiling: ceiling, tenantDpa: entry.tenantDpa }];
+      if (!deps.configuredProviders.includes(id) || ceiling === "suspended" || ceiling === "unknown" || classRank(ceiling) < classRank(maxClass)) return [];
+      if (!needsReview) return [{ id, tenantCeiling: ceiling }];
+      if (entry.review !== "reviewed" || !entry.tenantDpa) return [];
+      return [{ id, tenantCeiling: ceiling, review: entry.review, tenantDpa: entry.tenantDpa }];
     });
     return providers.length > 0 ? { requested: maxClass, providers } : null;
   }

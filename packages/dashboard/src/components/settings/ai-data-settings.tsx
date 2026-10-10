@@ -137,8 +137,8 @@ function TenantAiLimitSettings({ tenantName }: { tenantName: string }) {
                   </Button>
                 </div>
                 <p className="text-label-sm meta-copy">
-                  Oneon asks ImpressoRx to confirm you can manage Oneon before it saves. Lowering applies at once. Raising needs an AI provider that has been fully
-                  reviewed and holds a signed data processing agreement.
+                  Oneon asks ImpressoRx to confirm you can manage Oneon before it saves. Lowering applies at once. A raise has to stay within what a configured AI
+                  provider may receive, and a raise to Confidential also needs a provider that has been fully reviewed and holds a signed data processing agreement.
                 </p>
               </div>
             ) : (

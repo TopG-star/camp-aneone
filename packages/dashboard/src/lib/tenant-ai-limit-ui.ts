@@ -25,7 +25,7 @@ export function historyEntryText(entry: Pick<TenantAiLimitView["history"][number
 /** Why a change was not made (the route's answers, spec 9.3 and 9.4). A 403 from a pharmacy that cannot open carries its own message. */
 export function changeFailureText(status: number, message: string): string {
   if (status === 409) {
-    return "The limit can't be raised yet. Raising it needs an AI provider that Oneon has fully reviewed, that holds a signed data processing agreement and that is cleared for this level. You can always lower it.";
+    return "The limit can't be raised to this level. A raise has to stay within what a configured AI provider may receive for a pharmacy, and a raise to the Confidential level also needs a provider that Oneon has fully reviewed and that holds a signed data processing agreement. You can always lower it.";
   }
   if (status === 403 && message === "permission_required") {
     return "Only a pharmacy administrator can change this. Your access in ImpressoRx doesn't include managing Oneon. Nothing was changed.";

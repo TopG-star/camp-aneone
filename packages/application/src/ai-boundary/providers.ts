@@ -7,8 +7,8 @@ export interface ProviderEntry {
   limits: { personal: DataClass; tenant: DataClass };
   review: "unreviewed" | "reviewed";
   /**
-   * The signed data processing agreement with this provider for pharmacy data (spec 9.4). A pharmacy's limit may be raised to a class
-   * only while a configured provider is reviewed, holds one of these and has a tenant limit that reaches the class. Absent until signed.
+   * The signed data processing agreement with this provider for pharmacy data (spec 9.4). A pharmacy's limit may be raised to D2
+   * only while a configured provider is reviewed, holds one of these and has a tenant limit that reaches D2. Absent until signed.
    */
   tenantDpa?: { signedOn: string; reference: string } | null;
 }

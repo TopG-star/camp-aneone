@@ -19,9 +19,9 @@ describe("pharmacy AI limit UI helpers", () => {
   });
 
   describe("why a change was not made", () => {
-    it("409: raising needs a reviewed provider with a signed agreement, and lowering is still open", () => {
+    it("409: a raise stays within a provider's ceiling, to Confidential it also needs a reviewed provider with a signed agreement, and lowering is still open", () => {
       expect(changeFailureText(409, "prerequisites_missing")).toBe(
-        "The limit can't be raised yet. Raising it needs an AI provider that Oneon has fully reviewed, that holds a signed data processing agreement and that is cleared for this level. You can always lower it.",
+        "The limit can't be raised to this level. A raise has to stay within what a configured AI provider may receive for a pharmacy, and a raise to the Confidential level also needs a provider that Oneon has fully reviewed and that holds a signed data processing agreement. You can always lower it.",
       );
     });
     it("403 without permission: only an administrator, and nothing was changed", () => {

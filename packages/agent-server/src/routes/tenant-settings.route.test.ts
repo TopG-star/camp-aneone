@@ -360,7 +360,7 @@ describe("tenant AI limit routes (spec 9.4)", () => {
     });
 
     describe("raising (spec 9.4)", () => {
-      it("is refused 409 prerequisites_missing while no provider is reviewed with a DPA, and nothing is appended", async () => {
+      it("a raise to D2 is refused 409 prerequisites_missing while no provider is reviewed with a DPA, and nothing is appended", async () => {
         const s = await setup(); // the real registry: both providers are unreviewed, with no DPA
         seed(s, "D0");
 
@@ -372,7 +372,7 @@ describe("tenant AI limit routes (spec 9.4)", () => {
         expect(s.limits.current(s.registration.id)).toBe("D0");
       });
 
-      it("is allowed when a configured provider is reviewed, holds a DPA and has a tenant ceiling that reaches the class, and records why", async () => {
+      it("a raise to D2 is allowed when a configured provider is reviewed, holds a DPA and has a tenant ceiling that reaches D2, and records why", async () => {
         const s = await setup({ registry: registryWith(reviewed()) });
         seed(s, "D0");
 
@@ -431,6 +431,94 @@ describe("tenant AI limit routes (spec 9.4)", () => {
         expect((await put(s, "D1")).status).toBe(200);
       });
 
+      describe("up to D1 a raise only has to stay within a configured provider's tenant ceiling (spec 9.4)", () => {
+        it("D0 to D1 is allowed with today's providers (unreviewed, no DPA, tenant ceiling D1); the evidence names them and their ceilings only", async () => {
+          const s = await setup(); // the real registry
+          seed(s, "D0");
+
+          const res = await put(s, "D1");
+
+          expect(res.status).toBe(200);
+          expect(res.body.current).toBe("D1");
+          expect(s.limits.history(s.registration.id)[0]).toMatchObject({ maxClass: "D1", setBy: s.admin.id });
+          expect(s.limits.history(s.registration.id)[0]!.evidence).toEqual({
+            requested: "D1",
+            providers: [
+              { id: "deepseek", tenantCeiling: "D1" },
+              { id: "anthropic", tenantCeiling: "D1" },
+            ],
+          });
+        });
+
+        it("D0 to D1 rests on a configured provider only: an unconfigured one does not count", async () => {
+          const s = await setup({ configured: ["deepseek"] });
+          seed(s, "D0");
+
+          expect((await put(s, "D1")).status).toBe(200);
+          expect(s.limits.history(s.registration.id)[0]!.evidence).toEqual({ requested: "D1", providers: [{ id: "deepseek", tenantCeiling: "D1" }] });
+        });
+
+        it.each([
+          ["none is configured", { configured: [] as ProviderId[] }],
+          [
+            "every configured provider is capped to D0 by the platform",
+            { overrides: new Map<ProviderId, ProviderOverride>([["deepseek", { kind: "limit", max: "D0" }], ["anthropic", { kind: "limit", max: "D0" }]]) },
+          ],
+          [
+            "every configured provider is suspended by the platform",
+            { overrides: new Map<ProviderId, ProviderOverride>([["deepseek", { kind: "suspended" }], ["anthropic", { kind: "suspended" }]]) },
+          ],
+          [
+            "the only configured provider has a tenant ceiling of D0",
+            { registry: { ...PROVIDER_REGISTRY, deepseek: { ...PROVIDER_REGISTRY.deepseek, limits: { personal: "D2" as const, tenant: "D0" as const } } }, configured: ["deepseek"] as ProviderId[] },
+          ],
+        ])("a raise to D1 is refused 409 when %s: it would go above every configured provider's ceiling", async (_name, opts) => {
+          const s = await setup(opts);
+          seed(s, "D0");
+
+          const res = await put(s, "D1");
+
+          expect(res.status).toBe(409);
+          expect(res.body).toMatchObject({ error: "prerequisites_missing" });
+          expect(s.limits.current(s.registration.id)).toBe("D0");
+          expect(s.limits.history(s.registration.id)).toHaveLength(1);
+        });
+
+        it("a raise above every configured provider's ceiling is refused even when the provider is reviewed and holds a DPA", async () => {
+          const s = await setup({ registry: registryWith(reviewed({ limits: { personal: "D2", tenant: "D1" } })) });
+          seed(s, "D1");
+
+          expect((await put(s, "D2")).status).toBe(409);
+          expect(s.limits.current(s.registration.id)).toBe("D1");
+        });
+      });
+
+      describe("a raise to D2 also needs the provider to be reviewed and to hold a DPA (spec 9.4)", () => {
+        it("D1 to D2 is refused 409 with today's providers", async () => {
+          const s = await setup();
+          seed(s, "D1");
+
+          const res = await put(s, "D2");
+
+          expect(res.status).toBe(409);
+          expect(res.body).toMatchObject({ error: "prerequisites_missing" });
+          expect(s.limits.current(s.registration.id)).toBe("D1");
+        });
+
+        it("D1 to D2 is allowed with a reviewed provider that holds a DPA, and the evidence adds the review and the DPA to the ceiling", async () => {
+          const s = await setup({ registry: registryWith(reviewed()) });
+          seed(s, "D1");
+
+          const res = await put(s, "D2");
+
+          expect(res.status).toBe(200);
+          expect(s.limits.history(s.registration.id)[0]!.evidence).toEqual({
+            requested: "D2",
+            providers: [{ id: "anthropic", tenantCeiling: "D2", review: "reviewed", tenantDpa: DPA }],
+          });
+        });
+      });
+
       it("lowering never needs the prerequisites, even when the provider that justified an earlier raise is no longer reviewed", async () => {
         const s = await setup({ registry: registryWith(reviewed({ review: "unreviewed" })) });
         seed(s, "D2");
@@ -440,7 +528,7 @@ describe("tenant AI limit routes (spec 9.4)", () => {
       });
 
       it("is decided against the newest row at the moment of the write: another admin lowering during the live check turns a would-be lowering into a refused raise", async () => {
-        const s = await setup();
+        const s = await setup({ configured: [] }); // no provider could justify a raise, even to D1
         seed(s, "D2");
         // The request asks for D1, which looks like a lowering from D2. While it waits for ImpressoRx, a second admin lowers to D0.
         s.hooks.onMe = () => seed(s, "D0");
