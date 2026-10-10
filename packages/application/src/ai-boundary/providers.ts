@@ -7,8 +7,9 @@ export interface ProviderEntry {
   limits: { personal: DataClass; tenant: DataClass };
   review: "unreviewed" | "reviewed";
   /**
-   * The signed data processing agreement with this provider for pharmacy data (spec 9.4). A pharmacy's limit may be raised to D2
-   * only while a configured provider is reviewed, holds one of these and has a tenant limit that reaches D2. Absent until signed.
+   * The signed data processing agreement with this provider for pharmacy data (spec 9.4). Pharmacy data goes above D1 only to a provider
+   * that is reviewed and holds one of these (the gateway caps every other provider at D1 in a tenant context), and a pharmacy's limit
+   * may be raised to D2 only while a configured provider is so cleared. Absent until signed.
    */
   tenantDpa?: { signedOn: string; reference: string } | null;
 }
@@ -69,6 +70,9 @@ export function providerLimit(
 ): DataClass | "suspended" | "unknown" {
   if (!entry) return "unknown";
   if (override?.kind === "suspended") return "suspended";
-  const base = entry.limits[contextKind];
+  // Spec 9.4: pharmacy data goes above D1 only to a provider that is fully reviewed and has a signed DPA recorded, whatever its registry
+  // limit. Applied here, on every call and for every provider (shadow included), so it holds however the routing is changed.
+  const cleared = entry.review === "reviewed" && !!entry.tenantDpa;
+  const base = contextKind === "tenant" && !cleared ? lowerClass(entry.limits.tenant, "D1") : entry.limits[contextKind];
   return override?.kind === "limit" ? lowerClass(base, override.max) : base;
 }

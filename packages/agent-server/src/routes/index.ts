@@ -620,6 +620,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       snapshots,
       configuredProviders: container.modelProviders,
       overrides: container.modelOverrides,
+      routing: container.modelRouting,
       logger: new StructuredLogger("tenant-settings", env.LOG_LEVEL),
     }),
   );

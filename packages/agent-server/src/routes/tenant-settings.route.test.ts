@@ -7,7 +7,7 @@ import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TenantAiLimitViewSchema } from "@oneon/contracts";
 import type { ActiveContext } from "@oneon/domain";
-import { PROVIDER_REGISTRY, type ProviderEntry, type ProviderId, type ProviderOverride } from "@oneon/application";
+import { PROVIDER_REGISTRY, type ModelRouting, type ProviderEntry, type ProviderId, type ProviderOverride } from "@oneon/application";
 import {
   EnrolmentService,
   FakeImpressorx,
@@ -48,7 +48,11 @@ describe("tenant AI limit routes (spec 9.4)", () => {
   const ADMIN_SNAPSHOT = { userId: "staff-admin", role: "Admin", permissions: ["settings.oneon", "jobs.read"], locationIds: [], tokenVersion: 7, tenantStatus: "Active" };
   const VIEWER_SNAPSHOT = { userId: "staff-viewer", role: "Staff", permissions: ["jobs.read"], locationIds: [], tokenVersion: 2, tenantStatus: "Active" };
 
-  async function setup(opts: { registry?: Record<ProviderId, ProviderEntry>; configured?: ProviderId[]; overrides?: Map<ProviderId, ProviderOverride> } = {}) {
+  const ROUTING: ModelRouting = { standard: "deepseek", reasoning: "deepseek" };
+
+  async function setup(
+    opts: { registry?: Record<ProviderId, ProviderEntry>; configured?: ProviderId[]; overrides?: Map<ProviderId, ProviderOverride>; routing?: ModelRouting | null } = {},
+  ) {
     const dir = mkdtempSync(join(tmpdir(), "tenant-settings-"));
     dirs.push(dir);
     const control = openControlDb(join(dir, "control.db"));
@@ -117,6 +121,7 @@ describe("tenant AI limit routes (spec 9.4)", () => {
         registry: opts.registry,
         configuredProviders: opts.configured ?? ["deepseek", "anthropic"],
         overrides: opts.overrides ?? new Map(),
+        routing: opts.routing === undefined ? ROUTING : opts.routing,
         clock: () => new Date(NOW),
         logger,
       }),
@@ -125,9 +130,10 @@ describe("tenant AI limit routes (spec 9.4)", () => {
     const asAdmin = (sessionId: string | null = "sess-admin") => void (who = { identityId: admin.id, membershipId: adminMembership.id, sessionId: sessionId ?? undefined });
     const asViewer = () => void (who = { identityId: viewer.id, membershipId: viewerMembership.id, sessionId: "sess-viewer" });
     const inPersonal = () => void (personal = true);
+    const withMissingMembership = () => void (who = { identityId: admin.id, membershipId: "ghost", sessionId: "sess-admin" });
     const grantStatuses = () => control.prepare("SELECT status, revoked_reason FROM delegation_grants ORDER BY created_at, rowid").all() as Array<{ status: string; revoked_reason: string | null }>;
     return {
-      app, control, fake, sent, hooks, limits, memberships, registration, admin, viewer, adminMembership, viewerMembership, logger, asAdmin, asViewer, inPersonal, grantStatuses,
+      app, control, fake, sent, hooks, limits, memberships, registration, admin, viewer, adminMembership, viewerMembership, logger, asAdmin, asViewer, inPersonal, withMissingMembership, grantStatuses,
     };
   }
 
@@ -247,6 +253,18 @@ describe("tenant AI limit routes (spec 9.4)", () => {
       expect(s.limits.history("other")).toEqual([]);
     });
 
+    it("a membership that cannot be found is 403 context_unavailable, with a message a person can read", async () => {
+      const s = await setup();
+      s.withMissingMembership();
+
+      const res = await put(s, "D0");
+
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ error: "context_unavailable", message: expect.stringMatching(/pharmacy/i) });
+      expect(s.sent).toEqual([]);
+      expect(s.limits.history(s.registration.id)).toEqual([]);
+    });
+
     it("is only for a pharmacy context", async () => {
       const s = await setup();
       s.inPersonal();
@@ -254,6 +272,63 @@ describe("tenant AI limit routes (spec 9.4)", () => {
       expect(res.status).toBe(403);
       expect(res.body).toEqual({ error: "tenant_context_required" });
       expect(s.sent).toEqual([]);
+    });
+
+    describe("expectedCurrent: the class the person was looking at", () => {
+      it("lets the change through while it is still the current class", async () => {
+        const s = await setup();
+        seed(s, "D2");
+
+        const res = await put(s, "D1", { expectedCurrent: "D2" });
+
+        expect(res.status).toBe(200);
+        expect(s.limits.current(s.registration.id)).toBe("D1");
+      });
+
+      it("a pharmacy with no row is looked at as D1", async () => {
+        const s = await setup();
+        expect((await put(s, "D0", { expectedCurrent: "D1" })).status).toBe(200);
+      });
+
+      it("refuses 409 limit_changed, and appends nothing, when the class has changed since the person looked", async () => {
+        const s = await setup();
+        seed(s, "D0");
+
+        const res = await put(s, "D1", { expectedCurrent: "D2" });
+
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({ error: "limit_changed" });
+        expect(s.limits.history(s.registration.id)).toHaveLength(1);
+      });
+
+      it("the lost update: a lowering based on a stale D2, after another admin set D0, does not overwrite it", async () => {
+        const s = await setup();
+        seed(s, "D2");
+        // A looked at D2 and asks for D1. While A waits for ImpressoRx, B sets D0.
+        s.hooks.onMe = () => seed(s, "D0");
+
+        const res = await put(s, "D1", { expectedCurrent: "D2" });
+
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({ error: "limit_changed" });
+        expect(s.limits.current(s.registration.id)).toBe("D0");
+        expect(s.limits.history(s.registration.id).map((v) => v.maxClass)).toEqual(["D0", "D2"]);
+      });
+
+      it("is optional: without it the same request is decided on the newest row alone", async () => {
+        const s = await setup();
+        seed(s, "D0");
+
+        expect((await put(s, "D1")).status).toBe(200);
+      });
+
+      it.each(["D3", "D9", 1, null])("%s is not a class the page could have shown: 400 invalid_request", async (expectedCurrent) => {
+        const s = await setup();
+        const res = await put(s, "D0", { expectedCurrent });
+        expect(res.status).toBe(400);
+        expect(res.body).toEqual({ error: "invalid_request" });
+        expect(s.sent).toEqual([]);
+      });
     });
 
     describe("the live check (spec 9.3 and 9.4)", () => {
@@ -444,10 +519,41 @@ describe("tenant AI limit routes (spec 9.4)", () => {
           expect(s.limits.history(s.registration.id)[0]!.evidence).toEqual({
             requested: "D1",
             providers: [
-              { id: "deepseek", tenantCeiling: "D1" },
-              { id: "anthropic", tenantCeiling: "D1" },
+              { id: "deepseek", tenantCeiling: "D1", override: null },
+              { id: "anthropic", tenantCeiling: "D1", override: null },
             ],
+            routing: { standard: "deepseek", reasoning: "deepseek" },
           });
+        });
+
+        it("the evidence records the platform override that applied to a provider's ceiling and the routing in force, shadow included", async () => {
+          const routing: ModelRouting = { standard: "anthropic", reasoning: "anthropic", shadow: "deepseek" };
+          const s = await setup({
+            routing,
+            overrides: new Map<ProviderId, ProviderOverride>([["anthropic", { kind: "limit", max: "D1" }]]),
+            registry: registryWith(reviewed()), // anthropic would reach D2 but for the override
+          });
+          seed(s, "D0");
+
+          expect((await put(s, "D1")).status).toBe(200);
+
+          expect(s.limits.history(s.registration.id)[0]!.evidence).toEqual({
+            requested: "D1",
+            providers: [
+              { id: "deepseek", tenantCeiling: "D1", override: null },
+              { id: "anthropic", tenantCeiling: "D1", override: { kind: "limit", max: "D1" } },
+            ],
+            routing,
+          });
+        });
+
+        it("the evidence says so when there is no routing (no gateway)", async () => {
+          const s = await setup({ routing: null });
+          seed(s, "D0");
+
+          await put(s, "D1");
+
+          expect(s.limits.history(s.registration.id)[0]!.evidence).toMatchObject({ routing: null });
         });
 
         it("D0 to D1 rests on a configured provider only: an unconfigured one does not count", async () => {
@@ -455,7 +561,11 @@ describe("tenant AI limit routes (spec 9.4)", () => {
           seed(s, "D0");
 
           expect((await put(s, "D1")).status).toBe(200);
-          expect(s.limits.history(s.registration.id)[0]!.evidence).toEqual({ requested: "D1", providers: [{ id: "deepseek", tenantCeiling: "D1" }] });
+          expect(s.limits.history(s.registration.id)[0]!.evidence).toEqual({
+            requested: "D1",
+            providers: [{ id: "deepseek", tenantCeiling: "D1", override: null }],
+            routing: ROUTING,
+          });
         });
 
         it.each([
@@ -514,7 +624,8 @@ describe("tenant AI limit routes (spec 9.4)", () => {
           expect(res.status).toBe(200);
           expect(s.limits.history(s.registration.id)[0]!.evidence).toEqual({
             requested: "D2",
-            providers: [{ id: "anthropic", tenantCeiling: "D2", review: "reviewed", tenantDpa: DPA }],
+            providers: [{ id: "anthropic", tenantCeiling: "D2", override: null, review: "reviewed", tenantDpa: DPA }],
+            routing: ROUTING,
           });
         });
       });

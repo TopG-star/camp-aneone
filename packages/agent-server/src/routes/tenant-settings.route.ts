@@ -6,6 +6,7 @@ import {
   PROVIDER_REGISTRY,
   classRank,
   providerLimit,
+  type ModelRouting,
   type ProviderEntry,
   type ProviderId,
   type ProviderOverride,
@@ -16,6 +17,11 @@ import { IMPRESSORX_UNREACHABLE, LAUNCH_REQUIRED, SUSPENDED, type SnapshotRefres
 /** The ImpressoRx permission code (raw, as the snapshot carries it) that lets a person manage Oneon for their pharmacy. */
 const MANAGE_ONEON = "settings.oneon";
 
+const CONTEXT_UNAVAILABLE = {
+  error: "context_unavailable",
+  message: "This pharmacy isn't available right now. Open Oneon from ImpressoRx again, or ask a pharmacy administrator.",
+} as const;
+
 export interface TenantSettingsRouteDeps {
   limits: Pick<TenantAiLimitRepository, "current" | "history" | "change">;
   memberships: Pick<MembershipRepository, "findById">;
@@ -25,6 +31,8 @@ export interface TenantSettingsRouteDeps {
   registry?: Record<ProviderId, ProviderEntry>;
   configuredProviders: ProviderId[];
   overrides: Map<ProviderId, ProviderOverride>;
+  /** Which provider serves each route, recorded with a raise; null when there is no gateway. */
+  routing: ModelRouting | null;
   clock?: () => Date;
   logger: Logger;
 }
@@ -55,21 +63,22 @@ export function createTenantSettingsRouter(deps: TenantSettingsRouteDeps): Route
   });
 
   /**
-   * The providers that allow a raise to `maxClass` (spec 9.4): configured, with a tenant limit (after the platform's overrides) that
-   * reaches the class. A raise to D2 also needs the provider to be reviewed and to hold a signed DPA for pharmacy data, and the
-   * evidence then carries both. Null when no provider allows it.
+   * The providers that allow a raise to `maxClass` (spec 9.4): configured, with a tenant limit that reaches the class. That limit is the
+   * one the gateway applies on every call (providerLimit, after the platform's overrides), and it is what keeps a provider that is not
+   * reviewed and without a signed DPA below D2, so a raise to D2 can only rest on a provider that really may receive it; the evidence then
+   * carries its review and DPA. It also records the override that applied to each ceiling and the routing in force. Null when no provider
+   * allows the raise.
    */
   function raiseEvidence(maxClass: TenantLimitClass): Record<string, unknown> | null {
     const needsReview = classRank(maxClass) >= classRank("D2");
     const providers = PROVIDER_IDS.flatMap((id) => {
       const entry = registry[id];
-      const ceiling = providerLimit(entry, "tenant", deps.overrides.get(id));
+      const override = deps.overrides.get(id) ?? null;
+      const ceiling = providerLimit(entry, "tenant", override ?? undefined);
       if (!deps.configuredProviders.includes(id) || ceiling === "suspended" || ceiling === "unknown" || classRank(ceiling) < classRank(maxClass)) return [];
-      if (!needsReview) return [{ id, tenantCeiling: ceiling }];
-      if (entry.review !== "reviewed" || !entry.tenantDpa) return [];
-      return [{ id, tenantCeiling: ceiling, review: entry.review, tenantDpa: entry.tenantDpa }];
+      return [{ id, tenantCeiling: ceiling, override, ...(needsReview ? { review: entry.review, tenantDpa: entry.tenantDpa } : {}) }];
     });
-    return providers.length > 0 ? { requested: maxClass, providers } : null;
+    return providers.length > 0 ? { requested: maxClass, providers, routing: deps.routing } : null;
   }
 
   const refuseLive = (res: Response, reason: "membership_suspended" | "launch_required" | "impressorx_unreachable") => {
@@ -96,7 +105,7 @@ export function createTenantSettingsRouter(deps: TenantSettingsRouteDeps): Route
       res.status(400).json({ error: "invalid_request" });
       return;
     }
-    const { maxClass } = parsed.data;
+    const { maxClass, expectedCurrent } = parsed.data;
     if (maxClass === "D3" || maxClass === "D4") {
       res.status(400).json({ error: "class_not_allowed" });
       return;
@@ -104,7 +113,7 @@ export function createTenantSettingsRouter(deps: TenantSettingsRouteDeps): Route
     try {
       const membership = deps.memberships.findById(ctx.membershipId);
       if (!membership) {
-        res.status(403).json({ error: "context_unavailable" });
+        res.status(403).json(CONTEXT_UNAVAILABLE);
         return;
       }
       // Always live, whatever the cached snapshot says: a refusal, or ImpressoRx being out of reach, changes nothing.
@@ -119,9 +128,12 @@ export function createTenantSettingsRouter(deps: TenantSettingsRouteDeps): Route
       }
       const liveCheckRef = JSON.stringify({ tokenVersion: live.tokenVersion, checkedAt: clock().toISOString() });
       // Lowering or keeping the class is always written. A raise is decided against the newest row, inside the write.
-      const change = deps.limits.change({ registrationId: ctx.registrationId, maxClass, setBy: ctx.identityId, liveCheckRef }, () => raiseEvidence(maxClass));
+      const change = deps.limits.change(
+        { registrationId: ctx.registrationId, maxClass, setBy: ctx.identityId, liveCheckRef, expectedCurrent },
+        () => raiseEvidence(maxClass),
+      );
       if (!change.ok) {
-        res.status(409).json({ error: "prerequisites_missing" });
+        res.status(409).json({ error: change.reason });
         return;
       }
       res.json(view(ctx, true));

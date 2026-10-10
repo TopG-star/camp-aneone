@@ -59,5 +59,8 @@ export const TenantAiLimitViewSchema = z.object({
 });
 export type TenantAiLimitView = z.infer<typeof TenantAiLimitViewSchema>;
 
-/** D3 and D4 parse here and are refused by the route with their own error, because they are never allowed (spec 9.4). */
-export const TenantAiLimitWriteSchema = z.object({ maxClass: DataClassSchema }).strict();
+/**
+ * D3 and D4 parse here and are refused by the route with their own error, because they are never allowed (spec 9.4).
+ * `expectedCurrent` is the class the page showed; the change is refused if the limit is no longer that.
+ */
+export const TenantAiLimitWriteSchema = z.object({ maxClass: DataClassSchema, expectedCurrent: TenantLimitClassSchema.optional() }).strict();

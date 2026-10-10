@@ -59,7 +59,7 @@ function TenantAiLimitSettings({ tenantName }: { tenantName: string }) {
     try {
       const updated = await apiFetch<TenantAiLimitView>(
         "/api/tenant/ai-limit",
-        { method: "POST", body: JSON.stringify({ maxClass: selected }) },
+        { method: "POST", body: JSON.stringify({ maxClass: selected, expectedCurrent: view?.current }) },
         { redirectOnAuth: false },
       );
       await mutate(updated, { revalidate: false });

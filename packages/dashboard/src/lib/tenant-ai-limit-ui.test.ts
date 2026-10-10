@@ -3,25 +3,31 @@ import { changeFailureText, historyEntryText, tenantClassLabel } from "./tenant-
 
 describe("pharmacy AI limit UI helpers", () => {
   it("names each level a pharmacy may choose in plain words, and passes anything else through", () => {
-    expect(tenantClassLabel("D0")).toBe("Public only (nothing about your pharmacy's business)");
-    expect(tenantClassLabel("D1")).toBe("Internal (stock and sales figures; no customer or supplier names)");
+    expect(tenantClassLabel("D0")).toBe("Public only (nothing about your pharmacy's business; chat replies in this pharmacy are refused at this level)");
+    expect(tenantClassLabel("D1")).toBe("Internal (stock and aggregate sales; no customer or supplier names)");
     expect(tenantClassLabel("D2")).toBe("Confidential (names, prices and other identifying detail)");
     expect(tenantClassLabel("D3")).toBe("D3");
   });
 
   it("says who changed the limit and when", () => {
     expect(historyEntryText({ maxClass: "D0", at: "2026-10-09T12:00:00.000Z", byYou: true })).toBe(
-      "Public only (nothing about your pharmacy's business) · 9 Oct 2026 · by you",
+      "Public only (nothing about your pharmacy's business; chat replies in this pharmacy are refused at this level) · 9 Oct 2026 · by you",
     );
     expect(historyEntryText({ maxClass: "D1", at: "2026-10-01T12:00:00.000Z", byYou: false })).toBe(
-      "Internal (stock and sales figures; no customer or supplier names) · 1 Oct 2026 · by a colleague",
+      "Internal (stock and aggregate sales; no customer or supplier names) · 1 Oct 2026 · by a colleague",
     );
   });
 
   describe("why a change was not made", () => {
-    it("409: a raise stays within a provider's ceiling, to Confidential it also needs a reviewed provider with a signed agreement, and lowering is still open", () => {
+    it("409: a raise stays within a provider's ceiling, and to Confidential it also needs a reviewed provider with a signed agreement", () => {
       expect(changeFailureText(409, "prerequisites_missing")).toBe(
-        "The limit can't be raised to this level. A raise has to stay within what a configured AI provider may receive for a pharmacy, and a raise to the Confidential level also needs a provider that Oneon has fully reviewed and that holds a signed data processing agreement. You can always lower it.",
+        "The limit can't be raised to this level. A raise has to stay within what a configured AI provider may receive for a pharmacy, and a raise to the Confidential level also needs a provider that Oneon has fully reviewed and that holds a signed data processing agreement.",
+      );
+      expect(changeFailureText(409, "prerequisites_missing")).not.toMatch(/lower/i);
+    });
+    it("409 limit_changed: someone else changed it since the page loaded, and nothing was changed", () => {
+      expect(changeFailureText(409, "limit_changed")).toBe(
+        "Someone else changed the limit after this page loaded, so nothing was changed. The page now shows the current limit; choose again if you still want to change it.",
       );
     });
     it("403 without permission: only an administrator, and nothing was changed", () => {
@@ -31,6 +37,14 @@ describe("pharmacy AI limit UI helpers", () => {
       expect(changeFailureText(403, "Your pharmacy details are out of date. Open Oneon from ImpressoRx again to continue.")).toBe(
         "Your pharmacy details are out of date. Open Oneon from ImpressoRx again to continue.",
       );
+    });
+    it("403 context_unavailable: words, never the code", () => {
+      expect(changeFailureText(403, "context_unavailable")).toBe(
+        "This pharmacy isn't available right now. Open Oneon from ImpressoRx again, or ask a pharmacy administrator. Nothing was changed.",
+      );
+    });
+    it("any other 403 that carries only a code says so in plain words too", () => {
+      expect(changeFailureText(403, "tenant_context_required")).toBe("You can't change this right now. Nothing was changed.");
     });
     it("503: ImpressoRx could not be asked, and nothing was changed", () => {
       expect(changeFailureText(503, "impressorx_unreachable")).toBe(

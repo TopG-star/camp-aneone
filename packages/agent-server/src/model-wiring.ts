@@ -88,10 +88,16 @@ export function createModelWiring(
     logger: deps.logger,
     authoredVocabulary: currentToolVocabulary,
     // The pharmacy's stored limit (spec 9.4), read afresh on every call so a lowering takes effect at once. A tenant id that matches no
-    // active registration is nobody Oneon can vouch for: D0.
+    // active registration is nobody Oneon can vouch for: D0. So is one whose limit cannot be read: the failure is logged, and the call is
+    // still decided (and its decision recorded) at D0 rather than thrown out of the gateway.
     tenantLimit: (tenantId) => {
-      const registration = deps.registrations.findByTenantId(tenantId);
-      return registration ? deps.tenantLimits.current(registration.id) : "D0";
+      try {
+        const registration = deps.registrations.findByTenantId(tenantId);
+        return registration ? deps.tenantLimits.current(registration.id) : "D0";
+      } catch (error) {
+        deps.logger.warn("Tenant AI limit could not be read; treating the pharmacy as D0", { tenantId, error: error instanceof Error ? error.message : String(error) });
+        return "D0";
+      }
     },
   };
   const gateway = createModelGateway(gatewayDeps);

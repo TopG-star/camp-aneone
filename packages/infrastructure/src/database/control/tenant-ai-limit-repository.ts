@@ -29,7 +29,8 @@ export interface NewTenantAiLimitVersion {
   evidence: Record<string, unknown> | null;
 }
 
-export type TenantLimitChange = { ok: true } | { ok: false; current: TenantLimitClass };
+/** `limit_changed`: the newest row is not the class the change was based on. `prerequisites_missing`: a raise `onRaise` could not justify. */
+export type TenantLimitChange = { ok: true } | { ok: false; reason: "limit_changed" | "prerequisites_missing"; current: TenantLimitClass };
 
 type Row = {
   id: string;
@@ -52,8 +53,9 @@ const toVersion = (r: Row): TenantAiLimitVersion => ({
 });
 
 /**
- * A pharmacy's AI data limit (spec 9.4): append-only rows in the control database, keyed by the registration. The newest row applies,
- * and a pharmacy with none is at D1. Nothing is cached here: the gateway reads the newest row on every call, so a lowering applies at once.
+ * A pharmacy's AI data limit (spec 9.4): append-only rows in the control database, keyed by the registration. The newest row applies
+ * (the last one inserted: rows cannot be deleted, so insertion order is the order, whatever the clock said), and a pharmacy with none is
+ * at D1. Nothing is cached here: the gateway reads the newest row on every call, so a lowering applies at once.
  */
 export class TenantAiLimitRepository {
   constructor(
@@ -63,7 +65,7 @@ export class TenantAiLimitRepository {
 
   current(registrationId: string): TenantLimitClass {
     const row = this.db
-      .prepare("SELECT max_class FROM tenant_ai_limit_versions WHERE tenant_registration_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
+      .prepare("SELECT max_class FROM tenant_ai_limit_versions WHERE tenant_registration_id = ? ORDER BY rowid DESC LIMIT 1")
       .get(registrationId) as Pick<Row, "max_class"> | undefined;
     return row?.max_class ?? DEFAULT_TENANT_LIMIT;
   }
@@ -71,7 +73,7 @@ export class TenantAiLimitRepository {
   /** Newest first. */
   history(registrationId: string): TenantAiLimitVersion[] {
     const rows = this.db
-      .prepare("SELECT * FROM tenant_ai_limit_versions WHERE tenant_registration_id = ? ORDER BY created_at DESC, rowid DESC")
+      .prepare("SELECT * FROM tenant_ai_limit_versions WHERE tenant_registration_id = ? ORDER BY rowid DESC")
       .all(registrationId) as Row[];
     return rows.map(toVersion);
   }
@@ -93,19 +95,23 @@ export class TenantAiLimitRepository {
    * Changes the limit, deciding against the newest row as it is when the new one is written: the read, the decision and the insert run in
    * one BEGIN IMMEDIATE transaction, so two changes at once are decided one after the other, each against the row the other left, and a
    * change judged to be a lowering cannot have been read from a row that a raise has since replaced.
+   * `expectedCurrent` is the class the person was looking at. When it is given and the newest row is not that class, nothing is written
+   * (`limit_changed`), so a change based on a stale view cannot overwrite what someone else has just set.
    * Keeping the class or lowering it is written as it is. Raising it asks `onRaise` (inside the transaction) for the evidence that
    * allows it; null means the prerequisites are missing, nothing is written, and the answer says what the limit still is.
    */
-  change(v: Omit<NewTenantAiLimitVersion, "evidence">, onRaise: () => Record<string, unknown> | null): TenantLimitChange {
+  change(v: Omit<NewTenantAiLimitVersion, "evidence"> & { expectedCurrent?: TenantLimitClass }, onRaise: () => Record<string, unknown> | null): TenantLimitChange {
+    const { expectedCurrent, ...write } = v;
     return this.db
       .transaction((): TenantLimitChange => {
-        const current = this.current(v.registrationId);
+        const current = this.current(write.registrationId);
+        if (expectedCurrent !== undefined && expectedCurrent !== current) return { ok: false, reason: "limit_changed", current };
         let evidence: Record<string, unknown> | null = null;
-        if (classRank(v.maxClass) > classRank(current)) {
+        if (classRank(write.maxClass) > classRank(current)) {
           evidence = onRaise();
-          if (evidence === null) return { ok: false, current };
+          if (evidence === null) return { ok: false, reason: "prerequisites_missing", current };
         }
-        this.append({ ...v, evidence });
+        this.append({ ...write, evidence });
         return { ok: true };
       })
       .immediate();

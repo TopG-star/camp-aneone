@@ -280,6 +280,37 @@ describe("createModelWiring tenant limit (spec 9.4)", () => {
     expect(limitFor("t1")).toBe("D1");
   });
 
+  it.each([
+    ["the registration lookup", { registrations: { findByTenantId: () => { throw new Error("database is locked"); } }, tenantLimits: { current: () => "D2" as const } }],
+    ["the stored limit", { registrations: { findByTenantId: () => ({ id: "reg-1" }) as never }, tenantLimits: { current: () => { throw new Error("disk I/O error"); } } }],
+  ])("a failure reading %s is logged and fails closed to D0, so the call is still decided and its denial recorded", async (_name, stores) => {
+    baseEnv();
+    vi.stubEnv("LLM_PROVIDER", "deepseek");
+    vi.stubEnv("DEEPSEEK_API_KEY", "k");
+    vi.stubEnv("DEEPSEEK_CLASSIFIER_MODEL", "flash");
+    vi.stubEnv("DEEPSEEK_SYNTHESIS_MODEL", "pro");
+    vi.stubEnv("MODEL_AUDIT_HMAC_KEY", "x".repeat(32));
+    const wiring = createModelWiring(loadEnv(), { context: db(), logger, ...stores });
+    const handle: TenantDb = { kind: "tenant", tenantId: "t1", raw: (() => { const d = new Database(":memory:"); runMigrations(d); return d; })(), __brand: "TenantDb" };
+    ensureIdentityAnchor(handle, "i1");
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    logger.warn.mockClear();
+
+    const result = await wiring.gatewayFor(handle)!.beginTurn({ kind: "tenant", identityId: "i1", tenantId: "t1", membershipId: "m1" }).call({
+      purpose: "chat_reply",
+      output: "json",
+      parts: [{ kind: "user_message", text: "show me" }],
+    });
+
+    expect(result).toMatchObject({ kind: "denied", reason: "required_part_withheld" }); // D0: even the person's own message is above the limit
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(rawDb(handle).prepare("SELECT tenant_id, decision, effective_limit FROM model_call_decisions").all()).toEqual([
+      { tenant_id: "t1", decision: "deny", effective_limit: "D0" },
+    ]);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("treating the pharmacy as D0"), expect.objectContaining({ tenantId: "t1", error: expect.any(String) }));
+  });
+
   it("a tenant id that matches no active registration is at D0 (fail closed), however the others are set", () => {
     const { set, control, limitFor } = setup();
     set("D1");

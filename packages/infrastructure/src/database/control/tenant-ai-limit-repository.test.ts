@@ -56,6 +56,17 @@ describe("tenant AI limit repository (spec 9.4)", () => {
     expect(repo.current("r1")).toBe("D1");
   });
 
+  it("the newest row is the last one inserted, not the one with the latest created_at (a clock that stepped back changes nothing)", () => {
+    const { repo, version, advance } = setup();
+    repo.append(version("D0"));
+    advance(-3_600_000); // the clock is an hour earlier when the next row is written
+    repo.append(version("D2"));
+
+    expect(repo.current("r1")).toBe("D2");
+    expect(repo.history("r1").map((v) => v.maxClass)).toEqual(["D2", "D0"]);
+    expect(repo.history("r1")[0]!.createdAt < repo.history("r1")[1]!.createdAt).toBe(true);
+  });
+
   it("keeps each pharmacy's limit and history apart", () => {
     const { repo, version } = setup();
     repo.append(version("D0"));
@@ -128,7 +139,7 @@ describe("tenant AI limit repository (spec 9.4)", () => {
       const { repo } = setup();
       repo.append({ registrationId: "r1", maxClass: "D0", setBy: "admin", liveCheckRef: "ref", evidence: null });
 
-      expect(change(repo, "D1")).toEqual({ ok: false, current: "D0" });
+      expect(change(repo, "D1")).toEqual({ ok: false, reason: "prerequisites_missing", current: "D0" });
 
       expect(repo.history("r1")).toHaveLength(1);
       expect(repo.current("r1")).toBe("D0");
@@ -136,9 +147,34 @@ describe("tenant AI limit repository (spec 9.4)", () => {
 
     it("a pharmacy with no row is at D1: D1 is not a raise there, D2 is", () => {
       const { repo } = setup();
-      expect(change(repo, "D2")).toEqual({ ok: false, current: "D1" });
+      expect(change(repo, "D2")).toEqual({ ok: false, reason: "prerequisites_missing", current: "D1" });
       expect(change(repo, "D1")).toEqual({ ok: true });
       expect(change(repo, "D0")).toEqual({ ok: true });
+    });
+
+    describe("expectedCurrent (the class the person was looking at)", () => {
+      const withExpected = (repo: TenantAiLimitRepository, maxClass: "D0" | "D1" | "D2", expectedCurrent: "D0" | "D1" | "D2", onRaise: () => Record<string, unknown> | null = () => null) =>
+        repo.change({ registrationId: "r1", maxClass, setBy: "admin", liveCheckRef: "ref", expectedCurrent }, onRaise);
+
+      it("is written when it matches the newest row, and a pharmacy with no row matches D1", () => {
+        const { repo } = setup();
+        expect(withExpected(repo, "D0", "D1")).toEqual({ ok: true });
+        expect(withExpected(repo, "D1", "D0", () => ({ providers: [] }))).toEqual({ ok: true });
+        expect(repo.history("r1").map((v) => v.maxClass)).toEqual(["D1", "D0"]);
+      });
+
+      it("a mismatch writes nothing and says what the limit is now, before a raise is even considered", () => {
+        const { repo } = setup();
+        repo.append({ registrationId: "r1", maxClass: "D0", setBy: "admin-2", liveCheckRef: "ref", evidence: null });
+        let asked = false;
+
+        // The person saw D2 and wants D1 (a lowering from what they saw); another admin has since set D0.
+        expect(withExpected(repo, "D1", "D2")).toEqual({ ok: false, reason: "limit_changed", current: "D0" });
+        expect(withExpected(repo, "D2", "D1", () => ((asked = true), { providers: [] }))).toEqual({ ok: false, reason: "limit_changed", current: "D0" });
+
+        expect(asked).toBe(false);
+        expect(repo.history("r1")).toHaveLength(1);
+      });
     });
 
     it("reads the row, decides and writes inside one write transaction, so a second connection cannot slip a write in between", () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { OverrideConfigError, PROVIDER_REGISTRY, parseProviderOverrides, providerLimit } from "./providers.js";
+import { OverrideConfigError, PROVIDER_REGISTRY, parseProviderOverrides, providerLimit, type ProviderEntry } from "./providers.js";
 
 describe("provider registry", () => {
   it("starts every provider unreviewed: personal D2, tenant D1 (spec §2.6)", () => {
@@ -50,6 +50,28 @@ describe("providerLimit", () => {
   it("lowers but never raises with an override", () => {
     expect(providerLimit(deepseek, "personal", { kind: "limit", max: "D1" })).toBe("D1");
     expect(providerLimit(deepseek, "tenant", { kind: "limit", max: "D2" })).toBe("D1");
+  });
+  describe("a pharmacy's data above D1 (spec 9.4)", () => {
+    const dpa = { signedOn: "2026-09-30", reference: "DPA-1" };
+    const d2 = (over: Partial<ProviderEntry> = {}): ProviderEntry => ({ ...deepseek, limits: { personal: "D2", tenant: "D2" }, ...over });
+
+    it("caps a provider at D1 unless it is reviewed and holds a DPA, whatever its registry limit", () => {
+      expect(providerLimit(d2(), "tenant")).toBe("D1");
+      expect(providerLimit(d2({ review: "reviewed" }), "tenant")).toBe("D1");
+      expect(providerLimit(d2({ review: "reviewed", tenantDpa: null }), "tenant")).toBe("D1");
+      expect(providerLimit(d2({ tenantDpa: dpa }), "tenant")).toBe("D1");
+    });
+    it("lets a reviewed provider with a DPA reach its registry limit, which an override can still lower", () => {
+      expect(providerLimit(d2({ review: "reviewed", tenantDpa: dpa }), "tenant")).toBe("D2");
+      expect(providerLimit(d2({ review: "reviewed", tenantDpa: dpa }), "tenant", { kind: "limit", max: "D0" })).toBe("D0");
+      expect(providerLimit(d2({ review: "reviewed", tenantDpa: dpa }), "tenant", { kind: "suspended" })).toBe("suspended");
+    });
+    it("never raises a limit that is already below D1", () => {
+      expect(providerLimit(d2({ limits: { personal: "D2", tenant: "D0" } }), "tenant")).toBe("D0");
+    });
+    it("leaves a person's own data alone: personal limits do not depend on review or a DPA", () => {
+      expect(providerLimit(d2(), "personal")).toBe("D2");
+    });
   });
   it("reports suspended and unknown providers", () => {
     expect(providerLimit(deepseek, "personal", { kind: "suspended" })).toBe("suspended");
