@@ -59,3 +59,28 @@ describe("control database and master keys", () => {
     expect(() => loadEnv()).toThrow(/ONEON_SIGNING_KEY_MASTER_KEY/);
   });
 });
+
+describe("backup settings", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  function baseEnv() {
+    vi.stubEnv("NEXTAUTH_SECRET", "s");
+    vi.stubEnv("ALLOWED_EMAILS", "a@test.com");
+    vi.stubEnv("API_TOKEN", "t");
+  }
+
+  it("defaults BACKUP_DIR and leaves the key unset", () => {
+    baseEnv();
+    const env = loadEnv();
+    expect(env.BACKUP_DIR).toBe("./data/backups");
+    expect(env.BACKUP_ENCRYPTION_KEY).toBeUndefined();
+  });
+
+  it("accepts base64 of 32 bytes for BACKUP_ENCRYPTION_KEY and rejects anything else", () => {
+    baseEnv();
+    vi.stubEnv("BACKUP_ENCRYPTION_KEY", Buffer.alloc(32, 3).toString("base64"));
+    expect(() => loadEnv()).not.toThrow();
+    vi.stubEnv("BACKUP_ENCRYPTION_KEY", Buffer.alloc(16, 3).toString("base64"));
+    expect(() => loadEnv()).toThrow(/BACKUP_ENCRYPTION_KEY/);
+  });
+});

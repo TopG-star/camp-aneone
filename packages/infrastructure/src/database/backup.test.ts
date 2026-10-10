@@ -1,0 +1,173 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+import { randomBytes, randomUUID } from "node:crypto";
+import { createDatabase } from "./connection.js";
+import { ContextDbGate, rawDb } from "./context-db-gate.js";
+import { openControlDb } from "./control/open-control-db.js";
+import { sealBuffer } from "../crypto/envelope.js";
+import { backupAll, decryptBackup, restoreTest } from "./backup.js";
+
+const NOW = "2026-10-08T00:00:00.000Z";
+const TODAY = new Date("2026-10-10T03:00:00.000Z");
+
+describe("backups", () => {
+  const dirs: string[] = [];
+  const open: Array<() => void> = [];
+  afterEach(() => {
+    for (const close of open.splice(0)) close();
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function setup(tenants = 2) {
+    const dir = mkdtempSync(join(tmpdir(), "backup-"));
+    dirs.push(dir);
+    const tenantDir = join(dir, "tenants");
+    mkdirSync(tenantDir);
+    const control = openControlDb(join(dir, "control.db"));
+    control.prepare("INSERT INTO identities (id, status, created_at) VALUES ('op', 'active', ?)").run(NOW);
+    const gate = new ContextDbGate({ control, personalPath: join(dir, "personal.db"), tenantDir });
+    gate.openPersonal();
+    const regs: Array<{ id: string; tenantId: string; fileName: string }> = [];
+    for (let n = 1; n <= tenants; n++) {
+      const fileName = `${randomUUID()}.db`;
+      control
+        .prepare(
+          "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (?, ?, ?, 'P', 'https://x.example', ?, 'active', 'op', ?)",
+        )
+        .run(`reg-${n}`, `t-${n}`, `s-${n}`, fileName, NOW);
+      gate.createTenantFile(`reg-${n}`, `t-${n}`);
+      regs.push({ id: `reg-${n}`, tenantId: `t-${n}`, fileName });
+    }
+    open.push(() => gate.close(), () => control.close());
+    const outDir = join(dir, "backups");
+    const keyB64 = randomBytes(32).toString("base64");
+    return { dir, tenantDir, control, gate, regs, outDir, keyB64, tmpDir: join(dir, "tmp"), deps: { gate, control, outDir, keyB64, now: () => TODAY } };
+  }
+
+  function walk(dir: string): string[] {
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]));
+  }
+
+  it("backs up every file while a write is in progress and the copy passes integrity_check", async () => {
+    const { dir, tenantDir, regs, gate, deps, tmpDir } = setup();
+    rawDb(gate.openTenant("reg-1")).prepare("INSERT INTO users (id, email) VALUES ('committed', 'c@anchor.invalid')").run();
+    // A second connection holds an open write transaction on the same tenant file for the whole backup.
+    const writer = createDatabase(join(tenantDir, regs[0]!.fileName));
+    writer.exec("BEGIN IMMEDIATE");
+    writer.prepare("INSERT INTO users (id, email) VALUES ('uncommitted', 'u@anchor.invalid')").run();
+    let results;
+    try {
+      results = await backupAll(deps);
+    } finally {
+      writer.exec("ROLLBACK");
+      writer.close();
+    }
+
+    expect(results.map((r) => r.context)).toEqual(["control", "personal", "t-1", "t-2"]);
+    expect(results.every((r) => r.file.startsWith(join(deps.outDir, "2026-10-10")) && r.file.endsWith(".db.enc"))).toBe(true);
+    for (const r of results) {
+      expect(await restoreTest({ file: r.file, keyB64: deps.keyB64, tmpDir })).toMatchObject({ ok: true, integrity: "ok" });
+    }
+    // Only what was committed is in the copy.
+    const restoredPath = join(dir, "restored.db");
+    writeFileSync(restoredPath, decryptBackup(results.find((r) => r.context === "t-1")!.file, deps.keyB64));
+    const copy = createDatabase(restoredPath);
+    expect(copy.prepare("SELECT id FROM users WHERE id IN ('committed', 'uncommitted')").all()).toEqual([{ id: "committed" }]);
+    copy.close();
+  });
+
+  it("no plaintext database remains in outDir", async () => {
+    const { deps } = setup();
+    await backupAll(deps);
+    const files = walk(deps.outDir);
+    expect(files.length).toBe(4);
+    for (const file of files) {
+      expect(file.endsWith(".db.enc")).toBe(true);
+      expect(readFileSync(file).subarray(0, 15).toString("latin1")).not.toBe("SQLite format 3");
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("writes sealed files readable by the owner only", async () => {
+    const { deps } = setup(1);
+    const results = await backupAll(deps);
+    for (const r of results) expect(statSync(r.file).mode & 0o077).toBe(0);
+  });
+
+  it("restoreTest reports the tenant id from context_meta", async () => {
+    const { deps, tmpDir } = setup();
+    const results = await backupAll(deps);
+    const tenant = results.find((r) => r.context === "t-2")!;
+    expect(await restoreTest({ file: tenant.file, keyB64: deps.keyB64, tmpDir })).toEqual({
+      ok: true,
+      integrity: "ok",
+      contextMeta: { kind: "tenant", tenant_id: "t-2" },
+    });
+    const personal = await restoreTest({ file: results.find((r) => r.context === "personal")!.file, keyB64: deps.keyB64, tmpDir });
+    expect(personal.contextMeta).toEqual({ kind: "personal", tenant_id: null });
+  });
+
+  it("restoreTest deletes its plaintext copy, success or failure", async () => {
+    const { deps, tmpDir } = setup(1);
+    const results = await backupAll(deps);
+    await restoreTest({ file: results[2]!.file, keyB64: deps.keyB64, tmpDir });
+    await restoreTest({ file: results[2]!.file, keyB64: randomBytes(32).toString("base64"), tmpDir });
+    expect(walk(tmpDir)).toEqual([]);
+  });
+
+  it("restoreTest fails with the wrong key", async () => {
+    const { deps, tmpDir } = setup(1);
+    const results = await backupAll(deps);
+    const check = await restoreTest({ file: results[2]!.file, keyB64: randomBytes(32).toString("base64"), tmpDir });
+    expect(check.ok).toBe(false);
+    expect(check.contextMeta).toBeNull();
+  });
+
+  it("restoreTest refuses a backup presented as another file or from another day (associated data)", async () => {
+    const { deps, tmpDir } = setup();
+    const results = await backupAll(deps);
+    const a = results.find((r) => r.context === "t-1")!;
+    const b = results.find((r) => r.context === "t-2")!;
+    copyFileSync(a.file, b.file);
+    expect((await restoreTest({ file: b.file, keyB64: deps.keyB64, tmpDir })).ok).toBe(false);
+
+    const otherDay = join(deps.outDir, "2026-10-09");
+    mkdirSync(otherDay);
+    const moved = join(otherDay, basename(a.file));
+    copyFileSync(a.file, moved);
+    expect((await restoreTest({ file: moved, keyB64: deps.keyB64, tmpDir })).ok).toBe(false);
+    // The original, under its own name, still restores.
+    expect((await restoreTest({ file: a.file, keyB64: deps.keyB64, tmpDir })).ok).toBe(true);
+  });
+
+  it("decryptBackup refuses a swapped file too", async () => {
+    const { deps } = setup();
+    const results = await backupAll(deps);
+    copyFileSync(results[2]!.file, results[3]!.file);
+    expect(() => decryptBackup(results[3]!.file, deps.keyB64)).toThrow();
+  });
+
+  it("restoreTest reports a decrypted file that is not a database", async () => {
+    const { deps, tmpDir } = setup(1);
+    const folder = join(deps.outDir, "2026-10-01");
+    mkdirSync(folder, { recursive: true });
+    const file = join(folder, "junk.db.enc");
+    writeFileSync(file, sealBuffer(Buffer.from("not a database at all, just padding text".repeat(40)), deps.keyB64, "2026-10-01/junk.db.enc"));
+    const check = await restoreTest({ file, keyB64: deps.keyB64, tmpDir });
+    expect(check.ok).toBe(false);
+    expect(walk(tmpDir)).toEqual([]);
+  });
+
+  it("backs up the other files and then fails when one tenant cannot be opened", async () => {
+    const { deps, tenantDir, regs, gate } = setup();
+    gate.close(); // evicts the cached handles, so the file can be removed
+    rmSync(join(tenantDir, regs[0]!.fileName), { force: true });
+    const errors: string[] = [];
+    const logger = { info() {}, warn() {}, debug() {}, error: (m: string) => void errors.push(m) };
+    await expect(backupAll({ ...deps, logger })).rejects.toThrow(/t-1/);
+    expect(existsSync(join(deps.outDir, "2026-10-10", `${regs[1]!.fileName.replace(/\.db$/, "")}.db.enc`))).toBe(true);
+    expect(errors.length).toBe(1);
+  });
+});

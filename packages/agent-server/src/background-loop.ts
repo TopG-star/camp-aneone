@@ -1,3 +1,5 @@
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import type { CycleSummary } from "@oneon/application";
 import type { Logger } from "@oneon/domain";
 
@@ -352,5 +354,120 @@ export class BackgroundLoop {
     if (this.recentErrors.length > BackgroundLoop.MAX_RECENT_ERRORS) {
       this.recentErrors.length = BackgroundLoop.MAX_RECENT_ERRORS;
     }
+  }
+}
+
+// ── BackupScheduler ──────────────────────────────────────────
+
+export interface RestoreCheck {
+  ok: boolean;
+  integrity: string;
+  contextMeta: { kind: string; tenant_id: string | null } | null;
+}
+
+export interface BackupSchedulerDeps {
+  /** The folder backupAll writes `<yyyy-mm-dd>/` folders into. */
+  outDir: string;
+  backupAll: () => Promise<unknown>;
+  restoreTest: (file: string) => Promise<RestoreCheck>;
+  logger: Logger;
+  now?: () => Date;
+  /** How often to look at the clock. The jobs themselves run once per day and once per month. */
+  checkIntervalMs?: number;
+}
+
+const DAY_FOLDER = /^\d{4}-\d{2}-\d{2}$/;
+const NON_TENANT_BACKUPS = new Set(["control.db.enc", "personal.db.enc"]);
+
+/**
+ * Nightly encrypted backup (once per calendar day: today's folder existing means the day is done) and a monthly restore test
+ * (one tenant from the latest backup, rotating). Same shape as the processing loop: a timer, no overlap, stop() awaits the tick
+ * in flight, and nothing here ever throws. Backups are never deleted here; the operator prunes (B-retention adds deletion).
+ */
+export class BackupScheduler {
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private inFlight: Promise<void> | null = null;
+  private lastRestoreMonth: string | null = null;
+  private readonly now: () => Date;
+
+  constructor(private readonly deps: BackupSchedulerDeps) {
+    this.now = deps.now ?? (() => new Date());
+  }
+
+  start(): void {
+    if (this.timer !== null) return;
+    void this.tick();
+    this.timer = setInterval(() => void this.tick(), this.deps.checkIntervalMs ?? 60 * 60 * 1000);
+    this.timer.unref();
+  }
+
+  async stop(): Promise<void> {
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    if (this.inFlight !== null) await this.inFlight;
+  }
+
+  /** One look at the clock: back up if today has no folder yet, test a restore if this month has had none. */
+  tick(): Promise<void> {
+    // Overlap guard, as in BackgroundLoop.
+    if (this.inFlight !== null) return this.inFlight;
+    this.inFlight = this.run().finally(() => {
+      this.inFlight = null;
+    });
+    return this.inFlight;
+  }
+
+  private async run(): Promise<void> {
+    const { outDir, logger } = this.deps;
+    const today = this.now().toISOString().slice(0, 10);
+    if (!existsSync(join(outDir, today))) {
+      try {
+        await this.deps.backupAll();
+        logger.info("Nightly backup done", { day: today });
+      } catch (error) {
+        logger.error("Nightly backup failed", { day: today, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    const month = today.slice(0, 7);
+    if (this.lastRestoreMonth === month) return;
+    try {
+      const file = this.restoreCandidate();
+      if (file === null) {
+        logger.debug("Monthly restore test skipped: no tenant backup yet");
+        return;
+      }
+      this.lastRestoreMonth = month;
+      const result = await this.deps.restoreTest(file);
+      if (result.ok) {
+        logger.info("Monthly restore test passed", { file, tenantId: result.contextMeta?.tenant_id ?? null });
+      } else {
+        logger.error("Monthly restore test failed", { file, integrity: result.integrity, contextMeta: result.contextMeta });
+      }
+    } catch (error) {
+      logger.error("Monthly restore test crashed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  /** One tenant's file from the latest day folder that has any; the month number rotates through them. */
+  private restoreCandidate(): string | null {
+    const { outDir } = this.deps;
+    if (!existsSync(outDir)) return null;
+    const days = readdirSync(outDir)
+      .filter((name) => DAY_FOLDER.test(name))
+      .sort()
+      .reverse();
+    const date = this.now();
+    for (const day of days) {
+      const tenants = readdirSync(join(outDir, day))
+        .filter((name) => name.endsWith(".db.enc") && !NON_TENANT_BACKUPS.has(name))
+        .sort();
+      if (tenants.length === 0) continue;
+      const monthNumber = date.getUTCFullYear() * 12 + date.getUTCMonth();
+      return join(outDir, day, tenants[monthNumber % tenants.length]!);
+    }
+    return null;
   }
 }

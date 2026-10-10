@@ -65,7 +65,7 @@ describe("Migration 017 on a tenant file", () => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  it("a tenant file left at 016 is refused as behind, then served once migrated", () => {
+  it("a tenant file left at 016 is refused as behind, then served once migrated", async () => {
     const dir = mkdtempSync(join(tmpdir(), "link-ids-"));
     dirs.push(dir);
     const control = openControlDb(join(dir, "control.db"));
@@ -98,7 +98,7 @@ describe("Migration 017 on a tenant file", () => {
     }
     expect(code).toBe("tenant_schema_behind");
 
-    const result = migrateAll({ control, personalPath: join(dir, "personal.db"), tenantDir, lockPath: join(dir, "migrate.lock"), logger: { info() {}, warn() {}, error() {}, debug() {} } });
+    const result = await migrateAll({ control, personalPath: join(dir, "personal.db"), tenantDir, lockPath: join(dir, "migrate.lock"), logger: { info() {}, warn() {}, error() {}, debug() {} } });
     expect(result.failed).toEqual([]);
     expect(result.migrated).toEqual(["personal", "reg-1"]);
 

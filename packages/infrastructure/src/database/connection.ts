@@ -238,6 +238,17 @@ export function latestMigrationVersion(): number {
   );
 }
 
+/** True when the directory holds a migration this file has not recorded (a file without `schema_migrations` has all of them pending). */
+export function hasPendingMigrations(db: Database.Database, migrationsDir?: string): boolean {
+  const onDisk = readdirSync(migrationsDir ?? getMigrationsDir())
+    .map((file) => /^(\d+)_.+\.sql$/.exec(file))
+    .filter((m): m is RegExpExecArray => m !== null)
+    .map((m) => Number(m[1]));
+  if (!hasTable(db, "schema_migrations")) return onDisk.length > 0;
+  const applied = new Set((db.prepare("SELECT version FROM schema_migrations").all() as Array<{ version: number }>).map((r) => r.version));
+  return onDisk.some((version) => !applied.has(version));
+}
+
 // A custom directory holds its own sequence: files named NNN_name.sql, applied in order.
 function discoverMigrations(
   dir: string,

@@ -107,13 +107,19 @@ describe("architecture", { timeout: TIMEOUT_MS }, () => {
     expect(offenders).toEqual([]);
   });
 
-  it("only the gate and connection.ts construct a SQLite Database", () => {
+  // backup.ts opens only decrypted temp copies of backups (the restore test), never a live context file.
+  const mayConstructDatabase = (p: string) =>
+    p === "infrastructure/src/database/connection.ts" ||
+    p === "infrastructure/src/database/context-db-gate.ts" ||
+    p === "infrastructure/src/database/backup.ts";
+
+  it("only the gate, connection.ts and backup.ts (decrypted temp copies) construct a SQLite Database", () => {
     // Every package, not just the four in `sources`.
     const offenders = readdirSync(ROOT)
       .filter((pkg) => existsSync(join(ROOT, pkg, "src")))
       .flatMap((pkg) => sourceFiles(join(ROOT, pkg, "src")))
       .map((f) => posix(relative(ROOT, f)))
-      .filter((p) => !isTest(p) && p !== "infrastructure/src/database/connection.ts" && p !== "infrastructure/src/database/context-db-gate.ts")
+      .filter((p) => !isTest(p) && !mayConstructDatabase(p))
       .filter((p) => /\bnew\s+Database\(/.test(readFileSync(join(ROOT, p), "utf8")));
     expect(offenders).toEqual([]);
   });
@@ -152,12 +158,13 @@ describe("architecture", { timeout: TIMEOUT_MS }, () => {
     expect(valueImportsSqlite('import type Database from "better-sqlite3";\nconst x = 1;')).toBe(false);
   });
 
-  it("only the gate and connection.ts value-import the SQLite driver", () => {
+  it("only the gate, connection.ts and backup.ts value-import the SQLite driver", () => {
+    // backup.ts must import it to construct the Database it may (see mayConstructDatabase).
     const offenders = readdirSync(ROOT)
       .filter((pkg) => existsSync(join(ROOT, pkg, "src")))
       .flatMap((pkg) => sourceFiles(join(ROOT, pkg, "src")))
       .map((f) => posix(relative(ROOT, f)))
-      .filter((p) => !isTest(p) && p !== "infrastructure/src/database/connection.ts" && p !== "infrastructure/src/database/context-db-gate.ts")
+      .filter((p) => !isTest(p) && !mayConstructDatabase(p))
       .filter((p) => valueImportsSqlite(readFileSync(join(ROOT, p), "utf8")));
     expect(offenders).toEqual([]);
   });

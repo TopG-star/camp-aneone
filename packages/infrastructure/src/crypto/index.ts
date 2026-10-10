@@ -1,5 +1,5 @@
 export { TokenCipher, type EncryptedPayload } from "./token-cipher.js";
-export { sealSecret, openSecret, type SealedSecret } from "./envelope.js";
+export { sealSecret, openSecret, sealBuffer, openBuffer, type SealedSecret } from "./envelope.js";
 export {
   signJws,
   verifyJws,

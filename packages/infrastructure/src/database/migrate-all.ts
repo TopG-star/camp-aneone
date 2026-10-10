@@ -1,10 +1,13 @@
 import { closeSync, existsSync, openSync, unlinkSync } from "node:fs";
 import type { Logger } from "@oneon/domain";
-import { createDatabase, latestMigrationVersion, runMigrations } from "./connection.js";
+import { createDatabase, hasPendingMigrations, latestMigrationVersion, runMigrations } from "./connection.js";
+import { backupDatabase, preMigrationFolder, type PreMigrationBackup } from "./backup.js";
 import type { ControlDb } from "./control/open-control-db.js";
 import { tenantFilePath } from "./context-db-gate.js";
 
-function migrateFile(path: string, tenantId?: string): void {
+async function migrateFile(path: string, name: string, tenantId: string | undefined, backup: { folder: string; keyB64: string } | undefined): Promise<void> {
+  // A file that does not exist yet has nothing to lose: createDatabase makes it.
+  const existed = existsSync(path);
   const db = createDatabase(path);
   try {
     // A file that already says it belongs to another context must not be migrated under this registration.
@@ -15,6 +18,14 @@ function migrateFile(path: string, tenantId?: string): void {
       const expectedKind = tenantId === undefined ? "personal" : "tenant";
       if (rows.some((r) => r.kind !== expectedKind || r.tenant_id !== (tenantId ?? null))) throw new Error("context_meta identity mismatch");
     }
+    // A file is only migrated once its backup is safe: when the backup fails, the error stops this file and leaves it as it was.
+    if (backup && existed && hasPendingMigrations(db)) {
+      try {
+        await backupDatabase(db, { dir: backup.folder, name, keyB64: backup.keyB64 });
+      } catch (error) {
+        throw new Error(`pre-migration backup failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     runMigrations(db);
     // Keep an existing identity row's recorded version in step with the file.
     db.prepare("UPDATE context_meta SET schema_version = ?").run(latestMigrationVersion());
@@ -23,35 +34,38 @@ function migrateFile(path: string, tenantId?: string): void {
   }
 }
 
-export function migrateAll(deps: {
+export async function migrateAll(deps: {
   control: ControlDb;
   personalPath: string;
   tenantDir: string;
   lockPath: string;
   logger: Logger;
-}): { migrated: string[]; failed: Array<{ registrationId: string; error: string }> } {
+  /** When given, a file with a migration pending is backed up (sealed) before it is migrated. */
+  backup?: PreMigrationBackup;
+}): Promise<{ migrated: string[]; failed: Array<{ registrationId: string; error: string }> }> {
   // 'wx' fails when the lock exists: only one migration run at a time.
   const lockFd = openSync(deps.lockPath, "wx");
   const migrated: string[] = [];
   const failed: Array<{ registrationId: string; error: string }> = [];
   try {
     // A tenant target is a registry file name, resolved through the same pattern check as the gate.
-    const targets: Array<{ id: string; resolve: () => string; tenantId?: string; mustExist: boolean }> = [
-      { id: "personal", resolve: () => deps.personalPath, mustExist: false },
+    const targets: Array<{ id: string; name: string; resolve: () => string; tenantId?: string; mustExist: boolean }> = [
+      { id: "personal", name: "personal", resolve: () => deps.personalPath, mustExist: false },
     ];
     const rows = deps.control
       .prepare("SELECT id, tenant_id, file_name FROM tenant_registrations WHERE status = 'active' ORDER BY enrolled_at, id")
       .all() as Array<{ id: string; tenant_id: string; file_name: string }>;
     for (const row of rows) {
-      targets.push({ id: row.id, tenantId: row.tenant_id, resolve: () => tenantFilePath(deps.tenantDir, row.file_name), mustExist: true });
+      targets.push({ id: row.id, name: row.file_name.replace(/.db$/, ""), tenantId: row.tenant_id, resolve: () => tenantFilePath(deps.tenantDir, row.file_name), mustExist: true });
     }
 
+    const backup = deps.backup && { folder: preMigrationFolder(deps.backup.outDir, deps.backup.now()), keyB64: deps.backup.keyB64 };
     for (const target of targets) {
       try {
         // Opening a missing path would create an empty database.
         const path = target.resolve();
         if (target.mustExist && !existsSync(path)) throw new Error("file missing");
-        migrateFile(path, target.tenantId);
+        await migrateFile(path, target.name, target.tenantId, backup);
         migrated.push(target.id);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

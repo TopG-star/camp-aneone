@@ -46,3 +46,25 @@ export function openSecret(sealed: SealedSecret, masterKeyB64: string): string {
   const dataKey = decrypt(masterKey(masterKeyB64), sealed.wrappedKey);
   return decrypt(dataKey, sealed.ciphertext).toString("utf8");
 }
+
+/**
+ * Seals raw bytes (a database file) under the key itself, AES-256-GCM, layout iv | tag | encrypted.
+ * `aad` is bound into the tag: the bytes only open under the same associated data, so a sealed file
+ * cannot be presented under another file's name.
+ */
+export function sealBuffer(plaintext: Buffer, keyB64: string, aad: string): Buffer {
+  const iv = randomBytes(IV_LENGTH);
+  const cipher = createCipheriv("aes-256-gcm", masterKey(keyB64), iv);
+  cipher.setAAD(Buffer.from(aad, "utf8"));
+  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  return Buffer.concat([iv, cipher.getAuthTag(), encrypted]);
+}
+
+export function openBuffer(sealed: Buffer, keyB64: string, aad: string): Buffer {
+  const key = masterKey(keyB64);
+  if (sealed.length < IV_LENGTH + TAG_LENGTH) throw new Error("Sealed data is malformed");
+  const decipher = createDecipheriv("aes-256-gcm", key, sealed.subarray(0, IV_LENGTH));
+  decipher.setAAD(Buffer.from(aad, "utf8"));
+  decipher.setAuthTag(sealed.subarray(IV_LENGTH, IV_LENGTH + TAG_LENGTH));
+  return Buffer.concat([decipher.update(sealed.subarray(IV_LENGTH + TAG_LENGTH)), decipher.final()]);
+}

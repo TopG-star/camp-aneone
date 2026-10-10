@@ -1,7 +1,8 @@
-export { createDatabase, runMigrations, latestMigrationVersion } from "./connection.js";
+export { createDatabase, runMigrations, latestMigrationVersion, hasPendingMigrations } from "./connection.js";
 export { ContextDbGate, TenantRefusedError, rawDb, ensureIdentityAnchor } from "./context-db-gate.js";
 export { migrateAll } from "./migrate-all.js";
-export { openControlDb, type ControlDb } from "./control/open-control-db.js";
+export { backupAll, restoreTest, decryptBackup, type BackupResult, type RestoreTestResult, type PreMigrationBackup } from "./backup.js";
+export { openControlDb, openControlDbForStartup, hasRegistrations, type ControlDb } from "./control/open-control-db.js";
 export { SqliteTransactionRunner } from "./transaction-runner.js";
 export * from "./repositories/index.js";
 export { runActionDriftCheck } from "./action-drift-check.js";

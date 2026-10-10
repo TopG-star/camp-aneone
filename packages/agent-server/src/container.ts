@@ -26,6 +26,7 @@ import type {
 
 import {
   openControlDb,
+  type ControlDb,
   PlatformOperatorRepository,
   TenantRegistrationRepository,
   EnrolmentService,
@@ -126,6 +127,8 @@ export interface AppContainer {
   openTenant: (registrationId: string) => import("@oneon/domain").TenantDb;
   /** Creates a new tenant's database file (enrolment only). */
   createTenantFile: (registrationId: string, tenantId: string) => void;
+  /** What the nightly backup reads: the gate that hands out every context file's handle, and the control database. */
+  backupSources: { gate: ContextDbGate; control: ControlDb };
   ensureIdentity: (user: { id: string; email: string }) => void;
   /** Makes sure an identity has its row in the personal database (linking a Google login to an existing identity needs it). */
   ensurePersonalUser: (user: { id: string; email: string }) => void;
@@ -532,6 +535,7 @@ export function createContainer(env: Env): AppContainer {
     openPersonal: () => personal,
     openTenant: (registrationId) => gate.openTenant(registrationId),
     createTenantFile: (registrationId, tenantId) => void gate.createTenantFile(registrationId, tenantId),
+    backupSources: { gate, control },
     ensureIdentity: (user) => void ensureIdentityForUser(control, user),
     ensurePersonalUser: (user) => {
       // Without the OAuth key there is no user repository: the anchor row (the same one tenant files use) is what the foreign keys need.

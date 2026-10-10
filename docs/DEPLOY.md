@@ -143,24 +143,42 @@ docker compose logs -f dashboard
 docker compose logs -f cloudflared
 ```
 
-### Manual database backup
-```bash
-mkdir -p backups
-docker run --rm \
-  -v camp-aneone_db-data:/data:ro \
-  -v $(pwd)/backups:/backup \
-  alpine:3.20 cp /data/oneon.db /backup/manual_$(date +%Y%m%d).db
-```
+### Backups
+
+Oneon writes its own backups; do not copy the database files by hand (a plain `cp` can copy a file in the middle of a write).
+
+- **What:** SQLite's online backup API, one sealed file per database: `control`, `personal` and one per active tenant. They are written to `BACKUP_DIR` (default `./data/backups`, which is `/app/data/backups` in the container, inside the `db-data` volume).
+- **When:** once per calendar day (a `yyyy-mm-dd` folder), and before every migration that is pending (`pre-migration/<timestamp>/`). If the backup before a migration fails, that file is not migrated: a pharmacy is refused service and logged at error level while the others are served; a failure for `control` or `personal` stops the server from starting.
+- **Encryption:** AES-256-GCM under `BACKUP_ENCRYPTION_KEY` (base64 of 32 bytes: `openssl rand -base64 32`). Without it no backups are made and the server warns at startup; once any pharmacy is registered the server refuses to start without it. Keep a copy of the key somewhere other than the VPS: a backup is only as recoverable as its key. Each file is bound to its own folder and file name, so do not rename or move backup files; sync the folder as it is.
+- **Restore test:** once a month Oneon restores one pharmacy (rotating) from the latest backup into a temporary folder, runs `PRAGMA integrity_check`, reads `context_meta`, and deletes the copy. A failure is logged at error level ("Monthly restore test failed"); watch the logs for it.
+- **Off-site:** the folder only protects against mistakes until it leaves the VPS. Sync `BACKUP_DIR` off-site with the tool of your choice, for example `rclone` to Cloudflare R2 or to a Hetzner Storage Box:
+  ```bash
+  docker run --rm -v camp-aneone_db-data:/data:ro -v ~/.config/rclone:/config/rclone rclone/rclone \
+    sync /data/backups r2:camp-aneone-backups
+  ```
+- **Pruning is yours:** Oneon never deletes a backup in this release, so the folder grows. Prune old `yyyy-mm-dd` and `pre-migration` folders yourself (for example keep 30 daily folders). A later release (B-retention) will delete each backup on the same schedule as its file.
 
 ### Restore database from backup
+
+Restore one file at a time: stop the server, decrypt, replace the file, start. Run the decrypt step from a checkout of the repository (the container image does not carry the script), with `BACKUP_ENCRYPTION_KEY` in the checkout's `.env` or the environment.
+
 ```bash
 docker compose down
+
+# Decrypt to a new file. It refuses to overwrite an existing file unless you add --force.
+pnpm --filter @oneon/agent-server restore-backup /path/to/backups/2026-10-10/personal.db.enc --out /tmp/oneon.db
+
+# Replace the live file with it (personal -> oneon.db, control -> control.db, a pharmacy -> tenants/<its file name>).
+# Remove the old file's -wal and -shm files at the same time.
 docker run --rm \
   -v camp-aneone_db-data:/data \
-  -v $(pwd)/backups:/backup \
-  alpine:3.20 cp /backup/<backup_file>.db /data/oneon.db
+  -v /tmp:/restore \
+  alpine:3.20 sh -c 'rm -f /data/oneon.db-wal /data/oneon.db-shm && cp /restore/oneon.db /data/oneon.db'
+
 docker compose up -d
 ```
+
+The decrypted file is plaintext: delete it when you are done, and do not leave it in `BACKUP_DIR`. The file you restore carries its own schema version; the server migrates it when it starts (with a backup first).
 
 ## Firewall (Optional but Recommended)
 

@@ -1,5 +1,6 @@
 import { config } from "dotenv";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import express from "express";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
@@ -12,7 +13,8 @@ config({ path: resolve(import.meta.dirname!, "../../..", ".env") });
 import { loadEnv, retiredEnvWarnings } from "./config/env.js";
 import { createContainer } from "./container.js";
 import { registerRoutes } from "./routes/index.js";
-import { BackgroundLoop } from "./background-loop.js";
+import { BackgroundLoop, BackupScheduler } from "./background-loop.js";
+import { prepareStorage } from "./storage-startup.js";
 import { runActionRecovery, runActionStartupTasks } from "./actions-wiring.js";
 import {
   ingestGmail,
@@ -24,6 +26,9 @@ import {
   GmailHttpClient,
   GmailPollingAdapter,
   GmailStatementDocumentProvider,
+  StructuredLogger,
+  backupAll,
+  restoreTest,
 } from "@oneon/infrastructure";
 
 function emptyCycleSummary(): CycleSummary {
@@ -48,6 +53,13 @@ function emptyCycleSummary(): CycleSummary {
 
 // ── Bootstrap ────────────────────────────────────────────────
 const env = loadEnv();
+// Migrate every database, each backed up first when a migration is pending, before the container opens anything (spec 8.6, 8.7).
+try {
+  await prepareStorage(env, new StructuredLogger("storage", env.LOG_LEVEL));
+} catch (error) {
+  new StructuredLogger("storage", env.LOG_LEVEL).error("Startup stopped", { error: error instanceof Error ? error.message : String(error) });
+  process.exit(1);
+}
 const container = createContainer(env);
 const { logger } = container;
 for (const message of retiredEnvWarnings(process.env)) logger.warn(message);
@@ -113,6 +125,7 @@ function handleShutdown(signal: string): void {
       logger.info("Background loop stopped");
     });
   }
+  void backupScheduler?.stop();
   server?.close(() => {
     container.shutdown();
     process.exit(0);
@@ -326,6 +339,20 @@ if (env.ONEON_SIGNING_KEY_MASTER_KEY) {
       .catch((error: unknown) => logger.error("Deployment key refresh crashed", { error: error instanceof Error ? error.message : String(error) }));
   }, 24 * 60 * 60 * 1000);
   nightly.unref();
+}
+
+// Nightly encrypted backup and monthly restore test (spec 8.7). Without the key there are none; prepareStorage has already warned.
+let backupScheduler: BackupScheduler | null = null;
+const backupKey = env.BACKUP_ENCRYPTION_KEY;
+if (backupKey) {
+  const { gate, control } = container.backupSources;
+  backupScheduler = new BackupScheduler({
+    outDir: env.BACKUP_DIR,
+    backupAll: () => backupAll({ gate, control, outDir: env.BACKUP_DIR, keyB64: backupKey, now: () => new Date(), logger }),
+    restoreTest: (file) => restoreTest({ file, keyB64: backupKey, tmpDir: join(tmpdir(), "oneon-restore-test") }),
+    logger,
+  });
+  backupScheduler.start();
 }
 
 server = app.listen(env.PORT, () => {
