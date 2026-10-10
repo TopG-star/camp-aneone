@@ -16,10 +16,10 @@ import { classRank, lowerClass, type ClassifiedField, type DataClass, type Model
 export const TENANT_CHOICE_LIMIT: DataClass = "D1";
 
 export type GatewayResult =
-  | { kind: "answered"; text: string; json?: unknown; withheld: WithheldItem[]; decisionId: string }
-  | { kind: "denied"; reason: DenyReason; /** Set when reason is secret_present: where the secret was. A response detail only; never stored. */ secretIn?: SecretLocation; withheld: WithheldItem[]; decisionId: string }
-  | { kind: "blocked"; reason: OutputBlockReason; withheld: WithheldItem[]; decisionId: string }
-  | { kind: "failed"; message: string; withheld: WithheldItem[]; decisionId: string };
+  | { kind: "answered"; text: string; json?: unknown; withheld: WithheldItem[]; decisionId: string; callId: string }
+  | { kind: "denied"; reason: DenyReason; /** Set when reason is secret_present: where the secret was. A response detail only; never stored. */ secretIn?: SecretLocation; withheld: WithheldItem[]; decisionId: string; callId: string }
+  | { kind: "blocked"; reason: OutputBlockReason; withheld: WithheldItem[]; decisionId: string; callId: string }
+  | { kind: "failed"; message: string; withheld: WithheldItem[]; decisionId: string; callId: string };
 
 export interface ModelRouting {
   standard: ProviderId;
@@ -57,7 +57,11 @@ export interface ModelTurn {
 }
 
 export interface ModelGateway {
-  beginTurn(context: ModelContext, options?: { channel?: string }): ModelTurn;
+  /**
+   * `conversationId` and `turnId` (the id of the user message row that started the turn) link every call of a chat turn to it in the audit.
+   * A turn that is not a chat turn (email classification, the briefing, background jobs) passes neither, and its calls record null.
+   */
+  beginTurn(context: ModelContext, options?: { channel?: string; conversationId?: string; turnId?: string }): ModelTurn;
 }
 
 /** The text the person wrote that was actually sent in this request, with D3 spans removed (answer check O1 exemption). */
@@ -149,6 +153,7 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
   async function runCall(
     context: ModelContext,
     channel: string | null,
+    link: { conversationId: string | null; turnId: string | null },
     request: ModelRequest,
     provider: ProviderId,
     map: PlaceholderMap,
@@ -170,6 +175,8 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
       identityId: context.identityId,
       tenantId: context.kind === "tenant" ? context.tenantId : null,
       membershipId: context.kind === "tenant" ? context.membershipId : null,
+      conversationId: link.conversationId,
+      turnId: link.turnId,
       purpose: request.purpose,
       channel,
       provider,
@@ -186,7 +193,7 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
 
     if (decision.kind === "deny") {
       audit.recordDecision({ ...base, decision: "deny", denyReason: decision.reason, released: [], placeholderCount: 0, inputFingerprint: null });
-      return { kind: "denied", reason: decision.reason, ...(decision.secretIn ? { secretIn: decision.secretIn } : {}), withheld: decision.withheld, decisionId };
+      return { kind: "denied", reason: decision.reason, ...(decision.secretIn ? { secretIn: decision.secretIn } : {}), withheld: decision.withheld, decisionId, callId };
     }
 
     // decide() denies unknown purposes, so an allow always has a definition.
@@ -200,7 +207,7 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
     if (classRank(decision.effectiveLimit) < classRank("D2") && findRestoredValue(sentDataText(request, decision), map, userText, authored)) {
       deps.logger.warn("boundary_alert", { purpose: request.purpose, callId, reason: "masked_value_present" });
       audit.recordDecision({ ...base, alert: true, decision: "deny", denyReason: "masked_value_present", released: [], placeholderCount: 0, inputFingerprint: null });
-      return { kind: "denied", reason: "masked_value_present", withheld: decision.withheld, decisionId };
+      return { kind: "denied", reason: "masked_value_present", withheld: decision.withheld, decisionId, callId };
     }
 
     audit.recordDecision({
@@ -254,14 +261,14 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
     };
     if (failure !== null || last === null) {
       audit.recordOutcome({ ...outcomeBase, status: "failed", blockReason: null, checks: { O1: "skipped", O2: "skipped", O3: "skipped", O4: "skipped" }, outputFingerprint: null });
-      return { kind: "failed", message: failure ?? "no answer", withheld: decision.withheld, decisionId };
+      return { kind: "failed", message: failure ?? "no answer", withheld: decision.withheld, decisionId, callId };
     }
     if (!last.ok) {
       audit.recordOutcome({ ...outcomeBase, status: "blocked", blockReason: last.reason, checks: last.checks, outputFingerprint: null });
-      return { kind: "blocked", reason: last.reason, withheld: decision.withheld, decisionId };
+      return { kind: "blocked", reason: last.reason, withheld: decision.withheld, decisionId, callId };
     }
     audit.recordOutcome({ ...outcomeBase, status: "answered", blockReason: null, checks: last.checks, outputFingerprint: deps.fingerprinter.of(context, last.text) });
-    return { kind: "answered", text: last.text, json: last.json, withheld: decision.withheld, decisionId };
+    return { kind: "answered", text: last.text, json: last.json, withheld: decision.withheld, decisionId, callId };
   }
 
   return {
@@ -270,14 +277,15 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
       // Spec §6.8: the shadow provider may have a lower limit, so its placeholders live in a map of their own.
       const shadowMap = new PlaceholderMap();
       const channel = options?.channel ?? null;
+      const link = { conversationId: options?.conversationId ?? null, turnId: options?.turnId ?? null };
       return {
         async call(request) {
           const provider = providerFor(request.purpose);
-          const result = await runCall(context, channel, request, provider, map);
+          const result = await runCall(context, channel, link, request, provider, map);
           const shadow = deps.routing.shadow;
           if (shadow && shadow !== provider && deps.providers[shadow]) {
-            // Spec §6.8: the shadow copy is its own call with its own decision; it never affects the result.
-            void runCall(context, "shadow", request, shadow, shadowMap).catch((error: unknown) =>
+            // Spec §6.8: the shadow copy is its own call with its own decision; it never affects the result. It belongs to the same turn.
+            void runCall(context, "shadow", link, request, shadow, shadowMap).catch((error: unknown) =>
               deps.logger.warn("Shadow model call failed", { error: error instanceof Error ? error.message : String(error) }),
             );
           }

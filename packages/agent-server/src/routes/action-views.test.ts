@@ -11,7 +11,7 @@ function instance(overrides: Partial<ActionInstance>): ActionInstance {
     actionType: "create_calendar_event", definitionVersion: "1", status: "completed", initiator: "user", initiatorUserId: "u1",
     input: {}, resolved: null, evidence: [], decision: null, result: null, error: null, undo: null,
     idempotencyKey: "k", retryOf: null, attemptNumber: 1, executorRequestId: "a1", executionStartedAt: null,
-    lastHeartbeatAt: null, undoStartedAt: null, resourceRef: null, lastEventSeq: 1,
+    lastHeartbeatAt: null, undoStartedAt: null, resourceRef: null, modelCallId: null, lastEventSeq: 1,
     createdAt: "2026-10-01T12:00:00.000Z", updatedAt: "2026-10-01T12:00:00.000Z",
     ...overrides,
   };

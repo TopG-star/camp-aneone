@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Logger } from "@oneon/domain";
-import { createDatabase } from "./connection.js";
+import { createDatabase, latestMigrationVersion } from "./connection.js";
 import { migrateAll } from "./migrate-all.js";
 import { openControlDb } from "./control/open-control-db.js";
 
@@ -58,8 +58,8 @@ describe("migrateAll", () => {
 
     expect(result.migrated).toEqual(["personal", good.id]);
     expect(result.failed.map((f) => f.registrationId).sort()).toEqual([bad.id, missing.id].sort());
-    expect(version(deps.personalPath)).toBe(16);
-    expect(version(good.path)).toBe(16);
+    expect(version(deps.personalPath)).toBe(latestMigrationVersion());
+    expect(version(good.path)).toBe(latestMigrationVersion());
     expect(existsSync(suspended.path)).toBe(false);
     expect(existsSync(missing.path)).toBe(false);
     expect(existsSync(deps.lockPath)).toBe(false);

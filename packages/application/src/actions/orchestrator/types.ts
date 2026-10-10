@@ -85,6 +85,8 @@ export interface ActionRequest {
   retryOf?: { id: string; attemptNumber: number; idempotencyKey: string };
   /** The request's session, when the action may run inside the request with the person's attended access. */
   session?: RequestSession;
+  /** The model call that proposed the action (chat intent extraction). Absent for an action created any other way. */
+  modelCallId?: string;
 }
 
 export type RequestOutcome =

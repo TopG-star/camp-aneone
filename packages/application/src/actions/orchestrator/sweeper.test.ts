@@ -40,7 +40,7 @@ describe("sweep", () => {
   it("moves a stuck proposed action through validating first", async () => {
     const h = harness();
     const { instance } = h.repo.create(
-      { id: "a-p", scope: "personal", ownerId: "u1", userId: "u1", tenantId: null, locationIds: [], actionType: "probe", definitionVersion: "1", initiator: "rule:test", initiatorUserId: null, input: { n: 1 }, evidence: [], idempotencyKey: "rule:x", retryOf: null, attemptNumber: 1, resourceRef: null },
+      { id: "a-p", scope: "personal", ownerId: "u1", userId: "u1", tenantId: null, locationIds: [], actionType: "probe", definitionVersion: "1", initiator: "rule:test", initiatorUserId: null, input: { n: 1 }, evidence: [], idempotencyKey: "rule:x", retryOf: null, attemptNumber: 1, resourceRef: null, modelCallId: null },
       { kind: "system" },
     );
     h.advanceClock(2 * MIN);
@@ -53,7 +53,7 @@ describe("sweep", () => {
     const h = harness([probeDefinition({ execute: async () => { executions++; return { kind: "succeeded", result: {}, undoData: null }; } })]);
     // Simulate a crash after the executor was called: the action is left in executing.
     const { instance } = h.repo.create(
-      { id: "a-e", scope: "personal", ownerId: "u1", userId: "u1", tenantId: null, locationIds: [], actionType: "probe", definitionVersion: "1", initiator: "rule:test", initiatorUserId: null, input: { n: 1 }, evidence: [], idempotencyKey: "rule:e", retryOf: null, attemptNumber: 1, resourceRef: null },
+      { id: "a-e", scope: "personal", ownerId: "u1", userId: "u1", tenantId: null, locationIds: [], actionType: "probe", definitionVersion: "1", initiator: "rule:test", initiatorUserId: null, input: { n: 1 }, evidence: [], idempotencyKey: "rule:e", retryOf: null, attemptNumber: 1, resourceRef: null, modelCallId: null },
       { kind: "system" },
     );
     h.repo.appendTransition({ actionId: instance.id, expectedStatus: "proposed", toStatus: "validating", actor: { kind: "system" } });
@@ -69,7 +69,7 @@ describe("sweep", () => {
   it("cancels an approved action whose approval went stale", async () => {
     const h = harness([probeDefinition({ preconditions: async () => { throw new Error("down"); } })]);
     const { instance } = h.repo.create(
-      { id: "a-s", scope: "personal", ownerId: "u1", userId: "u1", tenantId: null, locationIds: [], actionType: "probe", definitionVersion: "1", initiator: "user", initiatorUserId: "u1", input: { n: 1 }, evidence: [], idempotencyKey: "k", retryOf: null, attemptNumber: 1, resourceRef: null },
+      { id: "a-s", scope: "personal", ownerId: "u1", userId: "u1", tenantId: null, locationIds: [], actionType: "probe", definitionVersion: "1", initiator: "user", initiatorUserId: "u1", input: { n: 1 }, evidence: [], idempotencyKey: "k", retryOf: null, attemptNumber: 1, resourceRef: null, modelCallId: null },
       { kind: "user", userId: "u1" },
     );
     h.repo.appendTransition({ actionId: instance.id, expectedStatus: "proposed", toStatus: "validating", actor: { kind: "system" } });

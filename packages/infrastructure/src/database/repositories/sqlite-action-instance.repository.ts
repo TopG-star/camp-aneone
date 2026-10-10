@@ -49,6 +49,7 @@ interface InstanceRow {
   last_heartbeat_at: string | null;
   undo_started_at: string | null;
   resource_ref: string | null;
+  model_call_id: string | null;
   last_event_seq: number;
   created_at: string;
   updated_at: string;
@@ -106,6 +107,7 @@ function mapInstance(r: InstanceRow): ActionInstance {
     lastHeartbeatAt: r.last_heartbeat_at,
     undoStartedAt: r.undo_started_at,
     resourceRef: r.resource_ref,
+    modelCallId: r.model_call_id,
     lastEventSeq: r.last_event_seq,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -164,8 +166,8 @@ export class SqliteActionInstanceRepository implements ActionInstanceRepository 
           `INSERT INTO action_instances (
              id, scope, owner_id, user_id, tenant_id, location_ids_json, action_type, definition_version,
              status, initiator, initiator_user_id, input_json, evidence_json, idempotency_key,
-             retry_of, attempt_number, resource_ref, last_event_seq, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+             retry_of, attempt_number, resource_ref, model_call_id, last_event_seq, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
         )
         .run(
           instance.id,
@@ -184,6 +186,7 @@ export class SqliteActionInstanceRepository implements ActionInstanceRepository 
           instance.retryOf,
           instance.attemptNumber,
           instance.resourceRef,
+          instance.modelCallId,
           now,
           now,
         );

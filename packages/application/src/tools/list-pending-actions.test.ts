@@ -33,6 +33,7 @@ function seed(repo: InMemoryActionRepo, id: string, userId: string, status: "pro
     retryOf: null,
     attemptNumber: 1,
     resourceRef: "deadline:d1",
+    modelCallId: null,
   };
   repo.create(n, { kind: "system" });
   if (status === "awaiting_approval") {

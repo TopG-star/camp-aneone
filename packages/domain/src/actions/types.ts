@@ -99,6 +99,8 @@ export interface ActionInstance {
   lastHeartbeatAt: string | null;
   undoStartedAt: string | null;
   resourceRef: string | null;
+  /** The model call that proposed this action (model_call_decisions.call_id in the same file), or null when it was created any other way. */
+  modelCallId: string | null;
   lastEventSeq: number;
   createdAt: string;
   updatedAt: string;

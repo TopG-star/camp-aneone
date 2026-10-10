@@ -110,7 +110,7 @@ describe("Settings → Connections routes", () => {
         {
           id, scope: "tenant", ownerId: db.tenantId, userId, tenantId: db.tenantId, locationIds: [], actionType: over.type ?? "inventory_transfer",
           definitionVersion: "1", initiator: "user", initiatorUserId: userId, input: {}, evidence: [], idempotencyKey: id, retryOf: over.retryOf ?? null,
-          attemptNumber: over.retryOf ? 2 : 1, resourceRef: null,
+          attemptNumber: over.retryOf ? 2 : 1, resourceRef: null, modelCallId: null,
         },
         actor,
       );

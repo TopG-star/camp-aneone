@@ -391,7 +391,7 @@ describe("processUnclassifiedItems", () => {
     let calls = 0;
     deps = createDeps({
       modelGateway: stubGateway({
-        respond: () => (calls++ === 0 ? { kind: "failed", message: "LLM down", withheld: [], decisionId: "d" } : answered(LLM_RESULT)),
+        respond: () => (calls++ === 0 ? { kind: "failed", message: "LLM down", withheld: [], decisionId: "d", callId: "c" } : answered(LLM_RESULT)),
       }),
     });
     (deps.inboundItemRepo.findUnclassified as ReturnType<typeof vi.fn>).mockReturnValue(items);

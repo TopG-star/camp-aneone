@@ -136,8 +136,8 @@ describe("tenant isolation through the active context", () => {
           return {
             call: async (req) =>
               req.purpose === "chat_reply"
-                ? { kind: "denied", reason: "required_part_withheld", withheld: [], decisionId: "d" }
-                : { kind: "answered", text: "", json: round++ === 0 ? [{ tool, parameters: {} }] : [{ tool: "none", parameters: {} }], withheld: [], decisionId: "d" },
+                ? { kind: "denied", reason: "required_part_withheld", withheld: [], decisionId: "d", callId: "c" }
+                : { kind: "answered", text: "", json: round++ === 0 ? [{ tool, parameters: {} }] : [{ tool: "none", parameters: {} }], withheld: [], decisionId: "d", callId: "c" },
             restoreToolParams: (params) => ({ ok: true, params }),
             effectiveLimit: () => "D1",
           };
@@ -241,7 +241,7 @@ describe("tenant isolation through the active context", () => {
       {
         id: "act-1", scope: "tenant", ownerId: f.a.tenantId, userId: f.gerry, tenantId: f.a.tenantId, locationIds: [],
         actionType: "notify", definitionVersion: "1", initiator: "user", initiatorUserId: f.gerry, input: {}, evidence: [],
-        idempotencyKey: "k1", retryOf: null, attemptNumber: 1, resourceRef: null,
+        idempotencyKey: "k1", retryOf: null, attemptNumber: 1, resourceRef: null, modelCallId: null,
       },
       { kind: "user", userId: f.gerry },
     );

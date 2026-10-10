@@ -102,7 +102,8 @@ export async function sendChatMessage(
     const modelContext: ModelContext = tenantScope
       ? { kind: "tenant", identityId: tenantScope.identityId, tenantId: tenantScope.tenantId, membershipId: tenantScope.membershipId }
       : { kind: "personal", identityId: userId };
-    const turn = deps.modelGateway!.beginTurn(modelContext, { channel: "web" });
+    // Every call of the turn is linked in the audit to this conversation and to the user message row that started it.
+    const turn = deps.modelGateway!.beginTurn(modelContext, { channel: "web", conversationId, turnId: userMsg.id });
     const loopResult = await runIntentLoop(
       {
         modelTurn: turn,

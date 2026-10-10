@@ -578,9 +578,9 @@ describe("runIntentLoop", () => {
     );
   });
 
-  it("overwrites AI-supplied userId/turnId/turnExcerpt with the server values", async () => {
+  it("overwrites AI-supplied userId/turnId/turnExcerpt/modelCallId with the server values", async () => {
     const extractor = createMockExtractor([
-      [{ tool: "list_deadlines", parameters: { userId: "evil", turnId: "evil", turnExcerpt: "evil", from: "x" } }],
+      [{ tool: "list_deadlines", parameters: { userId: "evil", turnId: "evil", turnExcerpt: "evil", modelCallId: "evil", from: "x" } }],
       [{ tool: "none", parameters: {} }],
     ]);
     const registry = createMockToolRegistry({
@@ -597,12 +597,13 @@ describe("runIntentLoop", () => {
       userId: "user-123",
       turnId: "t1",
       turnExcerpt: "What are my deadlines?",
+      modelCallId: "c",
     });
   });
 
   it("drops AI-supplied identity keys when the server supplies none", async () => {
     const extractor = createMockExtractor([
-      [{ tool: "list_deadlines", parameters: { userId: "evil", turnId: "evil", turnExcerpt: "evil", from: "x" } }],
+      [{ tool: "list_deadlines", parameters: { userId: "evil", turnId: "evil", turnExcerpt: "evil", modelCallId: "evil", from: "x" } }],
       [{ tool: "none", parameters: {} }],
     ]);
     const registry = createMockToolRegistry({
@@ -614,7 +615,7 @@ describe("runIntentLoop", () => {
       defaultInput(),
     );
 
-    expect(registry.execute).toHaveBeenCalledWith("list_deadlines", { from: "x" });
+    expect(registry.execute).toHaveBeenCalledWith("list_deadlines", { from: "x", modelCallId: "c" });
   });
 
   // ── Context Assembly ─────────────────────────────────────
@@ -642,7 +643,7 @@ describe("runIntentLoop in a tenant context", () => {
 
     await runIntentLoop({ modelTurn: createMockExtractor(intents("show_my_access")), toolRegistry: registry, logger, tenantScope }, defaultInput({ userId: "i1" }));
 
-    expect(registry.execute).toHaveBeenCalledWith("show_my_access", { userId: "i1" }, "tenant", tenantScope);
+    expect(registry.execute).toHaveBeenCalledWith("show_my_access", { userId: "i1", modelCallId: "c" }, "tenant", tenantScope);
   });
 
   it("records a tool outside the context as a failed call, without a result", async () => {

@@ -198,13 +198,14 @@ describe("POST /api/chat", () => {
       beginTurn: () => ({
         call: async (req) =>
           req.purpose === "chat_reply"
-            ? { kind: "denied", reason: "required_part_withheld", withheld: [], decisionId: "d" }
+            ? { kind: "denied", reason: "required_part_withheld", withheld: [], decisionId: "d", callId: "c" }
             : {
                 kind: "answered",
                 text: "",
                 json: intentRounds++ === 0 ? [{ tool: "create_calendar_event", parameters: {} }] : [{ tool: "none", parameters: {} }],
                 withheld: [],
                 decisionId: "d",
+                callId: "c",
               },
         restoreToolParams: (params) => ({ ok: true, params }),
         effectiveLimit: () => "D2",
@@ -218,6 +219,24 @@ describe("POST /api/chat", () => {
       .expect(200);
 
     expect(res.body.actions).toEqual([action]);
+  });
+
+  it("begins the model turn linked to its conversation and to the user message that started it", async () => {
+    const beginTurn = vi.fn((_context: ModelContext, _options?: { channel?: string; conversationId?: string; turnId?: string }) => ({
+      call: async () => ({ kind: "denied", reason: "required_part_withheld", withheld: [], decisionId: "d", callId: "c" }) as const,
+      restoreToolParams: (params: Record<string, unknown>) => ({ ok: true as const, params }),
+      effectiveLimit: () => "D2" as const,
+    }));
+    app = buildApp({ conversationRepo, logger, modelGateway: { beginTurn } as unknown as ModelGateway, toolRegistry: createToolRegistry() });
+
+    const res = await request(app).post("/api/chat").send({ message: "Hello", conversationId: "conv-9" }).expect(200);
+
+    // The user message row is saved before the model is asked, and its id is the turn.
+    expect(res.body.userMessageId).toBe("msg-001");
+    expect(beginTurn).toHaveBeenCalledWith(
+      { kind: "personal", identityId: "user-A" },
+      { channel: "web", conversationId: "conv-9", turnId: res.body.userMessageId },
+    );
   });
 
   it("counts only the session user's actions awaiting approval", async () => {
@@ -316,12 +335,12 @@ describe("POST /api/chat in a tenant context", () => {
   function scripted(intents: Array<Array<{ tool: string; parameters: Record<string, unknown> }>>) {
     const requests: Array<{ purpose: string; parts: unknown[] }> = [];
     let round = 0;
-    const beginTurn = vi.fn((_context: ModelContext, _options?: { channel?: string }) => ({
+    const beginTurn = vi.fn((_context: ModelContext, _options?: { channel?: string; conversationId?: string; turnId?: string }) => ({
       call: async (req: { purpose: string; parts: unknown[] }) => {
         requests.push(req);
         return req.purpose === "chat_reply"
-          ? ({ kind: "denied", reason: "required_part_withheld", withheld: [], decisionId: "d" } as const)
-          : ({ kind: "answered", text: "", json: intents[round++] ?? [{ tool: "none", parameters: {} }], withheld: [], decisionId: "d" } as const);
+          ? ({ kind: "denied", reason: "required_part_withheld", withheld: [], decisionId: "d", callId: "c" } as const)
+          : ({ kind: "answered", text: "", json: intents[round++] ?? [{ tool: "none", parameters: {} }], withheld: [], decisionId: "d", callId: "c" } as const);
       },
       restoreToolParams: (params: Record<string, unknown>) => ({ ok: true as const, params }),
       effectiveLimit: () => "D1" as const,
@@ -349,7 +368,7 @@ describe("POST /api/chat in a tenant context", () => {
 
     await request(tenantApp({ modelGateway: gateway, toolRegistry: tenantRegistry() })).post("/api/chat").send({ message: "what can you do?" }).expect(200);
 
-    expect(beginTurn).toHaveBeenCalledWith({ kind: "tenant", identityId: "i1", tenantId: "t1", membershipId: "m1" }, { channel: "web" });
+    expect(beginTurn).toHaveBeenCalledWith({ kind: "tenant", identityId: "i1", tenantId: "t1", membershipId: "m1" }, { channel: "web", conversationId: "user:i1", turnId: "msg-001" });
     expect(requests[0].parts).toContainEqual(
       expect.objectContaining({ kind: "tool_catalog", tools: [expect.objectContaining({ name: "list_pending_actions" }), expect.objectContaining({ name: "show_my_access" })] }),
     );

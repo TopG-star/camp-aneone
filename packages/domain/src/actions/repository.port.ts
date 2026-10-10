@@ -26,6 +26,8 @@ export interface NewActionInstance {
   retryOf: string | null;
   attemptNumber: number;
   resourceRef: string | null;
+  /** The model call that proposed this action (model_call_decisions.call_id in the same file), or null when it was created any other way. */
+  modelCallId: string | null;
 }
 
 export interface CreateInstanceResult {

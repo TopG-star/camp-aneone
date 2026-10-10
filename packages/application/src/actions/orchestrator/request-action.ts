@@ -46,6 +46,7 @@ export function createRequestAction(
         retryOf: req.retryOf?.id ?? null,
         attemptNumber: req.retryOf ? req.retryOf.attemptNumber + 1 : 1,
         resourceRef: req.resourceRef,
+        modelCallId: req.modelCallId ?? null,
       },
       actor,
       { initiator: req.initiator },

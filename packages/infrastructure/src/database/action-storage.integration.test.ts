@@ -7,6 +7,7 @@ import { createDatabase, runMigrations } from "./connection.js";
 import { SqliteActionInstanceRepository } from "./repositories/sqlite-action-instance.repository.js";
 import { SqliteActionConfigRepository } from "./repositories/sqlite-action-config.repository.js";
 import { SqliteLegacyActionRepository } from "./repositories/sqlite-legacy-action.repository.js";
+import { SqliteModelAuditRepository } from "./repositories/sqlite-model-audit.repository.js";
 import { runActionDriftCheck } from "./action-drift-check.js";
 
 const logger: Logger = { info() {}, warn() {}, error() {}, debug() {} };
@@ -31,6 +32,7 @@ function newInstance(overrides: Partial<NewActionInstance> = {}): NewActionInsta
     retryOf: null,
     attemptNumber: 1,
     resourceRef: "inbound_item:item-1",
+    modelCallId: null,
     ...overrides,
   };
 }
@@ -276,6 +278,41 @@ describe("SqliteLegacyActionRepository", () => {
     expect(legacy.listUnimportedProposed("user-A").map((r) => r.id)).toEqual(["u1"]);
     expect(legacy.listUnimportedProposed("").map((r) => r.id)).toEqual([]);
     expect(legacy.listForUser("user-A", { limit: 10, offset: 0 }).map((r) => r.id)).toEqual(["u1"]);
+  });
+});
+
+describe("migration 017 link ids", () => {
+  it("stores the model call that proposed an action, and null for any other", () => {
+    repo.create(newInstance({ id: "act-chat", idempotencyKey: "chat:msg-1:x", modelCallId: "call-1" }), USER);
+    repo.create(newInstance({ id: "act-rule", idempotencyKey: "email:item-9" }), SYSTEM);
+    expect(repo.findById("user-A", "act-chat")?.modelCallId).toBe("call-1");
+    expect(repo.findById("user-A", "act-rule")?.modelCallId).toBeNull();
+    expect(db.prepare("SELECT id, model_call_id FROM action_instances ORDER BY id").all()).toEqual([
+      { id: "act-chat", model_call_id: "call-1" },
+      { id: "act-rule", model_call_id: null },
+    ]);
+  });
+
+  it("joining action_instances.model_call_id to model_call_decisions.call_id returns that turn", () => {
+    const audit = new SqliteModelAuditRepository(asPersonal(db));
+    const decision = (callId: string, turnId: string) => ({
+      id: `d-${callId}`, callId, createdAt: "2026-10-03T10:00:00.000Z", contextKind: "personal" as const, identityId: "user-A", tenantId: null, membershipId: null,
+      conversationId: "user:user-A", turnId, purpose: "intent_extraction", channel: "web", provider: "deepseek", model: "m", effectiveLimit: "D1" as const,
+      layers: { provider: "D2" as const, choice: "D1" as const, purpose: "D2" as const }, decision: "allow" as const, denyReason: null, released: [], withheld: [],
+      placeholderCount: 0, scannerHits: { D3: 0, D4: 0 }, alert: false, policyFingerprint: "p".repeat(64), inputFingerprint: "i".repeat(64), keyVersion: 1,
+    });
+    audit.recordDecision(decision("call-1", "msg-1"));
+    audit.recordDecision(decision("call-2", "msg-2"));
+    repo.create(newInstance({ id: "act-1", idempotencyKey: "chat:msg-1:x", modelCallId: "call-1" }), USER);
+
+    const joined = db
+      .prepare(
+        `SELECT a.id AS action_id, d.conversation_id, d.turn_id
+         FROM action_instances a JOIN model_call_decisions d ON d.call_id = a.model_call_id`,
+      )
+      .all();
+
+    expect(joined).toEqual([{ action_id: "act-1", conversation_id: "user:user-A", turn_id: "msg-1" }]);
   });
 });
 

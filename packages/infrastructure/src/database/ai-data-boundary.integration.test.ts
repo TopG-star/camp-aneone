@@ -20,6 +20,8 @@ const decision = (callId: string, overrides = {}) => ({
   identityId: "u1",
   tenantId: null,
   membershipId: null,
+  conversationId: null,
+  turnId: null,
   purpose: "chat_reply",
   channel: "web",
   provider: "deepseek",
@@ -49,6 +51,16 @@ describe("SqliteModelAuditRepository", () => {
     expect(recent.map((r) => r.decision.callId)).toEqual(["c2", "c1"]);
     expect(recent[0].outcome).toBeNull();
     expect(recent[1].outcome).toMatchObject({ status: "answered", attempts: 1 });
+  });
+  it("stores and returns the conversation and turn a call belongs to, and null for a call that has none", () => {
+    const repo = new SqliteModelAuditRepository(asPersonal(db));
+    repo.recordDecision(decision("c1", { conversationId: "user:u1", turnId: "msg-1" }));
+    repo.recordDecision(decision("c2", { decision: "deny", denyReason: "required_part_withheld", inputFingerprint: null, conversationId: "user:u1", turnId: "msg-1" }));
+    repo.recordDecision(decision("c3", { channel: "background" }));
+    const byCall = new Map(repo.listRecentForIdentity("u1", 10).map((r) => [r.decision.callId, r.decision]));
+    expect(byCall.get("c1")).toMatchObject({ conversationId: "user:u1", turnId: "msg-1" });
+    expect(byCall.get("c2")).toMatchObject({ conversationId: "user:u1", turnId: "msg-1" });
+    expect(byCall.get("c3")).toMatchObject({ conversationId: null, turnId: null });
   });
   it("is append-only", () => {
     const repo = new SqliteModelAuditRepository(asPersonal(db));

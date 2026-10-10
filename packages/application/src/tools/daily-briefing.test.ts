@@ -185,7 +185,7 @@ describe("createDailyBriefingTool", () => {
     const instanceRepo = new InMemoryActionRepo(() => new Date("2026-10-01T12:00:00Z"));
     const base = {
       scope: "personal" as const, tenantId: null, locationIds: [], actionType: "create_reminder", definitionVersion: "1",
-      initiator: "system", initiatorUserId: null, input: {}, evidence: [], retryOf: null, attemptNumber: 1,
+      initiator: "system", initiatorUserId: null, input: {}, evidence: [], retryOf: null, attemptNumber: 1, modelCallId: null,
     };
     for (const [id, userId] of [["a1", "u1"], ["a2", "u2"]] as const) {
       instanceRepo.create({ ...base, id, ownerId: userId, userId, idempotencyKey: id, resourceRef: `deadline:${id}` }, { kind: "system" });

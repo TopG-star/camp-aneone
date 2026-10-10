@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { assertRowTenant } from "@oneon/domain";
-import { createDatabase, runMigrations } from "./connection.js";
+import { createDatabase, latestMigrationVersion, runMigrations } from "./connection.js";
 import { ContextDbGate, TenantRefusedError, rawDb, ensureIdentityAnchor } from "./context-db-gate.js";
 import { openControlDb, type ControlDb } from "./control/open-control-db.js";
 
@@ -68,7 +68,7 @@ describe("ContextDbGate", () => {
     const personal = gate.openPersonal();
     expect(personal.kind).toBe("personal");
     expect(rawDb(personal).prepare("SELECT kind, tenant_id, schema_version FROM context_meta").all()).toEqual([
-      { kind: "personal", tenant_id: null, schema_version: 16 },
+      { kind: "personal", tenant_id: null, schema_version: latestMigrationVersion() },
     ]);
   });
 
@@ -122,7 +122,7 @@ describe("ContextDbGate", () => {
     gate.createTenantFile(reg.id, reg.tenantId);
     gate.close();
     const db = createDatabase(reg.path);
-    db.prepare("DELETE FROM schema_migrations WHERE version = 16").run();
+    db.prepare("DELETE FROM schema_migrations WHERE version = ?").run(latestMigrationVersion());
     db.close();
     expect(refusal(() => gate.openTenant(reg.id))).toBe("tenant_schema_behind");
   });

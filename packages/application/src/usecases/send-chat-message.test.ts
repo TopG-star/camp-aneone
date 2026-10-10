@@ -365,7 +365,7 @@ describe("sendChatMessage", () => {
         [{ tool: "list_deadlines", parameters: {} }],
         [{ tool: "none", parameters: {} }],
       ],
-      { kind: "failed", message: "Model call failed", withheld: [], decisionId: "d" },
+      { kind: "failed", message: "Model call failed", withheld: [], decisionId: "d", callId: "c" },
     );
     const registry = createMockToolRegistry({
       list_deadlines: makeToolResult("list_deadlines", "Found 2 deadlines"),
@@ -438,7 +438,7 @@ describe("sendChatMessage", () => {
     );
 
     expect(beginTurn).toHaveBeenCalledTimes(1);
-    expect(beginTurn).toHaveBeenCalledWith({ kind: "personal", identityId: "user-A" }, { channel: "web" });
+    expect(beginTurn).toHaveBeenCalledWith({ kind: "personal", identityId: "user-A" }, { channel: "web", conversationId: "user:user-A", turnId: "msg-001" });
   });
 
   it("returns concatenated summaries when the chat reply is denied", async () => {
@@ -880,7 +880,7 @@ describe("sendChatMessage in a tenant context", () => {
       { message: "what can I do here?", now: NOW, userId: "i1" },
     );
 
-    expect(beginTurn).toHaveBeenCalledWith({ kind: "tenant", identityId: "i1", tenantId: "t1", membershipId: "m1" }, { channel: "web" });
+    expect(beginTurn).toHaveBeenCalledWith({ kind: "tenant", identityId: "i1", tenantId: "t1", membershipId: "m1" }, { channel: "web", conversationId: "user:i1", turnId: "msg-001" });
     const catalog = requests[0].parts.find((p) => p.kind === "tool_catalog");
     expect(catalog).toMatchObject({ tools: [{ name: "list_pending_actions" }, { name: "show_my_access" }] });
     expect(JSON.stringify(requests[0])).not.toContain("list_inbox");
@@ -924,7 +924,7 @@ describe("sendChatMessage in a tenant context", () => {
       { message: "what is my role?", now: NOW, userId: "i1" },
     );
 
-    expect(beginTurn).toHaveBeenCalledWith({ kind: "personal", identityId: "i1" }, { channel: "web" });
+    expect(beginTurn).toHaveBeenCalledWith({ kind: "personal", identityId: "i1" }, { channel: "web", conversationId: "user:i1", turnId: "msg-001" });
     const catalog = requests[0].parts.find((p) => p.kind === "tool_catalog");
     expect(catalog).toMatchObject({ tools: [{ name: "list_inbox" }, { name: "list_pending_actions" }] });
     const reply = requests.find((r) => r.purpose === "chat_reply")!;

@@ -183,7 +183,7 @@ describe("GET /api/actions details", () => {
       {
         id: "ghost-1", scope: "personal", ownerId: "user-A", userId: "user-A", tenantId: null, locationIds: [],
         actionType: "ghost_type", definitionVersion: "1", initiator: "user", initiatorUserId: "user-A",
-        input: {}, evidence: [], idempotencyKey: "ghost-key", retryOf: null, attemptNumber: 1, resourceRef: null,
+        input: {}, evidence: [], idempotencyKey: "ghost-key", retryOf: null, attemptNumber: 1, resourceRef: null, modelCallId: null,
       },
       { kind: "system" },
     );

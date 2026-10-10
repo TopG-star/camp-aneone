@@ -122,6 +122,8 @@ export async function runIntentLoop(
       stopped = "extraction_error";
       return { toolCalls: allToolCalls, rounds: round, stopped };
     }
+    // The call that produced this round's intents; an action they propose is linked to it.
+    const callId = result.callId;
     const rawIntents = result.json;
 
     // Refinement #2: Zod-validate intent output
@@ -187,11 +189,12 @@ export async function runIntentLoop(
       const startTime = performance.now();
       try {
         // Identity comes from the server only: drop any AI-supplied reserved keys first.
-        const { userId: _u, turnId: _t, turnExcerpt: _e, ...aiParams } = intent.parameters;
+        const { userId: _u, turnId: _t, turnExcerpt: _e, modelCallId: _m, ...aiParams } = intent.parameters;
         const executionParameters = {
           ...aiParams,
           ...(userId ? { userId } : {}),
           ...(turnId ? { turnId, turnExcerpt: userMessage.slice(0, 280) } : {}),
+          modelCallId: callId,
         };
         const result = tenantScope
           ? await toolRegistry.execute(intent.tool, executionParameters, "tenant", tenantScope)

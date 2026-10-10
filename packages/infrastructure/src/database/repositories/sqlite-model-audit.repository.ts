@@ -11,6 +11,8 @@ type Row = {
   identity_id: string;
   tenant_id: string | null;
   membership_id: string | null;
+  conversation_id: string | null;
+  turn_id: string | null;
   purpose: string;
   channel: string | null;
   provider: string;
@@ -49,6 +51,8 @@ function mapDecision(r: Row): ModelDecisionRecord {
     identityId: r.identity_id,
     tenantId: r.tenant_id,
     membershipId: r.membership_id,
+    conversationId: r.conversation_id,
+    turnId: r.turn_id,
     purpose: r.purpose,
     channel: r.channel,
     provider: r.provider,
@@ -101,13 +105,13 @@ export class SqliteModelAuditRepository implements ModelAuditRepository {
     assertRowTenant(this.context, r.tenantId, "model_call_decisions");
     this.db
       .prepare(
-        `INSERT INTO model_call_decisions (id, call_id, created_at, context_kind, identity_id, tenant_id, membership_id, purpose, channel, provider, model,
+        `INSERT INTO model_call_decisions (id, call_id, created_at, context_kind, identity_id, tenant_id, membership_id, conversation_id, turn_id, purpose, channel, provider, model,
            effective_limit, layers_json, decision, deny_reason, released_json, withheld_json, placeholder_count, scanner_d3, scanner_d4, alert,
            policy_fingerprint, input_fingerprint, key_version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        r.id, r.callId, r.createdAt, r.contextKind, r.identityId, this.tenantId(), r.membershipId, r.purpose, r.channel, r.provider, r.model,
+        r.id, r.callId, r.createdAt, r.contextKind, r.identityId, this.tenantId(), r.membershipId, r.conversationId, r.turnId, r.purpose, r.channel, r.provider, r.model,
         r.effectiveLimit, JSON.stringify(r.layers), r.decision, r.denyReason, JSON.stringify(r.released), JSON.stringify(r.withheld),
         r.placeholderCount, r.scannerHits.D3, r.scannerHits.D4, r.alert ? 1 : 0, r.policyFingerprint, r.inputFingerprint, r.keyVersion,
       );

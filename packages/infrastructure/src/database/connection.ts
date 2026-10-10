@@ -283,6 +283,7 @@ export function runMigrations(db: Database.Database, migrationsDir?: string): vo
     { version: 14, name: "action_spec_framework", file: "014_action_spec_framework.sql" },
     { version: 15, name: "ai_data_boundary", file: "015_ai_data_boundary.sql" },
     { version: 16, name: "context_meta_and_tenant_id", file: "016_context_meta_and_tenant_id.sql" },
+    { version: 17, name: "link_ids", file: "017_link_ids.sql" },
   ];
 
   const custom = migrationsDir !== undefined;

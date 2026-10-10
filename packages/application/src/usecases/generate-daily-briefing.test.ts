@@ -389,7 +389,7 @@ describe("generateDailyBriefing", () => {
   });
 
   it("falls back without flagging aiWithheld when the gateway fails, logging only the kind", async () => {
-    const failed = { kind: "failed" as const, message: "no answer", withheld: [], decisionId: "d" };
+    const failed = { kind: "failed" as const, message: "no answer", withheld: [], decisionId: "d", callId: "c" };
     const deps = createDepsWithDeadline({ modelGateway: stubGateway({ respond: () => failed }) });
     const result = await generateDailyBriefing(deps, defaultInput());
     expect(result.aiWithheld).toBe(false);
