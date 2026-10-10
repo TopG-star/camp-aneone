@@ -2,26 +2,32 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import type { ConnectionGrantView, LinkedLoginView, RevokeConnectionResult } from "@oneon/contracts";
+import { useSession } from "next-auth/react";
+import type { ConnectionGrantView, LinkedLoginView, ReconnectActionView, RevokeConnectionResult } from "@oneon/contracts";
 import { AlertTriangle, Loader2, Plug } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ApiError, apiFetch } from "@/lib/api";
-import { useConnections, useLinkedLogins } from "@/lib/hooks";
+import { useConnections, useContexts, useLinkedLogins } from "@/lib/hooks";
+import { choiceApplied } from "@/lib/context";
 import {
   CONNECTIONS_LOAD_FAILED,
   RECONNECT_HELP,
-  UNLINK_WARNING,
   connectionTitle,
+  endsText,
   formatDate,
   kindLabel,
+  lastUsedText,
+  reconnectLink,
   revokeFailureText,
   revokeNotice,
   revokeWarning,
   scopeText,
   unavailableNote,
   unlinkFailureText,
+  unlinkWarning,
+  type ReconnectLink,
 } from "@/lib/connections-ui";
 
 const WARNING_BOX =
@@ -35,6 +41,8 @@ const WARNING_BOX =
 export function ConnectionsSettings() {
   const connections = useConnections();
   const logins = useLinkedLogins();
+  const contexts = useContexts();
+  const { update } = useSession();
   const view = connections.data;
   const loginList = logins.data?.logins;
   // One change at a time: every button is disabled while one runs. `asking` is the row waiting for its "are you sure".
@@ -75,7 +83,27 @@ export function ConnectionsSettings() {
     }
   }
 
+  // The same switch the context picker makes (ask the server, then the session), then on to the action in that pharmacy.
+  async function switchAndOpen(action: ReconnectActionView, link: Extract<ReconnectLink, { kind: "switch" }>) {
+    setBusy(action.actionId);
+    setError("");
+    try {
+      await apiFetch("/api/contexts/validate", { method: "POST", body: JSON.stringify(link.choice) }, { redirectOnAuth: false });
+      const updated = await update({ activeContext: link.choice });
+      if (!updated || !choiceApplied(updated.activeContext, link.choice)) {
+        setError("Your session didn't accept the switch, so you are still in the same context. Please try again.");
+        setBusy(null);
+        return;
+      }
+      window.location.assign(link.href);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Couldn't switch context");
+      setBusy(null);
+    }
+  }
+
   const unavailable = view ? unavailableNote(view.unavailable) : null;
+  const reconnectLinks = view ? view.needsReconnect.map((action) => reconnectLink(action, contexts.data)) : [];
 
   return (
     <Card id="connections">
@@ -126,8 +154,7 @@ export function ConnectionsSettings() {
                           </div>
                           <p className="text-label-sm meta-copy">{scopeText(grant.kind, grant.scope)}</p>
                           <p className="text-label-sm meta-copy">
-                            Opened {formatDate(grant.createdAt)} · {grant.lastUsedAt ? `Last used ${formatDate(grant.lastUsedAt)}` : "Not used yet"} · Ends{" "}
-                            {formatDate(grant.expiresAt)} if unused
+                            Opened {formatDate(grant.createdAt)} · {lastUsedText(grant.lastUsedAt)} · {endsText(grant.expiresAt)}
                           </p>
                         </div>
                         <Button
@@ -164,19 +191,34 @@ export function ConnectionsSettings() {
               <p className="text-sm font-semibold text-on-surface dark:text-dark-on-surface">Needs reconnect</p>
               {view.needsReconnect.length > 0 ? (
                 <>
-                  <p className="text-label-sm meta-copy">{RECONNECT_HELP}</p>
+                  {reconnectLinks.some((link) => link.kind !== "reconnect") && <p className="text-label-sm meta-copy">{RECONNECT_HELP}</p>}
                   <ul className="space-y-1">
-                    {view.needsReconnect.map((action) => (
-                      <li key={action.actionId} className="text-sm">
-                        <Link href={`/actions#action-${action.actionId}`} className="font-medium underline underline-offset-2">
-                          {action.label}
-                        </Link>
-                        <span className="meta-copy">
-                          {" "}
-                          · {action.tenantName} · failed {formatDate(action.failedAt)}
-                        </span>
-                      </li>
-                    ))}
+                    {view.needsReconnect.map((action, i) => {
+                      // The action only shows in its own pharmacy: link to it there, offer the switch, or (a session that cannot switch) say how to reconnect.
+                      const link = reconnectLinks[i]!;
+                      return (
+                        <li key={action.actionId} className="text-sm">
+                          {link.kind === "open" ? (
+                            <Link href={link.href} className="font-medium underline underline-offset-2">
+                              {action.label}
+                            </Link>
+                          ) : (
+                            <span className="font-medium">{action.label}</span>
+                          )}
+                          <span className="meta-copy">
+                            {" "}
+                            · {action.tenantName} · failed {formatDate(action.failedAt)}
+                          </span>
+                          {link.kind === "switch" && (
+                            <Button size="sm" variant="secondary" className="ml-2" disabled={busy !== null} onClick={() => switchAndOpen(action, link)}>
+                              {busy === action.actionId && <Loader2 className="h-4 w-4 animate-spin" />}
+                              Switch to {action.tenantName}
+                            </Button>
+                          )}
+                          {link.kind === "reconnect" && <p className="text-label-sm meta-copy">{RECONNECT_HELP}</p>}
+                        </li>
+                      );
+                    })}
                   </ul>
                 </>
               ) : (
@@ -217,7 +259,7 @@ export function ConnectionsSettings() {
                       </div>
                       {asking === login.id && (
                         <div className={WARNING_BOX}>
-                          <p>{UNLINK_WARNING}</p>
+                          <p>{unlinkWarning(login)}</p>
                           <div className="mt-2 flex gap-2">
                             <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => setAsking(null)}>
                               Keep it linked

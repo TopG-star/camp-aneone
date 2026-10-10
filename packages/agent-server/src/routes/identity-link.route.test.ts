@@ -639,8 +639,8 @@ describe("identity linking routes", () => {
         (s.control.prepare("SELECT id, kind FROM login_identities WHERE identity_id = ?").all(s.gerry.id) as Array<{ id: string; kind: string }>).map((l) => [l.kind, l.id]),
       );
       expect([...res.body.logins].sort((x: { kind: string }, y: { kind: string }) => x.kind.localeCompare(y.kind))).toEqual([
-        { id: ids.google, kind: "google", label: "gerry@x.com" },
-        { id: ids.impressorx, kind: "impressorx", label: "pharmacy staff login at a" },
+        { id: ids.google, kind: "google", label: "gerry@x.com", current: false },
+        { id: ids.impressorx, kind: "impressorx", label: "pharmacy staff login at a", current: false },
       ]);
       // The staff id inside the login's subject is not for the browser.
       expect(JSON.stringify(res.body)).not.toContain("staff-1");
@@ -653,7 +653,28 @@ describe("identity linking routes", () => {
 
       const res = await request(s.app).get("/api/identity/logins");
 
-      expect(res.body.logins).toEqual([{ id: expect.any(String), kind: "impressorx", label: "pharmacy staff login at a" }]);
+      expect(res.body.logins).toEqual([{ id: expect.any(String), kind: "impressorx", label: "pharmacy staff login at a", current: true }]);
+    });
+
+    it("marks as current only the login the hand-off session came in through, which is the one whose unlink would sign it out", async () => {
+      const s = setup();
+      const intent = await s.startIntent(s.staff.id, true);
+      await s.link({ linkIntentId: intent.linkIntentId, secret: intent.secret, login: s.googleLogin() });
+      // A second pharmacy login on the same account, with its own membership.
+      s.identities.attachLogin(s.gerry.id, { kind: "impressorx", subject: `${s.b.id}:staff-9` }, s.gerry.id);
+      s.control
+        .prepare(
+          "INSERT INTO memberships (id, identity_id, tenant_registration_id, external_user_id, role, permissions_json, location_ids_json, status, snapshot_at, created_at) VALUES ('membership-b', ?, ?, 'staff-9', 'manager', '[]', '[]', 'active', ?, ?)",
+        )
+        .run(s.gerry.id, s.b.id, NOW, NOW);
+      const labelsCurrent = async () =>
+        Object.fromEntries(((await request(s.app).get("/api/identity/logins")).body.logins as Array<{ label: string; current: boolean }>).map((l) => [l.label, l.current]));
+
+      s.asSession(s.gerry.id, true); // the hand-off session of membership A
+      expect(await labelsCurrent()).toEqual({ "gerry@x.com": false, "pharmacy staff login at a": true, "pharmacy staff login at b": false });
+
+      s.asSession(s.gerry.id); // a Google session, in no hand-off
+      expect(await labelsCurrent()).toEqual({ "gerry@x.com": false, "pharmacy staff login at a": false, "pharmacy staff login at b": false });
     });
 
     it("words a login it cannot name without inventing anything", async () => {
@@ -661,10 +682,10 @@ describe("identity linking routes", () => {
       s.control.prepare("UPDATE login_identities SET email = NULL WHERE kind = 'google'").run();
       const orphan = s.identities.createWithLogin({ kind: "impressorx", subject: "not-a-registration:staff-9" });
       s.asSession(orphan.id);
-      expect((await request(s.app).get("/api/identity/logins")).body.logins).toEqual([{ id: expect.any(String), kind: "impressorx", label: "pharmacy staff login at a pharmacy" }]);
+      expect((await request(s.app).get("/api/identity/logins")).body.logins).toEqual([{ id: expect.any(String), kind: "impressorx", label: "pharmacy staff login at a pharmacy", current: false }]);
 
       s.asSession(s.gerry.id);
-      expect((await request(s.app).get("/api/identity/logins")).body.logins).toEqual([{ id: expect.any(String), kind: "google", label: "Google account" }]);
+      expect((await request(s.app).get("/api/identity/logins")).body.logins).toEqual([{ id: expect.any(String), kind: "google", label: "Google account", current: false }]);
     });
 
     it("needs a session", async () => {

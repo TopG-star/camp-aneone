@@ -143,6 +143,28 @@ describe("SqliteActionInstanceRepository", () => {
     expect(repo.count("user-A", { statuses: ["proposed", "cancelled"] })).toBe(2);
   });
 
+  it("filters to the actions a person owns or initiated, and leaves out originals that were retried", () => {
+    // A pharmacy file: the actions are owned by the tenant, and the person is user_id / initiator_user_id.
+    const tenantRepo = new SqliteActionInstanceRepository({ kind: "tenant", tenantId: "t-1", raw: db, __brand: "TenantDb" } as never, () => new Date("2026-10-01T12:00:00.000Z"));
+    const create = (id: string, over: Partial<NewActionInstance>) =>
+      tenantRepo.create(newInstance({ id, idempotencyKey: `k-${id}`, resourceRef: null, scope: "tenant", ownerId: "t-1", tenantId: "t-1", ...over }), USER);
+    create("own", { userId: "user-A", initiatorUserId: "user-A" });
+    create("initiated", { userId: "user-B", initiatorUserId: "user-A" });
+    create("colleagues", { userId: "user-B", initiatorUserId: "user-B" });
+    create("rule", { userId: "user-A", initiatorUserId: null });
+    create("original", { userId: "user-A", initiatorUserId: "user-A" });
+    create("retry", { userId: "user-A", initiatorUserId: "user-A", retryOf: "original", attemptNumber: 2 });
+    const ids = (filter: Parameters<typeof repo.list>[1]) => tenantRepo.list("t-1", filter).map((i) => i.id).sort();
+
+    expect(ids({ userId: "user-A" })).toEqual(["initiated", "original", "own", "retry", "rule"]);
+    expect(ids({ userId: "user-B" })).toEqual(["colleagues", "initiated"]);
+    expect(ids({ excludeRetried: true })).toEqual(["colleagues", "initiated", "own", "retry", "rule"]);
+    expect(ids({ userId: "user-A", excludeRetried: true })).toEqual(["initiated", "own", "retry", "rule"]);
+    expect(tenantRepo.count("t-1", { userId: "user-A", excludeRetried: true })).toBe(4);
+    // Off by default: nothing about the existing reads changes.
+    expect(ids({})).toEqual(["colleagues", "initiated", "original", "own", "retry", "rule"]);
+  });
+
   it("records heartbeats and undo starts without touching status or events", () => {
     repo.create(newInstance(), USER);
     repo.recordHeartbeat("act-1", "2026-10-01T12:01:00.000Z");

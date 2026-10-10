@@ -86,17 +86,21 @@ describe("Settings → Connections routes", () => {
 
     // Tenant actions: the registry is a stand-in (B-core registers no tenant action types), the repository is the real one.
     const trail: string[] = [];
+    const listFilters: unknown[] = [];
     const registry = { has: (type: string) => type === "inventory_transfer", get: () => ({ label: "Transfer stock" }) };
     const actionsFor = (db: ContextDb) => {
       const real = contextRepos(db).actionInstances;
       return {
         registry,
-        instanceRepo: { ...real, list: (...args: Parameters<typeof real.list>) => (trail.push(`read ${db.kind === "tenant" ? db.tenantId : "personal"}`), real.list(...args)) },
+        instanceRepo: {
+          ...real,
+          list: (...args: Parameters<typeof real.list>) => (trail.push(`read ${db.kind === "tenant" ? db.tenantId : "personal"}`), listFilters.push(args[1]), real.list(...args)),
+        },
       } as never;
     };
     const openTenant = (id: string) => (trail.push(`open ${id}`), gate.openTenant(id));
     let counter = 0;
-    const failAction = (reg: { id: string }, userId: string, code: string, over: { type?: string; status?: "failed" | "completed" } = {}) => {
+    const failAction = (reg: { id: string }, userId: string, code: string, over: { type?: string; status?: "failed" | "completed"; retryOf?: string } = {}) => {
       const db = gate.openTenant(reg.id);
       ensureIdentityAnchor(db, userId);
       const repo = contextRepos(db).actionInstances;
@@ -105,7 +109,8 @@ describe("Settings → Connections routes", () => {
       repo.create(
         {
           id, scope: "tenant", ownerId: db.tenantId, userId, tenantId: db.tenantId, locationIds: [], actionType: over.type ?? "inventory_transfer",
-          definitionVersion: "1", initiator: "user", initiatorUserId: userId, input: {}, evidence: [], idempotencyKey: id, retryOf: null, attemptNumber: 1, resourceRef: null,
+          definitionVersion: "1", initiator: "user", initiatorUserId: userId, input: {}, evidence: [], idempotencyKey: id, retryOf: over.retryOf ?? null,
+          attemptNumber: over.retryOf ? 2 : 1, resourceRef: null,
         },
         actor,
       );
@@ -141,7 +146,7 @@ describe("Settings → Connections routes", () => {
 
     asSession(person.id);
     return {
-      app, control, gate, client, logger, trail, person, other, regA, regB, personA, personB, otherA, grants, fakeA, fakeB, failAction, asSession, enrolment,
+      app, control, gate, client, logger, trail, listFilters, person, other, regA, regB, personA, personB, otherA, grants, fakeA, fakeB, failAction, asSession, enrolment,
     };
   }
 
@@ -231,9 +236,34 @@ describe("Settings → Connections routes", () => {
       expect(res.status).toBe(200);
       expect(res.body.unavailable).toEqual([]);
       expect([...res.body.needsReconnect].sort((x: { actionId: string }, y: { actionId: string }) => x.actionId.localeCompare(y.actionId))).toEqual([
-        { tenantName: "Acme Pharmacy", actionId: inA.id, label: "Transfer stock", failedAt: inA.updatedAt },
-        { tenantName: "Beta Pharmacy", actionId: inB.id, label: "Transfer stock", failedAt: inB.updatedAt },
+        { tenantName: "Acme Pharmacy", membershipId: s.personA.id, actionId: inA.id, label: "Transfer stock", failedAt: inA.updatedAt },
+        { tenantName: "Beta Pharmacy", membershipId: s.personB.id, actionId: inB.id, label: "Transfer stock", failedAt: inB.updatedAt },
       ]);
+    });
+
+    it("leaves out an original that was retried, but lists a retry that failed again with delegation_revoked", async () => {
+      const s = await setup();
+      const retriedAndDone = s.failAction(s.regA, s.person.id, "delegation_revoked");
+      s.failAction(s.regA, s.person.id, "unused", { status: "completed", retryOf: retriedAndDone.id });
+      const failedTwice = s.failAction(s.regA, s.person.id, "delegation_revoked");
+      const retryFailedAgain = s.failAction(s.regA, s.person.id, "delegation_revoked", { retryOf: failedTwice.id });
+      const neverRetried = s.failAction(s.regA, s.person.id, "delegation_revoked");
+
+      const res = await request(s.app).get("/api/connections");
+
+      expect((res.body.needsReconnect as Array<{ actionId: string }>).map((a) => a.actionId).sort()).toEqual([retryFailedAgain.id, neverRetried.id].sort());
+    });
+
+    it("asks only for the caller's own failed actions that were not retried, so a colleague's are never read, and does not list them", async () => {
+      const s = await setup();
+      s.failAction(s.regA, s.other.id, "delegation_revoked");
+      const mine = s.failAction(s.regA, s.person.id, "delegation_revoked");
+
+      const res = await request(s.app).get("/api/connections");
+
+      expect((res.body.needsReconnect as Array<{ actionId: string }>).map((a) => a.actionId)).toEqual([mine.id]);
+      expect(s.listFilters.length).toBeGreaterThan(0);
+      for (const filter of s.listFilters) expect(filter).toMatchObject({ statuses: ["failed"], userId: s.person.id, excludeRetried: true });
     });
 
     it("names an action type the registry does not know by its type rather than failing", async () => {
@@ -288,13 +318,15 @@ describe("Settings → Connections routes", () => {
     it("lists a pharmacy once however many memberships the person has there", async () => {
       const s = await setup();
       s.failAction(s.regA, s.person.id, "delegation_revoked");
-      new MembershipRepository(s.control).upsertFromHandoff({ identityId: s.person.id, tenantRegistrationId: s.regA.id, externalUserId: "staff-pa-2", role: "manager" });
+      const extra = new MembershipRepository(s.control).upsertFromHandoff({ identityId: s.person.id, tenantRegistrationId: s.regA.id, externalUserId: "staff-pa-2", role: "manager" });
       s.trail.length = 0;
 
       const res = await request(s.app).get("/api/connections");
 
       expect(res.body.needsReconnect).toHaveLength(1);
       expect(s.trail.filter((entry) => entry === `open ${s.regA.id}`)).toHaveLength(1);
+      // The caller's own membership at that pharmacy, which the page uses to tell whether the session is in it.
+      expect([s.personA.id, extra.id]).toContain(res.body.needsReconnect[0].membershipId);
     });
 
     it("works in a pharmacy context too: a hand-off session sees its own connections, and nothing but the identity picks them", async () => {
@@ -369,6 +401,7 @@ describe("Settings → Connections routes", () => {
       expect(again.status).toBe(200);
       expect(again.body).toEqual({ remote: "revoked" });
       expect(third.status).toBe(200);
+      expect(third.body).toEqual({ remote: "revoked" });
       expect(s.fakeA.grants.get(s.grants.personA)!.status).toBe("revoked");
     });
 

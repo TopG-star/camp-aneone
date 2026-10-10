@@ -303,6 +303,13 @@ export class SqliteActionInstanceRepository implements ActionInstanceRepository 
       clauses.push("resource_ref = ?");
       params.push(filter.resourceRef);
     }
+    if (filter.userId) {
+      clauses.push("(user_id = ? OR initiator_user_id = ?)");
+      params.push(filter.userId, filter.userId);
+    }
+    if (filter.excludeRetried) {
+      clauses.push("NOT EXISTS (SELECT 1 FROM action_instances r WHERE r.retry_of = action_instances.id)");
+    }
     return { where: clauses.join(" AND "), params };
   }
 

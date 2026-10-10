@@ -241,6 +241,9 @@ export function createIdentitySessionRouter(deps: IdentityLinkDeps): Router {
           login.kind === "google"
             ? (login.email ?? "Google account")
             : `pharmacy staff login at ${(login.registrationId && deps.registrations.findById(login.registrationId)?.displayName) || "a pharmacy"}`,
+        // The login a hand-off session came in through is the one whose membership it works in: unlinking it moves that membership away
+        // and revokes the session's grant, so the page warns first. A Google session has no such login.
+        current: req.sessionId !== undefined && req.sessionContext !== undefined && login.membershipIds.includes(req.sessionContext.membershipId),
       })),
     };
     res.json(body);

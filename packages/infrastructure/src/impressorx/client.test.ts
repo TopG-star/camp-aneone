@@ -77,8 +77,10 @@ describe("ImpressoRx client against the fake deployment", () => {
     };
     // Applies the request at the fake, then loses the reply (on token calls) while `dropReplies` is set. `afterToken` runs after each
     // token request the fake has answered, before the reply is lost.
-    const flags: { dropReplies: boolean; afterToken?: () => void } = { dropReplies: false };
+    // `beforeRevoke` runs when a revoke request reaches the deployment, before the fake applies it.
+    const flags: { dropReplies: boolean; afterToken?: () => void; beforeRevoke?: () => void } = { dropReplies: false };
     const wrapped: FetchLike = async (input, init) => {
+      if (input.toString().endsWith("/api/oneon/revoke")) flags.beforeRevoke?.();
       const res = await fake.fetch(input, init);
       if (input.toString().endsWith("/api/oneon/token")) {
         const drop = flags.dropReplies;
@@ -391,9 +393,15 @@ describe("ImpressoRx client against the fake deployment", () => {
       const { grantId } = await s.launch();
       const grant = s.client.forGrant(grantId);
       await grant.accessToken(); // cached since the hand-off
+      // What the deployment's request finds in the control database when it arrives (an assertion thrown in here would be swallowed as a failed request).
+      let atArrival: unknown = "no request arrived";
+      s.flags.beforeRevoke = () => {
+        atArrival = s.control.prepare("SELECT status, revoked_reason FROM delegation_grants WHERE id = ?").get(grantId);
+      };
 
       const outcome = await s.client.revokeGrantFor(s.identityId, grantId);
 
+      expect(atArrival).toEqual({ status: "revoked", revoked_reason: "revoked_by_person" });
       expect(outcome).toEqual({ remote: "revoked" });
       expect(s.grants.find(grantId)).toMatchObject({ status: "revoked", revokedReason: "revoked_by_person" });
       expect(s.fake.grants.get(grantId)!.status).toBe("revoked");

@@ -6,7 +6,14 @@ import type { ControlDb } from "./open-control-db.js";
 export type LoginKind = "google" | "impressorx";
 export type Identity = { id: string; status: "active" | "disabled" };
 /** A login as it may be shown: never its subject, which for an ImpressoRx login holds a staff user id. */
-export type LoginSummary = { id: string; kind: LoginKind; email: string | null; registrationId: string | null };
+export type LoginSummary = {
+  id: string;
+  kind: LoginKind;
+  email: string | null;
+  registrationId: string | null;
+  /** The memberships that go with an ImpressoRx login (the ones an unlink moves); none for a Google login. */
+  membershipIds: string[];
+};
 export type Membership = {
   id: string;
   identityId: string;
@@ -294,9 +301,19 @@ export class SqliteIdentityRepository implements IdentityRepository {
       .prepare("SELECT id, kind, subject, email FROM login_identities WHERE identity_id = ? ORDER BY created_at, id")
       .all(identityId) as Array<{ id: string; kind: LoginKind; subject: string; email: string | null }>;
     return rows.map((r) => {
-      // An ImpressoRx subject is "<registration id>:<staff user id>"; only the registration is for showing.
+      // An ImpressoRx subject is "<registration id>:<staff user id>"; only the registration is for showing, and the membership it opened
+      // is found the way unlink finds it.
       const separator = r.subject.indexOf(":");
-      return { id: r.id, kind: r.kind, email: r.email, registrationId: r.kind === "impressorx" && separator > 0 ? r.subject.slice(0, separator) : null };
+      const named = r.kind === "impressorx" && separator > 0;
+      const registrationId = named ? r.subject.slice(0, separator) : null;
+      const membershipIds = named
+        ? (
+            this.db
+              .prepare("SELECT id FROM memberships WHERE identity_id = ? AND tenant_registration_id = ? AND external_user_id = ? ORDER BY id")
+              .all(identityId, registrationId, r.subject.slice(separator + 1)) as Array<{ id: string }>
+          ).map((m) => m.id)
+        : [];
+      return { id: r.id, kind: r.kind, email: r.email, registrationId, membershipIds };
     });
   }
 

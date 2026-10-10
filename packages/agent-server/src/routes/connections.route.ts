@@ -32,16 +32,21 @@ export function createConnectionsRouter(deps: ConnectionsRouterDeps): Router {
 
   const pharmacyName = (registrationId: string) => deps.registrations.findById(registrationId)?.displayName ?? UNKNOWN_PHARMACY;
 
-  /** The identity's failed delegation_revoked actions in one pharmacy file. A no_action_grant failure has its own Retry message. */
-  function reconnectActions(db: TenantDb, identityId: string, tenantName: string): ReconnectActionView[] {
+  /**
+   * The identity's failed delegation_revoked actions in one pharmacy file. A no_action_grant failure has its own Retry message, and an
+   * original that was retried is left out (its retry carries on; if that failed again it is listed itself). Only the identity's own
+   * actions are read, never a colleague's.
+   */
+  function reconnectActions(db: TenantDb, identityId: string, tenantName: string, membershipId: string): ReconnectActionView[] {
     const { instanceRepo, registry } = deps.actionsFor(db);
     const found: ReconnectActionView[] = [];
     for (let offset = 0; ; offset += PAGE) {
-      const page = instanceRepo.list(db.tenantId, { statuses: ["failed"], limit: PAGE, offset });
+      const page = instanceRepo.list(db.tenantId, { statuses: ["failed"], userId: identityId, excludeRetried: true, limit: PAGE, offset });
       for (const action of page) {
-        if (action.userId !== identityId || action.error?.code !== "delegation_revoked") continue;
+        if (action.error?.code !== "delegation_revoked") continue;
         found.push({
           tenantName,
+          membershipId,
           actionId: action.id,
           label: registry.has(action.actionType) ? registry.get(action.actionType).label : action.actionType,
           failedAt: action.updatedAt,
@@ -83,7 +88,7 @@ export function createConnectionsRouter(deps: ConnectionsRouterDeps): Router {
         seen.add(registrationId);
         const tenantName = pharmacyName(registrationId);
         try {
-          needsReconnect.push(...reconnectActions(deps.openTenant(registrationId), identityId, tenantName));
+          needsReconnect.push(...reconnectActions(deps.openTenant(registrationId), identityId, tenantName, membership.id));
         } catch (error) {
           deps.logger.warn("Connections could not read a pharmacy file", { registrationId, error: error instanceof Error ? error.message : String(error) });
           if (!unavailable.includes(tenantName)) unavailable.push(tenantName);

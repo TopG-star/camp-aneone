@@ -418,17 +418,18 @@ describe("linking identities", () => {
     const logins = s.repo.listLogins(s.google.id);
 
     const byHandle = (l: { kind: string; registrationId: string | null }) => `${l.kind}:${l.registrationId}`;
+    // Each ImpressoRx login names the memberships that go with it (the ones an unlink would move).
     expect([...logins].sort((x, y) => byHandle(x).localeCompare(byHandle(y)))).toEqual(
       [
-        { id: expect.any(String), kind: "google", email: "gerry@x.com", registrationId: null },
-        { id: expect.any(String), kind: "impressorx", email: null, registrationId: s.a.id },
-        { id: expect.any(String), kind: "impressorx", email: null, registrationId: s.b.id },
+        { id: expect.any(String), kind: "google", email: "gerry@x.com", registrationId: null, membershipIds: [] },
+        { id: expect.any(String), kind: "impressorx", email: null, registrationId: s.a.id, membershipIds: [s.staffMembershipA] },
+        { id: expect.any(String), kind: "impressorx", email: null, registrationId: s.b.id, membershipIds: [s.staffMembershipB] },
       ].sort((x, y) => byHandle(x).localeCompare(byHandle(y))),
     );
     expect(JSON.stringify(logins)).not.toContain("staff-1");
     expect(JSON.stringify(logins)).not.toContain("staff-9");
     // A subject that is not "<registration id>:<staff id>" names no pharmacy.
-    expect(s.repo.listLogins(s.colleague.id)).toEqual([{ id: expect.any(String), kind: "impressorx", email: null, registrationId: null }]);
+    expect(s.repo.listLogins(s.colleague.id)).toEqual([{ id: expect.any(String), kind: "impressorx", email: null, registrationId: null, membershipIds: [] }]);
     expect(s.repo.listLogins("nobody")).toEqual([]);
   });
 

@@ -64,6 +64,10 @@ export interface NoteRequest {
 export interface InstanceListFilter {
   statuses?: readonly LifecycleStatus[];
   resourceRef?: string;
+  /** Only the actions this person owns (user_id) or initiated (initiator_user_id), not a colleague's. */
+  userId?: string;
+  /** Leave out an action that has been retried (another instance's retry_of is its id): its retry carries on from it. */
+  excludeRetried?: boolean;
   limit?: number;
   offset?: number;
 }
