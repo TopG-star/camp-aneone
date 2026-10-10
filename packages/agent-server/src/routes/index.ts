@@ -15,6 +15,7 @@ import { createInboxRouter } from "./inbox.route.js";
 import { createActionsRouter } from "./actions.route.js";
 import { createActionDefinitionsRouter } from "./action-definitions.route.js";
 import { createAiDataRouter } from "./ai-data.route.js";
+import { createTenantSettingsRouter } from "./tenant-settings.route.js";
 import { createTodayRouter } from "./today.route.js";
 import { createCycleRouter } from "./cycle.route.js";
 import { createStatusRouter } from "./status.route.js";
@@ -607,6 +608,19 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       choices: container.aiDataChoices,
       audit: container.modelAudit,
       logger: new StructuredLogger("ai-data", env.LOG_LEVEL),
+    }),
+  );
+  // The pharmacy's own AI data limit: a pharmacy context only, and a change is checked live with ImpressoRx.
+  app.use(
+    "/api/tenant",
+    ...contextAuth,
+    createTenantSettingsRouter({
+      limits: container.tenantAiLimits,
+      memberships: container.memberships,
+      snapshots,
+      configuredProviders: container.modelProviders,
+      overrides: container.modelOverrides,
+      logger: new StructuredLogger("tenant-settings", env.LOG_LEVEL),
     }),
   );
 

@@ -107,4 +107,25 @@ describe("registerRoutes: chat calendar read tools", () => {
       container.shutdown();
     }
   });
+
+  it("mounts the pharmacy AI limit behind the context chain: a personal session is told it needs a pharmacy, a signed-out request is refused", async () => {
+    stubEnv();
+    const container = createContainer(loadEnv());
+    try {
+      const app = express();
+      app.use(cookieParser());
+      app.use(express.json());
+      registerRoutes(app, container);
+      const cookie = await sessionCookie({ email: "alice@test.com", sub: "g-alice", provider: "google" });
+
+      const personal = await request(app).get("/api/tenant/ai-limit").set("Cookie", cookie);
+      const signedOut = await request(app).get("/api/tenant/ai-limit");
+
+      expect(personal.status).toBe(403);
+      expect(personal.body).toEqual({ error: "tenant_context_required" });
+      expect(signedOut.status).toBe(401);
+    } finally {
+      container.shutdown();
+    }
+  });
 });

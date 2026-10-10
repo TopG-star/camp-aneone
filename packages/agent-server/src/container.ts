@@ -30,6 +30,7 @@ import {
   TenantRegistrationRepository,
   EnrolmentService,
   MembershipRepository,
+  TenantAiLimitRepository,
   UsedHandoffJti,
   createImpressoRxClient,
   type ImpressoRxClient,
@@ -112,6 +113,8 @@ export interface AppContainer {
   tenantRegistrations: TenantRegistrationRepository;
   enrolment: EnrolmentService;
   memberships: MembershipRepository;
+  /** Each pharmacy's AI data limit (spec 9.4); the model gateway reads it on every call. */
+  tenantAiLimits: TenantAiLimitRepository;
   handoffJti: UsedHandoffJti;
   /** The sole holder of delegation grants; null until ONEON_GRANT_MASTER_KEY is set. */
   impressorx: ImpressoRxClient | null;
@@ -222,7 +225,8 @@ export function createContainer(env: Env): AppContainer {
   });
   logger.info("Database ready", { path: env.DATABASE_PATH });
 
-  const modelWiring = createModelWiring(env, { context: personal, logger });
+  const tenantAiLimits = new TenantAiLimitRepository(control);
+  const modelWiring = createModelWiring(env, { context: personal, logger, registrations: tenantRegistrations, tenantLimits: tenantAiLimits });
 
   // ── Repositories ──────────────────────────────────────────
   const inboundItemRepo = new SqliteInboundItemRepository(db);
@@ -521,6 +525,7 @@ export function createContainer(env: Env): AppContainer {
     tenantRegistrations,
     enrolment,
     memberships,
+    tenantAiLimits,
     handoffJti,
     impressorx,
     snapshots,

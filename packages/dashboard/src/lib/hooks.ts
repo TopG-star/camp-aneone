@@ -1,7 +1,7 @@
 "use client";
 
 import useSWR, { type SWRConfiguration } from "swr";
-import type { ConnectionsView, LinkedLoginsView, UserProfileResponse } from "@oneon/contracts";
+import type { ConnectionsView, LinkedLoginsView, TenantAiLimitView, UserProfileResponse } from "@oneon/contracts";
 import { apiFetch } from "@/lib/api";
 import type { ContextsResponse } from "@/lib/context";
 
@@ -154,6 +154,11 @@ export function useActionDefinitions(config?: SWRConfiguration) {
 /** Settings → AI data, and the paused-sorting notice on Today */
 export function useAiData(config?: SWRConfiguration) {
   return useSWR("/api/ai-data", fetcher, config);
+}
+
+/** Settings → AI data in a pharmacy: the pharmacy's own limit and its history */
+export function useTenantAiLimit(config?: SWRConfiguration) {
+  return useSWR<TenantAiLimitView>("/api/tenant/ai-limit", fetcher, config);
 }
 
 /** Settings → Connections: the person's delegated access, and the actions waiting for them to reconnect */

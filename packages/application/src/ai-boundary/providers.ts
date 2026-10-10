@@ -6,6 +6,11 @@ export interface ProviderEntry {
   /** The most this provider may ever receive, per context (spec §6.2). Raised only after a vendor review. */
   limits: { personal: DataClass; tenant: DataClass };
   review: "unreviewed" | "reviewed";
+  /**
+   * The signed data processing agreement with this provider for pharmacy data (spec 9.4). A pharmacy's limit may be raised to a class
+   * only while a configured provider is reviewed, holds one of these and has a tenant limit that reaches the class. Absent until signed.
+   */
+  tenantDpa?: { signedOn: string; reference: string } | null;
 }
 
 /** Oneon's AI processors. Changed only in code, by the platform (spec §2.7). */

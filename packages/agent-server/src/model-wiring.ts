@@ -3,7 +3,6 @@ import type { ContextDb, Logger } from "@oneon/domain";
 import {
   createModelGateway,
   Fingerprinter,
-  TENANT_CHOICE_LIMIT,
   parseProviderOverrides,
   type AiDataChoiceRepository,
   type ModelAuditRepository,
@@ -13,14 +12,31 @@ import {
   type ModelRouting,
   type ProviderId,
 } from "@oneon/application";
-import { AnthropicProvider, DeepSeekProvider, SqliteAiDataChoiceRepository, rawDb } from "@oneon/infrastructure";
+import {
+  AnthropicProvider,
+  DeepSeekProvider,
+  SqliteAiDataChoiceRepository,
+  rawDb,
+  type TenantAiLimitRepository,
+  type TenantRegistrationRepository,
+} from "@oneon/infrastructure";
 import type { Env } from "./config/env.js";
 
 /** The only place provider clients are constructed (architecture test, Task 16). */
 /** The vocabulary the gateway exempts from its restored-value checks: every registered tool's name and description. */
 export const toolVocabulary = (tools: Array<{ name: string; description: string }>): string => tools.map((t) => `${t.name}: ${t.description}`).join("\n");
 
-export function createModelWiring(env: Env, deps: { context: ContextDb; logger: Logger }) {
+export function createModelWiring(
+  env: Env,
+  deps: {
+    context: ContextDb;
+    logger: Logger;
+    /** Finds the registration whose rows carry a model context's tenant id. */
+    registrations: Pick<TenantRegistrationRepository, "findByTenantId">;
+    /** The stored pharmacy limits (spec 9.4), read on every call. */
+    tenantLimits: Pick<TenantAiLimitRepository, "current">;
+  },
+) {
   const choices: AiDataChoiceRepository = new SqliteAiDataChoiceRepository(rawDb(deps.context));
   const audit: ModelAuditRepository = contextRepos(deps.context).modelAudit;
   const breaker = { failureThreshold: env.CB_FAILURE_THRESHOLD, resetTimeoutMs: env.CB_RESET_TIMEOUT_MS };
@@ -71,8 +87,12 @@ export function createModelWiring(env: Env, deps: { context: ContextDb; logger: 
     timeouts: { standard: env.LLM_CLASSIFIER_TIMEOUT_MS, reasoning: env.LLM_SYNTHESIS_TIMEOUT_MS },
     logger: deps.logger,
     authoredVocabulary: currentToolVocabulary,
-    // No tenant limit is stored yet (spec 9.4), so every tenant is at the default; the stored limit replaces this.
-    tenantLimit: () => TENANT_CHOICE_LIMIT,
+    // The pharmacy's stored limit (spec 9.4), read afresh on every call so a lowering takes effect at once. A tenant id that matches no
+    // active registration is nobody Oneon can vouch for: D0.
+    tenantLimit: (tenantId) => {
+      const registration = deps.registrations.findByTenantId(tenantId);
+      return registration ? deps.tenantLimits.current(registration.id) : "D0";
+    },
   };
   const gateway = createModelGateway(gatewayDeps);
   // A tenant request gets a gateway whose audit is that request's own handle: its decision and outcome rows are written to

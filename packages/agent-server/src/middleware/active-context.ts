@@ -47,7 +47,8 @@ const OK: RefreshResult = { ok: true };
 const UNREACHABLE_COOLDOWN_MS = 30_000;
 
 export type LiveResult =
-  | { ok: true; membership: Membership }
+  /** `tokenVersion` is the live snapshot's, for a decision that records which check authorized it. */
+  | { ok: true; membership: Membership; tokenVersion: number }
   | { ok: false; reason: "membership_suspended" | "launch_required" | "impressorx_unreachable" };
 
 export interface SnapshotRefresher {
@@ -66,7 +67,7 @@ export interface SnapshotRefresherDeps {
   registrations: Pick<TenantRegistrationRepository, "findById">;
   /** The ImpressoRx client; null when delegation is not configured, and a stale snapshot then needs a relaunch. */
   client: {
-    forBoundSession: (sessionId: string, identityId: string, membershipId: string) => { me(): Promise<unknown> } | null;
+    forBoundSession: (sessionId: string, identityId: string, membershipId: string) => { me(): Promise<{ tokenVersion: number }> } | null;
     revokeForMembership: ImpressoRxClient["revokeForMembership"];
   } | null;
   logger: Logger;
@@ -139,8 +140,9 @@ export function createSnapshotRefresher(deps: SnapshotRefresherDeps): SnapshotRe
     async checkLive({ sessionId, membership }) {
       const calls = sessionId && deps.client ? deps.client.forBoundSession(sessionId, membership.identityId, membership.id) : null;
       if (!calls) return { ok: false, reason: "launch_required" };
+      let tokenVersion: number;
       try {
-        await calls.me();
+        ({ tokenVersion } = await calls.me());
       } catch (error) {
         const failure = classifyFailure(membership, error);
         if (failure === "unreachable") {
@@ -155,7 +157,7 @@ export function createSnapshotRefresher(deps: SnapshotRefresherDeps): SnapshotRe
         suspend(membership, "snapshot");
         return { ok: false, reason: "membership_suspended" };
       }
-      return { ok: true, membership: fresh };
+      return { ok: true, membership: fresh, tokenVersion };
     },
     async ensureFresh({ sessionId, membership }) {
       // NaN (an unreadable time) counts as stale.

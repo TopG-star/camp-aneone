@@ -12,4 +12,12 @@ export { ensureIdentityForUser } from "./control/ensure-identity.js";
 export { TenantRegistrationRepository, KEY_OVERLAP_MS, type TenantRegistration, type TenantRegistrationStatus, type OneonKey, type DeploymentKey, type CreateTenantRegistrationInput } from "./control/tenant-registration-repository.js";
 export { PlatformOperatorRepository } from "./control/platform-operator-repository.js";
 export { MembershipRepository, type SnapshotFields } from "./control/membership-repository.js";
+export {
+  TenantAiLimitRepository,
+  DEFAULT_TENANT_LIMIT,
+  type TenantAiLimitVersion,
+  type NewTenantAiLimitVersion,
+  type TenantLimitChange,
+  type TenantLimitClass,
+} from "./control/tenant-ai-limit-repository.js";
 export { UsedHandoffJti } from "./control/used-handoff-jti.js";

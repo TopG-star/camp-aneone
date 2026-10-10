@@ -38,3 +38,26 @@ export const AiDataViewSchema = z.object({
 export type AiDataView = z.infer<typeof AiDataViewSchema>;
 
 export const AiDataChoiceWriteSchema = z.object({ provider: ProviderIdSchema, maxClass: z.enum(["D1", "D2"]) }).strict();
+
+// Settings → AI data in a pharmacy (Step B-core, spec 9.4): the pharmacy's own limit, shown to everyone in it. A row names no one and
+// carries neither its live check nor its evidence; `byYou` is all the page needs of who set it.
+const TenantLimitClassSchema = z.enum(["D0", "D1", "D2"]);
+
+export const TenantAiLimitVersionViewSchema = z.object({
+  id: z.string(),
+  maxClass: TenantLimitClassSchema,
+  at: z.string(),
+  byYou: z.boolean(),
+});
+
+export const TenantAiLimitViewSchema = z.object({
+  current: TenantLimitClassSchema,
+  /** Newest first. Empty while the pharmacy is on the default. */
+  history: z.array(TenantAiLimitVersionViewSchema),
+  /** From the cached snapshot, only to decide whether to show the control. The server checks again, live, on every change. */
+  canChange: z.boolean(),
+});
+export type TenantAiLimitView = z.infer<typeof TenantAiLimitViewSchema>;
+
+/** D3 and D4 parse here and are refused by the route with their own error, because they are never allowed (spec 9.4). */
+export const TenantAiLimitWriteSchema = z.object({ maxClass: DataClassSchema }).strict();

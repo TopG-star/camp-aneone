@@ -591,14 +591,14 @@ describe("live check against the fake deployment (spec 9.3: the approver is chec
     return { fake, control, membership, memberships, sent, log, grantStatuses, snapshots, live, advance: (ms: number) => (now += ms) };
   }
 
-  it("asks ImpressoRx now, even though the stored snapshot is fresh, and returns what it says", async () => {
+  it("asks ImpressoRx now, even though the stored snapshot is fresh, and returns what it says, with the snapshot's token version", async () => {
     const s = await setup();
     s.fake.snapshots.set("staff-1", { userId: "staff-1", role: "viewer", permissions: ["a.b"], locationIds: ["l9"], tokenVersion: 2, tenantStatus: "Active" });
 
     const result = await s.live();
 
     expect(s.sent).toEqual(["/api/oneon/me"]);
-    expect(result).toMatchObject({ ok: true, membership: { id: s.membership.id, role: "viewer", permissions: ["a.b"], locationIds: ["l9"], status: "active" } });
+    expect(result).toMatchObject({ ok: true, tokenVersion: 2, membership: { id: s.membership.id, role: "viewer", permissions: ["a.b"], locationIds: ["l9"], status: "active" } });
   });
 
   it("a real 401 suspends the membership, revokes its grants locally and reports membership_suspended", async () => {

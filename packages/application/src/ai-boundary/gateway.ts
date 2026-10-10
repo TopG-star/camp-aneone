@@ -37,7 +37,7 @@ export interface ModelGatewayDeps {
   audit: ModelAuditRepository;
   /** The audit repository a call is written to. Defaults to `audit`. A tenant context must return its own file's repository (spec 9.5). */
   auditFor?: (context: ModelContext) => ModelAuditRepository;
-  /** The tenant layer of the limit (spec 9.4), read per call. Defaults to TENANT_CHOICE_LIMIT; tenant limits are not stored yet. */
+  /** The tenant layer of the limit (spec 9.4), read per call. Defaults to TENANT_CHOICE_LIMIT; the server supplies each pharmacy's stored limit. */
   tenantLimit?: (tenantId: string) => DataClass;
   fingerprinter: Fingerprinter;
   maxRetries: number;
