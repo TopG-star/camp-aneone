@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createDatabase } from "./connection.js";
-import { ContextDbGate, rawDb } from "./context-db-gate.js";
+import { ContextDbGate, TenantRefusedError, rawDb } from "./context-db-gate.js";
 import { openControlDb } from "./control/open-control-db.js";
 import { sealBuffer } from "../crypto/envelope.js";
 import { backupAll, decryptBackup, restoreTest, restoreTestOwned, sweepBackupLeftovers } from "./backup.js";
@@ -160,29 +160,39 @@ describe("backups", () => {
     expect(walk(tmpDir)).toEqual([]);
   });
 
-  it("backs up the other files and then fails when one tenant cannot be opened", async () => {
-    const { deps, tenantDir, regs, gate } = setup();
-    gate.close(); // evicts the cached handles, so the file can be removed
-    rmSync(join(tenantDir, regs[0]!.fileName), { force: true });
+  /** A gate whose open of one tenant throws `error` while `broken.on` is true; everything else is the real gate. */
+  function flakyGate(gate: ContextDbGate, registrationId: string, error: Error) {
+    const broken = { on: true };
+    const wrapped = {
+      openPersonal: () => gate.openPersonal(),
+      openTenant: (id: string) => {
+        if (broken.on && id === registrationId) throw error;
+        return gate.openTenant(id);
+      },
+    } as unknown as ContextDbGate;
+    return { wrapped, broken };
+  }
+
+  it("backs up the other files and then fails when one tenant cannot be opened for a non-refusal reason", async () => {
+    const { deps, regs, gate } = setup();
+    const { wrapped } = flakyGate(gate, "reg-1", new Error("disk error"));
     const errors: string[] = [];
     const logger = { info() {}, warn() {}, debug() {}, error: (m: string) => void errors.push(m) };
-    await expect(backupAll({ ...deps, logger })).rejects.toThrow(/t-1/);
+    await expect(backupAll({ ...deps, gate: wrapped, logger })).rejects.toThrow(/t-1/);
     expect(existsSync(join(deps.outDir, "2026-10-10.partial", `${regs[1]!.fileName.replace(/\.db$/, "")}.db.enc`))).toBe(true);
+    expect(existsSync(join(deps.outDir, "2026-10-10"))).toBe(false);
     expect(errors.length).toBe(1);
   });
 
   describe("a day is only complete when every file is in it", () => {
     it("leaves no day folder when one file fails, and the next run writes the whole day", async () => {
-      const { deps, tenantDir, regs, gate } = setup();
-      const saved = join(tenantDir, "saved.db");
-      gate.close();
-      copyFileSync(join(tenantDir, regs[0]!.fileName), saved);
-      rmSync(join(tenantDir, regs[0]!.fileName), { force: true });
-      await expect(backupAll(deps)).rejects.toThrow();
+      const { deps, gate } = setup();
+      const { wrapped, broken } = flakyGate(gate, "reg-1", new Error("disk error"));
+      await expect(backupAll({ ...deps, gate: wrapped })).rejects.toThrow();
       expect(existsSync(join(deps.outDir, "2026-10-10"))).toBe(false);
 
-      copyFileSync(saved, join(tenantDir, regs[0]!.fileName));
-      const results = await backupAll(deps);
+      broken.on = false;
+      const results = await backupAll({ ...deps, gate: wrapped });
       expect(results.length).toBe(4);
       expect(readdirSync(deps.outDir)).toEqual(["2026-10-10"]);
       // Sealed for its final place: it restores from there.
@@ -198,6 +208,45 @@ describe("backups", () => {
       expect(names.length).toBe(3);
       expect(names).not.toContain("stale.db.enc");
       expect(existsSync(join(deps.outDir, "2026-10-10.partial"))).toBe(false);
+    });
+  });
+
+  describe("a tenant the gate refuses is skipped, not failed", () => {
+    it("completes the day, lists the tenant in skipped.json, and logs it at error", async () => {
+      const { deps, regs, gate } = setup();
+      const { wrapped } = flakyGate(gate, "reg-1", new TenantRefusedError("tenant_schema_behind"));
+      const errors: Array<[string, unknown]> = [];
+      const logger = { info() {}, warn() {}, debug() {}, error: (m: string, c?: unknown) => void errors.push([m, c]) };
+      const results = await backupAll({ ...deps, gate: wrapped, logger });
+
+      const day = join(deps.outDir, "2026-10-10");
+      expect(existsSync(`${day}.partial`)).toBe(false);
+      expect(results.map((r) => r.context)).toEqual(["control", "personal", "t-2"]);
+      expect(results.skipped).toEqual([{ registrationId: "reg-1", code: "tenant_schema_behind" }]);
+      expect(JSON.parse(readFileSync(join(day, "skipped.json"), "utf8"))).toEqual([{ registrationId: "reg-1", code: "tenant_schema_behind" }]);
+      expect(readdirSync(day).sort()).toEqual(["control.db.enc", "personal.db.enc", `${regs[1]!.fileName.replace(/\.db$/, "")}.db.enc`, "skipped.json"].sort());
+      expect(errors).toHaveLength(1);
+      expect(errors[0]![1]).toMatchObject({ registrationId: "reg-1", code: "tenant_schema_behind" });
+    });
+
+    it("writes no skipped.json when nothing was skipped", async () => {
+      const { deps } = setup();
+      const results = await backupAll(deps);
+      expect(results.skipped).toEqual([]);
+      expect(existsSync(join(deps.outDir, "2026-10-10", "skipped.json"))).toBe(false);
+    });
+
+    it("keeps the day partial when a skipped tenant is not the only problem", async () => {
+      const { deps, gate } = setup();
+      const wrapped = {
+        openPersonal: () => gate.openPersonal(),
+        openTenant: (id: string) => {
+          if (id === "reg-1") throw new TenantRefusedError("tenant_unavailable");
+          throw new Error("disk error");
+        },
+      } as unknown as ContextDbGate;
+      await expect(backupAll({ ...deps, gate: wrapped })).rejects.toThrow(/t-2/);
+      expect(existsSync(join(deps.outDir, "2026-10-10"))).toBe(false);
     });
   });
 

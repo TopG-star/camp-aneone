@@ -5,7 +5,7 @@ import { basename, dirname, join } from "node:path";
 import type { Logger } from "@oneon/domain";
 import { openBuffer, sealBuffer } from "../crypto/envelope.js";
 import type { ContextDbGate } from "./context-db-gate.js";
-import { rawDb } from "./context-db-gate.js";
+import { TenantRefusedError, rawDb } from "./context-db-gate.js";
 import type { ControlDb } from "./control/open-control-db.js";
 import { TenantRegistrationRepository } from "./control/tenant-registration-repository.js";
 
@@ -29,6 +29,15 @@ export interface PreMigrationBackup {
   keyB64: string;
   now: () => Date;
 }
+
+/** A tenant the gate refused to open (typed refusal); it has no file in the day, and the day is listed as having skipped it. */
+export interface SkippedTenant {
+  registrationId: string;
+  code: TenantRefusedError["code"];
+}
+
+/** The files written, with the tenants skipped. */
+export type BackupAllResult = BackupResult[] & { skipped: SkippedTenant[] };
 
 export class BackupIncompleteError extends Error {
   constructor(
@@ -101,7 +110,8 @@ export async function backupDatabase(
  * Backs up control, personal and every active tenant into `<outDir>/<yyyy-mm-dd>/`. The files are written into
  * `<yyyy-mm-dd>.partial/` and that folder is renamed only when every file succeeded, so a day folder always means a complete day:
  * after a failure (or a crash) no day folder exists and the next run starts the day again. Every file is tried; any failure is
- * thrown at the end. Files are sealed for their final folder, not the partial one.
+ * thrown at the end. A tenant the gate refuses to open with a typed refusal (e.g. tenant_schema_behind) is skipped, not failed:
+ * it is logged at error, listed in `skipped.json` in the day folder, and does not hold the day back. Files are sealed for their final folder, not the partial one.
  */
 export async function backupAll(deps: {
   gate: ContextDbGate;
@@ -110,7 +120,7 @@ export async function backupAll(deps: {
   keyB64: string;
   now: () => Date;
   logger?: Logger;
-}): Promise<BackupResult[]> {
+}): Promise<BackupAllResult> {
   const finalDir = join(deps.outDir, backupDay(deps.now()));
   const dir = `${finalDir}${PARTIAL_SUFFIX}`;
   if (existsSync(finalDir)) throw new Error(`${finalDir} already exists; a day is backed up once`);
@@ -119,12 +129,13 @@ export async function backupAll(deps: {
   const failed: Array<{ context: string; error: string }> = [];
 
   // Handles come from the gate (and the control handle): tenant files are never opened any other way.
-  const jobs: Array<{ context: string; name: string; db: () => Database.Database }> = [
+  const skipped: SkippedTenant[] = [];
+  const jobs: Array<{ context: string; registrationId?: string; name: string; db: () => Database.Database }> = [
     { context: "control", name: "control", db: () => deps.control },
     { context: "personal", name: "personal", db: () => rawDb(deps.gate.openPersonal()) },
   ];
   for (const reg of new TenantRegistrationRepository(deps.control).listActive()) {
-    jobs.push({ context: reg.tenantId, name: reg.fileName.replace(/\.db$/, ""), db: () => rawDb(deps.gate.openTenant(reg.id)) });
+    jobs.push({ context: reg.tenantId, registrationId: reg.id, name: reg.fileName.replace(/\.db$/, ""), db: () => rawDb(deps.gate.openTenant(reg.id)) });
   }
 
   for (const job of jobs) {
@@ -132,14 +143,23 @@ export async function backupAll(deps: {
       const db = job.db();
       completed.push({ file: await backupDatabase(db, { dir, name: job.name, keyB64: deps.keyB64, sealAsDir: finalDir }), context: job.context });
     } catch (error) {
+      if (error instanceof TenantRefusedError && job.registrationId) {
+        skipped.push({ registrationId: job.registrationId, code: error.code });
+        deps.logger?.error("backup skipped: the tenant is refused service", { registrationId: job.registrationId, code: error.code });
+        continue;
+      }
       const message = error instanceof Error ? error.message : String(error);
       failed.push({ context: job.context, error: message });
       deps.logger?.error("backup failed", { context: job.context, error: message });
     }
   }
   if (failed.length > 0) throw new BackupIncompleteError(completed, failed);
+  if (skipped.length > 0) writeFileSync(join(dir, "skipped.json"), JSON.stringify(skipped, null, 2), { mode: 0o600 });
   renameSync(dir, finalDir);
-  return completed.map((c) => ({ ...c, file: join(finalDir, basename(c.file)) }));
+  return Object.assign(
+    completed.map((c) => ({ ...c, file: join(finalDir, basename(c.file)) })),
+    { skipped },
+  );
 }
 
 /**

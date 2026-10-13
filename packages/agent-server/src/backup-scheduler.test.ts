@@ -132,6 +132,13 @@ describe("BackupScheduler", () => {
     expect(restoreTest.mock.calls[0]![0]).toBe(join(outDir, "2026-10-09", "tenant-ok.db.enc"));
   });
 
+  it("says the day completed with tenants skipped when backupAll reports some", async () => {
+    const backupAll = vi.fn(async () => Object.assign([], { skipped: [{ registrationId: "reg-1", code: "tenant_schema_behind" }] }));
+    const { scheduler, log } = make(backupAll);
+    await scheduler.tick();
+    expect(log.warn).toHaveBeenCalledWith("Nightly backup completed with tenants skipped", { day: "2026-10-10", skipped: 1 });
+  });
+
   it("logs the reason when a restored file does not belong to its context", async () => {
     const owned = vi.fn(async (_file: string) => ({ ok: false, integrity: "ok", contextMeta: null, reason: "no registration owns x.db" }));
     const { scheduler, log } = make(fakeBackup(), owned);

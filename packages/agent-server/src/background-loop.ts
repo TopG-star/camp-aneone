@@ -426,8 +426,10 @@ export class BackupScheduler {
     const today = this.now().toISOString().slice(0, 10);
     if (!existsSync(join(outDir, today))) {
       try {
-        await this.deps.backupAll();
-        logger.info("Nightly backup done", { day: today });
+        const result = await this.deps.backupAll();
+        const skipped = (result as { skipped?: unknown[] } | undefined)?.skipped ?? [];
+        if (skipped.length > 0) logger.warn("Nightly backup completed with tenants skipped", { day: today, skipped: skipped.length });
+        else logger.info("Nightly backup done", { day: today });
       } catch (error) {
         logger.error("Nightly backup failed", { day: today, error: error instanceof Error ? error.message : String(error) });
       }
