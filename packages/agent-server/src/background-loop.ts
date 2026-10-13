@@ -538,3 +538,50 @@ export class DailyJob {
     }
   }
 }
+
+// ── PeriodicJob ──────────────────────────────────────────────
+
+export interface PeriodicJobDeps {
+  name: string;
+  run: () => Promise<void>;
+  intervalMs: number;
+  logger: Logger;
+}
+
+/**
+ * Runs a job on a fixed interval (the first run is one interval after start). Same shape as the other loops: an unref'd timer, no
+ * overlap (a tick is skipped while the last run is in flight), stop() awaits the run in flight, and nothing here throws.
+ */
+export class PeriodicJob {
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private inFlight: Promise<void> | null = null;
+
+  constructor(private readonly deps: PeriodicJobDeps) {}
+
+  start(): void {
+    if (this.timer !== null) return;
+    this.timer = setInterval(() => void this.tick(), this.deps.intervalMs);
+    this.timer.unref();
+  }
+
+  async stop(): Promise<void> {
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    if (this.inFlight !== null) await this.inFlight;
+  }
+
+  tick(): Promise<void> {
+    if (this.inFlight !== null) return this.inFlight;
+    this.inFlight = this.deps
+      .run()
+      .catch((error: unknown) => {
+        this.deps.logger.error(`${this.deps.name} failed`, { error: error instanceof Error ? error.message : String(error) });
+      })
+      .finally(() => {
+        this.inFlight = null;
+      });
+    return this.inFlight;
+  }
+}

@@ -12,10 +12,10 @@ config({ path: resolve(import.meta.dirname!, "../../..", ".env") });
 import { loadEnv, retiredEnvWarnings } from "./config/env.js";
 import { createContainer } from "./container.js";
 import { registerRoutes } from "./routes/index.js";
-import { BackgroundLoop, BackupScheduler, DailyJob } from "./background-loop.js";
+import { BackgroundLoop, BackupScheduler, DailyJob, PeriodicJob } from "./background-loop.js";
 import { checkLinks, writeRollups } from "./tenant-jobs.js";
 import { prepareStorage } from "./storage-startup.js";
-import { runActionRecovery, runActionStartupTasks } from "./actions-wiring.js";
+import { runActionRecovery, runActionStartupTasks, runTenantActionRecovery } from "./actions-wiring.js";
 import {
   ingestGmail,
   parseBankStatements,
@@ -118,7 +118,7 @@ registerRoutes(app, container);
 
 // ── Graceful Shutdown ────────────────────────────────────────
 let server: ReturnType<typeof app.listen>;
-const dailyJobs: DailyJob[] = [];
+const dailyJobs: Array<DailyJob | PeriodicJob> = [];
 
 function handleShutdown(signal: string): void {
   logger.info(`Received ${signal}, shutting down gracefully`);
@@ -326,13 +326,8 @@ if (env.FEATURE_BACKGROUND_LOOP) {
   logger.info("Background loop disabled via FEATURE_BACKGROUND_LOOP=false");
 }
 
-void runActionStartupTasks(
-  {
-    ...container,
-    tenants: { registrations: container.tenantRegistrations, gate: container.backupSources.gate, actionsFor: container.actionsFor },
-  },
-  logger,
-).catch((error: unknown) =>
+const tenantRecovery = { registrations: container.tenantRegistrations, gate: container.backupSources.gate, actionsFor: container.actionsFor };
+void runActionStartupTasks({ ...container, tenants: tenantRecovery }, logger).catch((error: unknown) =>
   logger.error("Action startup tasks failed", { error: error instanceof Error ? error.message : String(error) }),
 );
 
@@ -379,6 +374,17 @@ if (backupKey) {
     }),
     new DailyJob({ name: "Link check", run: async () => void (await checkLinks({ ...jobDeps, logger: jobLogger })), logger: jobLogger }),
   );
+  // Spec §7.4: recovery runs every cycle, so a pharmacy's actions are swept and expired on the loop's interval, not only at boot.
+  if (backgroundLoop) {
+    dailyJobs.push(
+      new PeriodicJob({
+        name: "Tenant action recovery",
+        run: () => runTenantActionRecovery(tenantRecovery, logger),
+        intervalMs: env.GMAIL_POLL_INTERVAL_MS,
+        logger,
+      }),
+    );
+  }
   for (const job of dailyJobs) job.start();
 }
 

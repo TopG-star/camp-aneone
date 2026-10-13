@@ -208,6 +208,22 @@ describe("runTenantActionRecovery", () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("time budget"), expect.anything());
   });
 
+  it("expires on the next pass what a pass skipped at its deadline", async () => {
+    const { trail, deps } = tenants();
+    const clock = vi.spyOn(Date, "now");
+    try {
+      let t = 0;
+      clock.mockImplementation(() => (t += 5000)); // every look at the clock is 5 s later: past each tenant's 2 s budget
+      await runTenantActionRecovery(deps, fakeLogger());
+    } finally {
+      clock.mockRestore();
+    }
+    expect(trail.filter((t) => t.startsWith("expire"))).toEqual([]);
+    trail.length = 0;
+    await runTenantActionRecovery(deps, fakeLogger());
+    expect(trail.filter((t) => t.startsWith("expire"))).toEqual(["expire t-r1", "expire t-r2"]);
+  });
+
   it("runs after personal recovery in the startup tasks", async () => {
     const { container, sweep } = fakeContainer({});
     const { trail, deps } = tenants();

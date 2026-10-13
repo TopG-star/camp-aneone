@@ -152,6 +152,11 @@ describe("tenant jobs", () => {
     decision.run("d2", "c2", "2026-10-09T02:00:00.000Z", "deny");
     decision.run("d3", "c3", "2026-10-09T03:00:00.000Z", "allow");
     decision.run("d4", "c4", "2026-10-10T03:00:00.000Z", "allow"); // another day
+    // Rows stamped with another tenant's id (should not exist; must never count).
+    raw.pragma("ignore_check_constraints = ON");
+    raw.prepare("INSERT INTO action_instances (id, scope, owner_id, user_id, tenant_id, action_type, definition_version, status, initiator, input_json, idempotency_key, created_at, updated_at) VALUES ('foreign-a', 'tenant', 'other', 'u1', 'other', 'x', '1', 'completed', 'user', '{}', 'kf', '2026-10-09T12:00:00.000Z', '2026-10-09T12:00:00.000Z')").run();
+    raw.prepare("INSERT INTO model_call_decisions (id, call_id, created_at, context_kind, identity_id, tenant_id, purpose, provider, layers_json, decision, released_json, withheld_json, placeholder_count, scanner_d3, scanner_d4, alert, policy_fingerprint, key_version) VALUES ('fd', 'fc', '2026-10-09T04:00:00.000Z', 'tenant', 'i1', 'other', 'chat', 'p', '[]', 'deny', '[]', '[]', 0, 0, 0, 0, 'f', 1)").run();
+    raw.pragma("ignore_check_constraints = OFF");
     s.control.prepare("INSERT INTO identities (id, status, created_at) VALUES ('i1', 'active', ?)").run(NOW);
     s.control
       .prepare(
@@ -160,13 +165,13 @@ describe("tenant jobs", () => {
       .run(NOW, NOW);
   }
 
-  function addGrant(s: Setup, id: string, opts: { status?: string; actionId?: string; expires?: string } = {}) {
+  function addGrant(s: Setup, id: string, opts: { status?: string; actionId?: string; expires?: string; idle?: string | null } = {}) {
     s.control
       .prepare(
-        `INSERT INTO delegation_grants (id, identity_id, membership_id, tenant_registration_id, kind, scope_json, encrypted_value, wrapped_key, generation, status, action_id, created_at, absolute_expires_at)
-         VALUES (?, 'i1', 'm1', 'reg-1', 'action', '[]', 'v', 'k', 1, ?, ?, ?, ?)`,
+        `INSERT INTO delegation_grants (id, identity_id, membership_id, tenant_registration_id, kind, scope_json, encrypted_value, wrapped_key, generation, status, action_id, created_at, absolute_expires_at, idle_expires_at)
+         VALUES (?, 'i1', 'm1', 'reg-1', 'action', '[]', 'v', 'k', 1, ?, ?, ?, ?, ?)`,
       )
-      .run(id, opts.status ?? "active", opts.actionId ?? "a1", NOW, opts.expires ?? "2999-01-01T00:00:00.000Z");
+      .run(id, opts.status ?? "active", opts.actionId ?? "a1", NOW, opts.expires ?? "2999-01-01T00:00:00.000Z", opts.idle === undefined ? "2999-01-01T00:00:00.000Z" : opts.idle);
   }
 
   const deps = (s: Setup) => ({ gate: s.gate, control: s.control, registrations: s.registrations, now: () => Date.parse("2026-10-10T01:00:00.000Z") });
@@ -178,6 +183,8 @@ describe("tenant jobs", () => {
       addGrant(s, "g1");
       addGrant(s, "g2", { status: "revoked" });
       addGrant(s, "g3", { expires: "2026-10-01T00:00:00.000Z" }); // active status, but past its absolute expiry
+      addGrant(s, "g4", { idle: "2026-10-09T00:00:00.000Z" }); // active status, but idle-expired
+      addGrant(s, "g5", { idle: null }); // no idle expiry recorded: not idle-expired (same rule as the ImpressoRx client)
       await writeRollups(deps(s), "2026-10-09");
 
       const rows = s.control.prepare("SELECT tenant_id, day, metrics_json FROM tenant_rollups ORDER BY tenant_id").all() as Array<{
@@ -191,7 +198,8 @@ describe("tenant jobs", () => {
       ]);
       const m1 = JSON.parse(rows[0]!.metrics_json);
       expect(Object.keys(m1).sort()).toEqual(["actionsByStatus", "activeGrants", "modelCalls", "modelDenials"]);
-      expect(m1).toEqual({ modelCalls: 3, modelDenials: 1, actionsByStatus: { completed: 2, failed: 1 }, activeGrants: 1 });
+      expect(m1).toEqual({ modelCalls: 3, modelDenials: 1, actionsByStatus: { completed: 2, failed: 1 }, activeGrants: 2 });
+      // The rows stamped with another tenant's id (a foreign action, a foreign denial) are not counted.
       expect(JSON.parse(rows[1]!.metrics_json)).toEqual({ modelCalls: 0, modelDenials: 0, actionsByStatus: {}, activeGrants: 0 });
       // Content-free: every leaf is a number; the only string keys are status names.
       const leaves = [m1.modelCalls, m1.modelDenials, m1.activeGrants, ...Object.values(m1.actionsByStatus)];
@@ -238,6 +246,28 @@ describe("tenant jobs", () => {
         expect.objectContaining({ alert: "link_check", grantId: "dangling", actionId: "gone", tenantId: "t-1" }),
       );
       expect((s.control.prepare("SELECT COUNT(*) AS n FROM delegation_grants").get() as { n: number }).n).toBe(3);
+    });
+
+    it("still reports a grant whose action id exists only under another tenant's id", async () => {
+      const s = setup(2);
+      seedTenant1(s);
+      addGrant(s, "borrowed", { actionId: "foreign-a" });
+      const found = await checkLinks({ gate: s.gate, control: s.control, registrations: s.registrations, logger: logger() });
+      expect(found).toEqual([{ grantId: "borrowed", actionId: "foreign-a", tenantId: "t-1" }]);
+    });
+
+    it("logs a tenant that is refused or fails at error with the link_check alert, and throws on a failure", async () => {
+      const s = setup(2);
+      seedTenant1(s);
+      const log = logger();
+      const refusedOnly = { lease: (id: string) => { if (id === "reg-1") throw new TenantRefusedError("tenant_unavailable"); return s.gate.lease(id); } };
+      await expect(checkLinks({ gate: refusedOnly, control: s.control, registrations: s.registrations, logger: log })).resolves.toEqual([]);
+      expect(log.error).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ alert: "link_check", registrationId: "reg-1", code: "tenant_unavailable" }));
+
+      const log2 = logger();
+      const broken = { lease: (id: string) => { if (id === "reg-2") throw new Error("disk error"); return s.gate.lease(id); } };
+      await expect(checkLinks({ gate: broken, control: s.control, registrations: s.registrations, logger: log2 })).rejects.toThrow(/1 tenant/);
+      expect(log2.error).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ alert: "link_check", registrationId: "reg-2", error: "disk error" }));
     });
 
     it("raises no alert when every link holds", async () => {
