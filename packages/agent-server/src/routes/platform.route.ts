@@ -12,6 +12,8 @@ export interface PlatformRouteDeps {
   operators: PlatformOperatorRepository;
   registrations: TenantRegistrationRepository;
   enrolment: EnrolmentService;
+  /** True when BACKUP_ENCRYPTION_KEY is set. Without it a registration would stop the next restart, so enrolment is refused. */
+  backupConfigured: boolean;
   /** Creates the tenant's database file once its registration exists. */
   createTenantFile: (registrationId: string, tenantId: string) => void;
   logger: Logger;
@@ -26,7 +28,7 @@ const EnrolBody = z.object({
 
 export function createPlatformRouter(deps: PlatformRouteDeps): Router {
   const router = Router();
-  const { operators, registrations, enrolment, createTenantFile, logger } = deps;
+  const { operators, registrations, enrolment, backupConfigured, createTenantFile, logger } = deps;
 
   // Operator only. A signed-in user who is not an operator gets 403, never a hint of what exists.
   router.use((req: Request, res: Response, next: NextFunction) => {
@@ -38,6 +40,12 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
   });
 
   router.post("/enrolments", async (req: Request, res: Response) => {
+    if (!backupConfigured) {
+      res.status(503).json({
+        error: "Enrolment is disabled until BACKUP_ENCRYPTION_KEY is set on the server (generate one with: openssl rand -base64 32) and the server is restarted",
+      });
+      return;
+    }
     const parsed = EnrolBody.safeParse(req.body);
     if (!parsed.success || new URL(parsed.data.origin).protocol !== "https:") {
       res.status(400).json({ error: "Enter an HTTPS origin, the tenant slug and the enrolment code" });

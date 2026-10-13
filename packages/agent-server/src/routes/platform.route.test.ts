@@ -29,7 +29,7 @@ describe("platform route", () => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  function setup(opts: { masterKey?: string | null; operator?: boolean; createTenantFile?: (id: string, tenantId: string) => void } = {}) {
+  function setup(opts: { masterKey?: string | null; operator?: boolean; backupConfigured?: boolean; createTenantFile?: (id: string, tenantId: string) => void } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "platform-"));
     dirs.push(dir);
     const control = openControlDb(join(dir, "control.db"));
@@ -62,6 +62,7 @@ describe("platform route", () => {
         operators,
         registrations,
         enrolment,
+        backupConfigured: opts.backupConfigured ?? true,
         createTenantFile: opts.createTenantFile ?? ((id, tenantId) => void gate.createTenantFile(id, tenantId)),
         logger,
       }),
@@ -124,6 +125,16 @@ describe("platform route", () => {
     expect(res.body).toEqual({ error: "Internal server error" });
     expect(fake.active).toBe(false);
     expect(control.prepare("SELECT COUNT(*) AS n FROM tenant_registrations").get()).toEqual({ n: 0 });
+  });
+
+  it("refuses to enrol while BACKUP_ENCRYPTION_KEY is unset, before spending the code or writing anything", async () => {
+    const { app, control, fake, dir } = setup({ backupConfigured: false });
+    const res = await request(app).post("/api/platform/enrolments").send(body);
+    expect(res.status).toBe(503);
+    expect(res.body.error).toMatch(/BACKUP_ENCRYPTION_KEY/);
+    expect(fake.active).toBe(false); // the code was not spent
+    expect(control.prepare("SELECT COUNT(*) AS n FROM tenant_registrations").get()).toEqual({ n: 0 });
+    expect(existsSync(join(dir, "tenants"))).toBe(false);
   });
 
   it("refuses a second enrolment of the same tenant", async () => {

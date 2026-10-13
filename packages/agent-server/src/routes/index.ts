@@ -541,6 +541,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       operators: container.platformOperators,
       registrations: container.tenantRegistrations,
       enrolment: container.enrolment,
+      backupConfigured: Boolean(env.BACKUP_ENCRYPTION_KEY),
       createTenantFile: container.createTenantFile,
       logger: platformLogger,
     }),
