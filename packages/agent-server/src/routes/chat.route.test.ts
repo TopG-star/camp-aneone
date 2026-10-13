@@ -135,6 +135,20 @@ describe("POST /api/chat", () => {
     expect(res.body.error).toContain("conversationId");
   });
 
+  it("returns 400 for a conversationId over 128 characters, so it never reaches the append-only audit", async () => {
+    const res = await request(app)
+      .post("/api/chat")
+      .send({ message: "Hello", conversationId: "x".repeat(129) })
+      .expect(400);
+
+    expect(res.body.error).toContain("conversationId");
+  });
+
+  it("accepts a conversationId of exactly 128 characters", async () => {
+    const res = await request(app).post("/api/chat").send({ message: "Hello", conversationId: "x".repeat(128) });
+    expect(res.status).not.toBe(400);
+  });
+
   // ── Successful request ─────────────────────────────────────
 
   it("returns 200 with response for valid message", async () => {

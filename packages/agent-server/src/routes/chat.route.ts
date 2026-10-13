@@ -34,6 +34,8 @@ export interface ChatRouteDeps {
   toolRegistry?: ToolRegistry | null;
 }
 
+const MAX_CONVERSATION_ID_LENGTH = 128;
+
 export function createChatRouter(deps: ChatRouteDeps): Router {
   const router = Router();
   const {
@@ -58,8 +60,9 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
       return;
     }
 
-    if (conversationId !== undefined && typeof conversationId !== "string") {
-      res.status(400).json({ error: "conversationId must be a string" });
+    // Bounded here: the id is copied into every model-call audit row of the turn, an append-only table.
+    if (conversationId !== undefined && (typeof conversationId !== "string" || conversationId.length > MAX_CONVERSATION_ID_LENGTH)) {
+      res.status(400).json({ error: `conversationId must be a string of at most ${MAX_CONVERSATION_ID_LENGTH} characters` });
       return;
     }
 
