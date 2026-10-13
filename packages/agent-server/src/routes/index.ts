@@ -117,7 +117,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     sessionAuth,
     requireUser,
     resolveActiveContext({
-      gate: { openPersonal: container.openPersonal, openTenant: container.openTenant },
+      gate: { openPersonal: container.openPersonal, lease: container.leaseTenant },
       memberships: container.memberships,
       identities: container.identityRepo,
       snapshots,

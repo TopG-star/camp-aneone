@@ -125,6 +125,8 @@ export interface AppContainer {
   openPersonal: () => import("@oneon/domain").PersonalDb;
   /** Opens a tenant's database through the gate (refuses when the registration is not active). */
   openTenant: (registrationId: string) => import("@oneon/domain").TenantDb;
+  /** Opens a tenant's database and holds it until `release()` (a request's handle: the LRU never closes it meanwhile). */
+  leaseTenant: (registrationId: string) => import("@oneon/infrastructure").TenantLease;
   /** Creates a new tenant's database file (enrolment only). */
   createTenantFile: (registrationId: string, tenantId: string) => void;
   /** What the nightly backup reads: the gate that hands out every context file's handle, and the control database. */
@@ -534,6 +536,7 @@ export function createContainer(env: Env): AppContainer {
     snapshots,
     openPersonal: () => personal,
     openTenant: (registrationId) => gate.openTenant(registrationId),
+    leaseTenant: (registrationId) => gate.lease(registrationId),
     createTenantFile: (registrationId, tenantId) => void gate.createTenantFile(registrationId, tenantId),
     backupSources: { gate, control },
     ensureIdentity: (user) => void ensureIdentityForUser(control, user),

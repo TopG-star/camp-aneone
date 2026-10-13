@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import request from "supertest";
 import type { Logger, PersonalDb, TenantDb } from "@oneon/domain";
 import { randomBytes } from "node:crypto";
 import {
+  ContextDbGate,
   EnrolmentService,
   FakeImpressorx,
   ImpressoRxRefusedError,
@@ -19,6 +21,7 @@ import {
   createDatabase,
   createImpressoRxClient,
   openControlDb,
+  rawDb,
   runMigrations,
   type MembershipSnapshot,
 } from "@oneon/infrastructure";
@@ -36,6 +39,11 @@ function tenantDb(): TenantDb {
   return { kind: "tenant", tenantId: "tenant-1", raw, __brand: "TenantDb" };
 }
 
+/** A gate's lease over a plain open function, for tests that only care which handle is opened. */
+function leaseOf(open: (id: string) => TenantDb) {
+  return (id: string) => ({ db: open(id), release: () => {} });
+}
+
 function app(deps: { openTenant: (id: string) => TenantDb; log: Logger }) {
   const a = express();
   a.use((req, _res, next) => {
@@ -47,7 +55,7 @@ function app(deps: { openTenant: (id: string) => TenantDb; log: Logger }) {
   });
   a.use(
     resolveActiveContext({
-      gate: { openPersonal: () => ({}) as PersonalDb, openTenant: deps.openTenant },
+      gate: { openPersonal: () => ({}) as PersonalDb, lease: leaseOf(deps.openTenant) },
       memberships: { findById: () => ({ id: "m1", identityId: "i1", tenantRegistrationId: "reg-1", status: "active" }) as never },
       identities: { hasLogin: () => false },
       snapshots: { ensureFresh: async () => ({ ok: true }), checkLive: async () => ({ ok: false, reason: "launch_required" }) },
@@ -103,6 +111,76 @@ describe("resolveActiveContext", () => {
   });
 });
 
+describe("the request's tenant handle is leased for the length of the request", () => {
+  const dirs: string[] = [];
+  const closers: Array<() => void> = [];
+  afterEach(() => {
+    vi.useRealTimers();
+    for (const close of closers.splice(0)) close();
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function setup() {
+    vi.useFakeTimers();
+    const dir = mkdtempSync(join(tmpdir(), "active-context-lease-"));
+    dirs.push(dir);
+    const control = openControlDb(join(dir, "control.db"));
+    const op = new SqliteIdentityRepository(control).createWithLogin({ kind: "google", subject: "op" }).id;
+    // A cache of one, so opening any other pharmacy pushes the request's handle out of the LRU.
+    const gate = new ContextDbGate({ control, personalPath: join(dir, "personal.db"), tenantDir: join(dir, "tenants"), cacheSize: 1 });
+    closers.push(() => gate.close(), () => control.close());
+    for (const [id, file] of [["reg-1", "11111111-1111-1111-1111-111111111111.db"], ["reg-2", "22222222-2222-2222-2222-222222222222.db"]] as const) {
+      control
+        .prepare(
+          "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (?, ?, ?, 'P', 'https://x.example', ?, 'active', ?, 'now')",
+        )
+        .run(id, `t-${id}`, id, file, op);
+      gate.createTenantFile(id, `t-${id}`);
+    }
+    const releases = vi.fn();
+    const middleware = resolveActiveContext({
+      gate: {
+        openPersonal: () => ({}) as PersonalDb,
+        lease: (id) => {
+          const lease = gate.lease(id);
+          return { db: lease.db, release: () => (releases(), lease.release()) };
+        },
+      },
+      memberships: { findById: () => ({ id: "m1", identityId: "i1", tenantRegistrationId: "reg-1", status: "active" }) as never },
+      identities: { hasLogin: () => false },
+      snapshots: { ensureFresh: async () => ({ ok: true }), checkLive: async () => ({ ok: false, reason: "launch_required" }) },
+      logger: logger(),
+    });
+    const req = { identityId: "i1", userId: "i1", sessionId: "s1", sessionContext: { kind: "tenant", membershipId: "m1" } } as unknown as express.Request;
+    const res = Object.assign(new EventEmitter(), { status: vi.fn().mockReturnThis(), json: vi.fn() }) as unknown as express.Response;
+    return { gate, middleware, req, res, releases };
+  }
+
+  it("an LRU eviction during the request does not close its handle, and the lease is released once at the response's end", async () => {
+    const { gate, middleware, req, res, releases } = setup();
+    const next = vi.fn();
+    await middleware(req, res, next);
+    expect(next).toHaveBeenCalled();
+
+    // Another request opens another pharmacy, and the eviction grace runs out while this request is still in its turn.
+    gate.openTenant("reg-2");
+    vi.advanceTimersByTime(10 * 60_000);
+    expect(rawDb(req.contextDb!).prepare("SELECT tenant_id FROM context_meta").get()).toEqual({ tenant_id: "t-reg-1" });
+    expect(releases).not.toHaveBeenCalled();
+
+    res.emit("finish");
+    res.emit("close");
+    expect(releases).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases on close when the client goes away before the response finishes", async () => {
+    const { middleware, req, res, releases } = setup();
+    await middleware(req, res, vi.fn());
+    res.emit("close");
+    expect(releases).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("snapshot refresh (spec 4.6: at least every 5 minutes while a session is active)", () => {
   const dirs: string[] = [];
   const closers: Array<() => void> = [];
@@ -155,7 +233,7 @@ describe("snapshot refresh (spec 4.6: at least every 5 minutes while a session i
     });
     a.use(
       resolveActiveContext({
-        gate: { openPersonal: () => ({}) as PersonalDb, openTenant },
+        gate: { openPersonal: () => ({}) as PersonalDb, lease: leaseOf(openTenant) },
         memberships,
         identities: { hasLogin: () => false },
         snapshots: createSnapshotRefresher({ memberships, registrations: new TenantRegistrationRepository(control), client: opts.client === "none" ? null : client, logger: log, clock }),
@@ -466,7 +544,7 @@ describe("snapshot refresh against the fake deployment (what ImpressoRx really s
     const snapshots = createSnapshotRefresher({ memberships, registrations, client, logger: log, clock });
     a.use(
       resolveActiveContext({
-        gate: { openPersonal: () => ({}) as PersonalDb, openTenant: () => tenantDb() },
+        gate: { openPersonal: () => ({}) as PersonalDb, lease: leaseOf(() => tenantDb()) },
         memberships,
         identities: { hasLogin: () => false },
         snapshots,

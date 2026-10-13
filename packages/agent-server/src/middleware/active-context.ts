@@ -1,5 +1,5 @@
 import type { RequestHandler } from "express";
-import type { Logger, PersonalDb, TenantDb } from "@oneon/domain";
+import type { Logger, PersonalDb } from "@oneon/domain";
 import {
   ImpressoRxRefusedError,
   ImpressoRxUnauthorizedError,
@@ -9,6 +9,7 @@ import {
   type ImpressoRxClient,
   type Membership,
   type MembershipRepository,
+  type TenantLease,
   type TenantRegistrationRepository,
 } from "@oneon/infrastructure";
 
@@ -182,7 +183,8 @@ export function createSnapshotRefresher(deps: SnapshotRefresherDeps): SnapshotRe
 }
 
 export interface ActiveContextDeps {
-  gate: { openPersonal(): PersonalDb; openTenant(registrationId: string): TenantDb };
+  /** A tenant handle is leased for the request (never closed by the gate's LRU meanwhile) and released when the response ends. */
+  gate: { openPersonal(): PersonalDb; lease(registrationId: string): TenantLease };
   memberships: Pick<MembershipRepository, "findById">;
   identities: Pick<IdentityRepository, "hasLogin">;
   snapshots: SnapshotRefresher;
@@ -197,7 +199,8 @@ export interface ActiveContextDeps {
  * A suspended membership, or one ImpressoRx refuses with a 401, is 403 membership_suspended with the spec §6.4 message; a stale
  * snapshot that cannot be refreshed from this session is 403 launch_required. Anything else, including a gate refusal
  * or an unexpected error, is 403 context_unavailable.
- * Mount after session auth and requireUser; the handle is valid for this request only.
+ * Mount after session auth and requireUser; the handle is valid for this request only. A tenant handle is leased, so a long turn
+ * keeps its file open even when the LRU pushes it out, and the lease is released once, at the response's `finish` or `close`.
  */
 export function resolveActiveContext(deps: ActiveContextDeps): RequestHandler {
   return async (req, res, next) => {
@@ -223,7 +226,16 @@ export function resolveActiveContext(deps: ActiveContextDeps): RequestHandler {
           res.status(403).json(fresh.refusal);
           return;
         }
-        const db = deps.gate.openTenant(membership.tenantRegistrationId);
+        const lease = deps.gate.lease(membership.tenantRegistrationId);
+        let released = false;
+        const release = () => {
+          if (released) return;
+          released = true;
+          lease.release();
+        };
+        res.once("finish", release);
+        res.once("close", release);
+        const db = lease.db;
         // The file's foreign keys reference users(id), so the identity needs its anchor row before it writes here.
         ensureIdentityAnchor(db, identityId);
         req.activeContext = { kind: "tenant", identityId, membershipId: membership.id, registrationId: membership.tenantRegistrationId, tenantId: db.tenantId };
