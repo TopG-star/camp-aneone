@@ -36,7 +36,7 @@ export async function openControlDbForStartup(path: string, backup: PreMigration
     if (existed && hasPendingMigrations(db, dir)) {
       if (backup) {
         try {
-          await backupDatabase(db, { dir: preMigrationFolder(backup.outDir, backup.now()), name: "control", keyB64: backup.keyB64 });
+          await backupDatabase(db, { dir: preMigrationFolder(backup.outDir, backup.now()), name: "control", keyB64: backup.keyB64, scratchDir: backup.scratchDir });
         } catch (error) {
           throw new Error(
             `Cannot migrate the control database: its backup before the migration failed (${error instanceof Error ? error.message : String(error)})`,

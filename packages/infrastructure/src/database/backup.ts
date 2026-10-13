@@ -1,6 +1,5 @@
 import Database from "better-sqlite3";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { Logger } from "@oneon/domain";
 import { openBuffer, sealBuffer } from "../crypto/envelope.js";
@@ -29,6 +28,8 @@ export interface PreMigrationBackup {
   outDir: string;
   keyB64: string;
   now: () => Date;
+  /** Private scratch for the plaintext copy (see backupScratchDir). */
+  scratchDir: string;
 }
 
 /** A tenant the gate refused to open (typed refusal); it has no file in the day, and the day is listed as having skipped it. */
@@ -58,9 +59,12 @@ const PARTIAL_SUFFIX = ".partial";
 /** A tenant backup that runs longer than this is logged as an overrun; it is never cut short. */
 const TENANT_BACKUP_BUDGET_MS = 10 * 60 * 1000;
 
-/** Where the restore test's scratch folders go. */
-export function restoreTestTmpDir(): string {
-  return join(tmpdir(), "oneon-restore-test");
+/**
+ * Where backups and restore tests keep their plaintext scratch: a folder beside control.db, so the copies stay on the data volume,
+ * never in BACKUP_DIR (which is synced off-site) and never in the shared OS tmpdir (whose sweep could hit another process's files).
+ */
+export function backupScratchDir(controlDatabasePath: string): string {
+  return join(dirname(controlDatabasePath), "backup-scratch");
 }
 
 /** The UTC date, the name of a day's backup folder. */
@@ -83,16 +87,17 @@ function backupAad(file: string): string {
 
 /**
  * Copies one open database with SQLite's online backup API (consistent while other connections write), seals the copy and writes it
- * to `<dir>/<name>.db.enc`. The plaintext copy lives only in a private temp folder outside `dir` and is removed in `finally`.
+ * to `<dir>/<name>.db.enc`. The plaintext copy lives only in a private folder under `scratchDir` and is removed in `finally`.
  */
 export async function backupDatabase(
   db: Database.Database,
   /** `sealAsDir` is the folder the file will finally live in, when it is written elsewhere first and renamed (it is sealed for that place). */
-  target: { dir: string; name: string; keyB64: string; sealAsDir?: string },
+  target: { dir: string; name: string; keyB64: string; scratchDir: string; sealAsDir?: string },
 ): Promise<string> {
   const file = join(target.dir, `${target.name}${EXTENSION}`);
   const aad = backupAad(join(target.sealAsDir ?? target.dir, `${target.name}${EXTENSION}`));
-  const scratch = mkdtempSync(join(tmpdir(), BACKUP_SCRATCH_PREFIX)); // 0700 where the OS has modes
+  mkdirSync(target.scratchDir, { recursive: true, mode: 0o700 });
+  const scratch = mkdtempSync(join(target.scratchDir, BACKUP_SCRATCH_PREFIX)); // 0700 where the OS has modes
   const partial = `${file}.part`;
   try {
     const copy = join(scratch, "copy.db");
@@ -122,6 +127,8 @@ export async function backupAll(deps: {
   outDir: string;
   keyB64: string;
   now: () => Date;
+  /** Private scratch for the plaintext copies (see backupScratchDir). */
+  scratchDir: string;
   logger?: Logger;
 }): Promise<BackupAllResult> {
   const finalDir = join(deps.outDir, backupDay(deps.now()));
@@ -139,7 +146,7 @@ export async function backupAll(deps: {
   ];
   for (const job of fixed) {
     try {
-      completed.push({ file: await backupDatabase(job.db(), { dir, name: job.name, keyB64: deps.keyB64, sealAsDir: finalDir }), context: job.context });
+      completed.push({ file: await backupDatabase(job.db(), { dir, name: job.name, keyB64: deps.keyB64, scratchDir: deps.scratchDir, sealAsDir: finalDir }), context: job.context });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       failed.push({ context: job.context, error: message });
@@ -155,7 +162,7 @@ export async function backupAll(deps: {
     { gate: deps.gate, registrations, logger: deps.logger },
     async (db, _deadline, reg) => {
       completed.push({
-        file: await backupDatabase(rawDb(db), { dir, name: reg.fileName.replace(/\.db$/, ""), keyB64: deps.keyB64, sealAsDir: finalDir }),
+        file: await backupDatabase(rawDb(db), { dir, name: reg.fileName.replace(/\.db$/, ""), keyB64: deps.keyB64, scratchDir: deps.scratchDir, sealAsDir: finalDir }),
         context: reg.tenantId,
       });
     },
@@ -192,7 +199,7 @@ export function decryptBackup(file: string, keyB64: string, as?: string): Buffer
  * copy. A backup that cannot be decrypted or opened is reported as not ok, not thrown.
  */
 export async function restoreTest(deps: { file: string; keyB64: string; tmpDir: string }): Promise<RestoreTestResult> {
-  mkdirSync(deps.tmpDir, { recursive: true });
+  mkdirSync(deps.tmpDir, { recursive: true, mode: 0o700 });
   const scratch = mkdtempSync(join(deps.tmpDir, RESTORE_SCRATCH_PREFIX));
   try {
     let plaintext: Buffer;

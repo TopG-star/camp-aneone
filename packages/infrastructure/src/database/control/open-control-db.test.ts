@@ -27,7 +27,7 @@ describe("openControlDbForStartup", () => {
     dirs.push(dir);
     const path = join(dir, "control.db");
     const keyB64 = randomBytes(32).toString("base64");
-    const backup = { outDir: join(dir, "backups"), keyB64, now: () => new Date("2026-10-10T03:04:05.000Z") };
+    const backup = { outDir: join(dir, "backups"), keyB64, now: () => new Date("2026-10-10T03:04:05.000Z"), scratchDir: join(dir, "backup-scratch") };
     return { dir, path, keyB64, backup };
   }
 

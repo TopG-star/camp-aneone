@@ -28,8 +28,8 @@ import {
   GmailStatementDocumentProvider,
   StructuredLogger,
   backupAll,
+  backupScratchDir,
   restoreTestOwned,
-  restoreTestTmpDir,
 } from "@oneon/infrastructure";
 
 function emptyCycleSummary(): CycleSummary {
@@ -343,10 +343,11 @@ let backupScheduler: BackupScheduler | null = null;
 const backupKey = env.BACKUP_ENCRYPTION_KEY;
 if (backupKey) {
   const { gate, control } = container.backupSources;
+  const scratchDir = backupScratchDir(env.CONTROL_DATABASE_PATH);
   backupScheduler = new BackupScheduler({
     outDir: env.BACKUP_DIR,
-    backupAll: () => backupAll({ gate, control, outDir: env.BACKUP_DIR, keyB64: backupKey, now: () => new Date(), logger }),
-    restoreTest: (file) => restoreTestOwned({ file, keyB64: backupKey, tmpDir: restoreTestTmpDir(), control }),
+    backupAll: () => backupAll({ gate, control, outDir: env.BACKUP_DIR, keyB64: backupKey, now: () => new Date(), scratchDir, logger }),
+    restoreTest: (file) => restoreTestOwned({ file, keyB64: backupKey, tmpDir: scratchDir, control }),
     logger,
   });
   backupScheduler.start();

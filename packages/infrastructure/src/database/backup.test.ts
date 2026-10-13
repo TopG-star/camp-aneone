@@ -7,7 +7,7 @@ import { createDatabase } from "./connection.js";
 import { ContextDbGate, TenantRefusedError, rawDb } from "./context-db-gate.js";
 import { openControlDb } from "./control/open-control-db.js";
 import { sealBuffer } from "../crypto/envelope.js";
-import { backupAll, decryptBackup, restoreTest, restoreTestOwned, sweepBackupLeftovers } from "./backup.js";
+import { backupAll, backupDatabase, backupScratchDir, decryptBackup, restoreTest, restoreTestOwned, sweepBackupLeftovers } from "./backup.js";
 
 const NOW = "2026-10-08T00:00:00.000Z";
 const TODAY = new Date("2026-10-10T03:00:00.000Z");
@@ -43,7 +43,8 @@ describe("backups", () => {
     open.push(() => gate.close(), () => control.close());
     const outDir = join(dir, "backups");
     const keyB64 = randomBytes(32).toString("base64");
-    return { dir, tenantDir, control, gate, regs, outDir, keyB64, tmpDir: join(dir, "tmp"), deps: { gate, control, outDir, keyB64, now: () => TODAY } };
+    const scratchDir = backupScratchDir(join(dir, "control.db"));
+    return { dir, tenantDir, control, gate, regs, outDir, keyB64, tmpDir: scratchDir, deps: { gate, control, outDir, keyB64, scratchDir, now: () => TODAY } };
   }
 
   function walk(dir: string): string[] {
@@ -77,6 +78,19 @@ describe("backups", () => {
     const copy = createDatabase(restoredPath);
     expect(copy.prepare("SELECT id FROM users WHERE id IN ('committed', 'uncommitted')").all()).toEqual([{ id: "committed" }]);
     copy.close();
+  });
+
+  it("keeps the plaintext copy in the scratch folder beside control.db, never in the OS tmpdir, and removes it", async () => {
+    const { dir, control, deps } = setup(0);
+    expect(deps.scratchDir).toBe(join(dir, "backup-scratch"));
+    const copies: string[] = [];
+    const recording = { backup: (path: string) => (copies.push(path), control.backup(path)) } as unknown as typeof control;
+
+    await backupDatabase(recording, { dir: join(dir, "out"), name: "control", keyB64: deps.keyB64, scratchDir: deps.scratchDir });
+
+    expect(copies).toHaveLength(1);
+    expect(copies[0]!.startsWith(join(deps.scratchDir, "oneon-backup-"))).toBe(true);
+    expect(readdirSync(deps.scratchDir)).toEqual([]);
   });
 
   it("no plaintext database remains in outDir", async () => {

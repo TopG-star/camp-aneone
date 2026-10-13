@@ -118,7 +118,7 @@ describe("migrateAll", () => {
       const keyB64 = randomBytes(32).toString("base64");
       const errors: string[] = [];
       const logger: Logger = { info() {}, warn() {}, debug() {}, error: (m) => void errors.push(m) };
-      const backup = { outDir, keyB64, now: () => NOW_DATE };
+      const backup = { outDir, keyB64, now: () => NOW_DATE, scratchDir: join(dirname(s.deps.personalPath), "backup-scratch") };
       // An existing, unmigrated personal file: a migration is pending for it.
       createDatabase(s.deps.personalPath).close();
       return { ...s, outDir, keyB64, errors, deps: { ...s.deps, logger, backup }, folder: join(outDir, "pre-migration", STAMP) };

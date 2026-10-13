@@ -1,13 +1,12 @@
 import { mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Logger } from "@oneon/domain";
 import {
   acquireStorageLock,
+  backupScratchDir,
   hasRegistrations,
   migrateAll,
   openControlDbForStartup,
-  restoreTestTmpDir,
   sweepBackupLeftovers,
   type PreMigrationBackup,
 } from "@oneon/infrastructure";
@@ -34,7 +33,7 @@ export async function prepareStorage(env: StorageEnv, logger: Logger): Promise<v
   // process dies, so a lock file left by a crash never blocks the restart.
   const release = acquireStorageLock(join(dirname(env.CONTROL_DATABASE_PATH), "storage.lock"));
   try {
-    const swept = sweepBackupLeftovers({ backupDir: env.BACKUP_DIR, scratchRoots: [tmpdir(), restoreTestTmpDir()] });
+    const swept = sweepBackupLeftovers({ backupDir: env.BACKUP_DIR, scratchRoots: [backupScratchDir(env.CONTROL_DATABASE_PATH)] });
     if (swept.length > 0) logger.warn("Removed leftovers of an interrupted backup", { count: swept.length });
     await prepareLocked(env, logger);
   } finally {
@@ -44,7 +43,9 @@ export async function prepareStorage(env: StorageEnv, logger: Logger): Promise<v
 
 async function prepareLocked(env: StorageEnv, logger: Logger): Promise<void> {
   const keyB64 = env.BACKUP_ENCRYPTION_KEY;
-  const backup: PreMigrationBackup | null = keyB64 ? { outDir: env.BACKUP_DIR, keyB64, now: () => new Date() } : null;
+  const backup: PreMigrationBackup | null = keyB64
+    ? { outDir: env.BACKUP_DIR, keyB64, now: () => new Date(), scratchDir: backupScratchDir(env.CONTROL_DATABASE_PATH) }
+    : null;
 
   const control = await openControlDbForStartup(env.CONTROL_DATABASE_PATH, backup);
   try {

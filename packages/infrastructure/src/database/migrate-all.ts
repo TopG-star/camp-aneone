@@ -5,7 +5,7 @@ import { backupDatabase, preMigrationFolder, type PreMigrationBackup } from "./b
 import type { ControlDb } from "./control/open-control-db.js";
 import { tenantFilePath } from "./context-db-gate.js";
 
-async function migrateFile(path: string, name: string, tenantId: string | undefined, backup: { folder: string; keyB64: string } | undefined): Promise<void> {
+async function migrateFile(path: string, name: string, tenantId: string | undefined, backup: { folder: string; keyB64: string; scratchDir: string } | undefined): Promise<void> {
   // A file that does not exist yet has nothing to lose: createDatabase makes it.
   const existed = existsSync(path);
   const db = createDatabase(path);
@@ -21,7 +21,7 @@ async function migrateFile(path: string, name: string, tenantId: string | undefi
     // A file is only migrated once its backup is safe: when the backup fails, the error stops this file and leaves it as it was.
     if (backup && existed && hasPendingMigrations(db)) {
       try {
-        await backupDatabase(db, { dir: backup.folder, name, keyB64: backup.keyB64 });
+        await backupDatabase(db, { dir: backup.folder, name, keyB64: backup.keyB64, scratchDir: backup.scratchDir });
       } catch (error) {
         throw new Error(`pre-migration backup failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -55,7 +55,7 @@ export async function migrateAll(deps: {
     targets.push({ id: row.id, name: row.file_name.replace(/.db$/, ""), tenantId: row.tenant_id, resolve: () => tenantFilePath(deps.tenantDir, row.file_name), mustExist: true });
   }
 
-  const backup = deps.backup && { folder: preMigrationFolder(deps.backup.outDir, deps.backup.now()), keyB64: deps.backup.keyB64 };
+  const backup = deps.backup && { folder: preMigrationFolder(deps.backup.outDir, deps.backup.now()), keyB64: deps.backup.keyB64, scratchDir: deps.backup.scratchDir };
   for (const target of targets) {
     try {
       // Opening a missing path would create an empty database.

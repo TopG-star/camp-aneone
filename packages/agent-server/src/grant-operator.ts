@@ -1,5 +1,5 @@
 import { dirname, join } from "node:path";
-import { PlatformOperatorRepository, acquireStorageLock, openControlDbForStartup } from "@oneon/infrastructure";
+import { PlatformOperatorRepository, acquireStorageLock, backupScratchDir, openControlDbForStartup } from "@oneon/infrastructure";
 
 /**
  * Grants platform operator to an identity. Opening control.db migrates it, so it goes through the same startup path as the server:
@@ -9,7 +9,9 @@ import { PlatformOperatorRepository, acquireStorageLock, openControlDbForStartup
 export async function grantOperator(opts: { controlPath: string; backupDir: string; keyB64: string | undefined; identityId: string }): Promise<void> {
   const release = acquireStorageLock(join(dirname(opts.controlPath), "storage.lock"));
   try {
-    const backup = opts.keyB64 ? { outDir: opts.backupDir, keyB64: opts.keyB64, now: () => new Date() } : null;
+    const backup = opts.keyB64
+      ? { outDir: opts.backupDir, keyB64: opts.keyB64, now: () => new Date(), scratchDir: backupScratchDir(opts.controlPath) }
+      : null;
     const control = await openControlDbForStartup(opts.controlPath, backup);
     try {
       if (!control.prepare("SELECT 1 FROM identities WHERE id = ?").get(opts.identityId)) {

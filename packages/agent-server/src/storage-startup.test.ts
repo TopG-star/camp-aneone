@@ -95,27 +95,34 @@ describe("prepareStorage", () => {
     acquireStorageLock(join(dir, "storage.lock"))();
   });
 
-  it("sweeps leftover plaintext scratch folders and .part files, and only those", async () => {
+  it("sweeps leftover plaintext scratch folders beside control.db and .part files, and only those", async () => {
     const { dir, env, log } = setup({ existingPersonal: true });
-    const scratch = mkdtempSync(join(tmpdir(), "oneon-backup-"));
-    const restoreRoot = join(tmpdir(), "oneon-restore-test");
-    mkdirSync(restoreRoot, { recursive: true });
-    const restoreScratch = mkdtempSync(join(restoreRoot, "oneon-restore-"));
+    const scratchRoot = join(dir, "backup-scratch");
+    const scratch = join(scratchRoot, "oneon-backup-abc");
+    const restoreScratch = join(scratchRoot, "oneon-restore-xyz");
+    mkdirSync(scratch, { recursive: true });
+    mkdirSync(restoreScratch);
     writeFileSync(join(scratch, "copy.db"), "plaintext");
     mkdirSync(join(env.BACKUP_DIR, "2026-10-09"), { recursive: true });
     writeFileSync(join(env.BACKUP_DIR, "2026-10-09", "a.db.enc.part"), "x");
     writeFileSync(join(env.BACKUP_DIR, "2026-10-09", "a.db.enc"), "keep");
     writeFileSync(join(dir, "notes.part"), "outside the backup dir");
+    await prepareStorage(env, log);
+    expect(existsSync(scratch)).toBe(false);
+    expect(existsSync(restoreScratch)).toBe(false);
+    expect(existsSync(join(env.BACKUP_DIR, "2026-10-09", "a.db.enc.part"))).toBe(false);
+    expect(existsSync(join(env.BACKUP_DIR, "2026-10-09", "a.db.enc"))).toBe(true);
+    expect(existsSync(join(dir, "notes.part"))).toBe(true);
+  });
+
+  it("never touches the OS tmpdir, where another process may have a scratch folder in flight", async () => {
+    const { env, log } = setup({ existingPersonal: true });
+    const foreign = mkdtempSync(join(tmpdir(), "oneon-backup-"));
     try {
       await prepareStorage(env, log);
-      expect(existsSync(scratch)).toBe(false);
-      expect(existsSync(restoreScratch)).toBe(false);
-      expect(existsSync(join(env.BACKUP_DIR, "2026-10-09", "a.db.enc.part"))).toBe(false);
-      expect(existsSync(join(env.BACKUP_DIR, "2026-10-09", "a.db.enc"))).toBe(true);
-      expect(existsSync(join(dir, "notes.part"))).toBe(true);
+      expect(existsSync(foreign)).toBe(true);
     } finally {
-      rmSync(scratch, { recursive: true, force: true });
-      rmSync(restoreScratch, { recursive: true, force: true });
+      rmSync(foreign, { recursive: true, force: true });
     }
   });
 
