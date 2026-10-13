@@ -14,6 +14,8 @@ export interface PlatformRouteDeps {
   enrolment: EnrolmentService;
   /** True when BACKUP_ENCRYPTION_KEY is set. Without it a registration would stop the next restart, so enrolment is refused. */
   backupConfigured: boolean;
+  /** Each tenant's most recent rollup, read from the control database. The platform view never opens a tenant file. */
+  latestRollups: () => Array<{ tenantId: string; day: string; metrics: unknown }>;
   /** Creates the tenant's database file once its registration exists. */
   createTenantFile: (registrationId: string, tenantId: string) => void;
   logger: Logger;
@@ -28,7 +30,7 @@ const EnrolBody = z.object({
 
 export function createPlatformRouter(deps: PlatformRouteDeps): Router {
   const router = Router();
-  const { operators, registrations, enrolment, backupConfigured, createTenantFile, logger } = deps;
+  const { operators, registrations, enrolment, backupConfigured, latestRollups, createTenantFile, logger } = deps;
 
   // Operator only. A signed-in user who is not an operator gets 403, never a hint of what exists.
   router.use((req: Request, res: Response, next: NextFunction) => {
@@ -87,6 +89,20 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
         displayName: r.displayName,
         origin: r.origin,
         enrolledAt: r.enrolledAt,
+      })),
+    });
+  });
+
+  router.get("/tenants", (_req: Request, res: Response) => {
+    const rollups = new Map(latestRollups().map((r) => [r.tenantId, { day: r.day, metrics: r.metrics }]));
+    res.json({
+      tenants: registrations.listActive().map((r) => ({
+        id: r.id,
+        tenantSlug: r.tenantSlug,
+        displayName: r.displayName,
+        origin: r.origin,
+        enrolledAt: r.enrolledAt,
+        latestRollup: rollups.get(r.tenantId) ?? null,
       })),
     });
   });

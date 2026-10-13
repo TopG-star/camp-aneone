@@ -7,7 +7,6 @@ import {
   type ActionInstanceRepository,
   type CalendarReader,
   type ContextDb,
-  type TenantDb,
   type CalendarWriter,
   type Deadline,
   type LegacyActionRepository,

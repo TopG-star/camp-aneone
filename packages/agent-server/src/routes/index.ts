@@ -25,6 +25,7 @@ import { createPushSubscriptionsRouter } from "./push-subscriptions.route.js";
 import { createUsersRouter } from "./users.route.js";
 import { createMemoryRouter } from "./memory.route.js";
 import { createPlatformRouter } from "./platform.route.js";
+import { latestRollups } from "../tenant-jobs.js";
 import { createHandoffRouter } from "./handoff.route.js";
 import { createContextsRouter } from "./contexts.route.js";
 import { createIdentityLinkRouter, createIdentitySessionRouter } from "./identity-link.route.js";
@@ -542,6 +543,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       registrations: container.tenantRegistrations,
       enrolment: container.enrolment,
       backupConfigured: Boolean(env.BACKUP_ENCRYPTION_KEY),
+      latestRollups: () => latestRollups(container.backupSources.control),
       createTenantFile: container.createTenantFile,
       logger: platformLogger,
     }),

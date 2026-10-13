@@ -15,6 +15,7 @@ import {
   openControlDb,
   rawDb,
 } from "@oneon/infrastructure";
+import { latestRollups } from "../tenant-jobs.js";
 import { createPlatformRouter } from "./platform.route.js";
 
 const ORIGIN = "https://acme.example";
@@ -63,6 +64,7 @@ describe("platform route", () => {
         registrations,
         enrolment,
         backupConfigured: opts.backupConfigured ?? true,
+        latestRollups: () => latestRollups(control),
         createTenantFile: opts.createTenantFile ?? ((id, tenantId) => void gate.createTenantFile(id, tenantId)),
         logger,
       }),
@@ -81,6 +83,49 @@ describe("platform route", () => {
     expect(existsSync(join(dir, "tenants", `${id}.db`))).toBe(true);
     const meta = rawDb(gate.openTenant(id)).prepare("SELECT tenant_id FROM context_meta").get();
     expect(meta).toEqual({ tenant_id: id });
+  });
+
+  describe("GET /api/platform/tenants", () => {
+    it("lists registrations with their latest rollups and never opens a tenant file", async () => {
+      const { app, control, gate, registrations } = setup();
+      await request(app).post("/api/platform/enrolments").send(body);
+      const reg = registrations.listActive()[0]!;
+      control
+        .prepare("INSERT INTO tenant_rollups (tenant_id, day, metrics_json) VALUES (?, '2026-10-08', '{}'), (?, '2026-10-09', ?)")
+        .run(reg.tenantId, reg.tenantId, JSON.stringify({ modelCalls: 3, modelDenials: 1, actionsByStatus: { completed: 2 }, activeGrants: 1 }));
+      const openTenant = vi.spyOn(gate, "openTenant");
+      const lease = vi.spyOn(gate, "lease");
+
+      const res = await request(app).get("/api/platform/tenants");
+
+      expect(res.status).toBe(200);
+      expect(res.body.tenants).toEqual([
+        {
+          id: reg.id,
+          tenantSlug: "acme",
+          displayName: reg.displayName,
+          origin: ORIGIN,
+          enrolledAt: reg.enrolledAt,
+          latestRollup: { day: "2026-10-09", metrics: { modelCalls: 3, modelDenials: 1, actionsByStatus: { completed: 2 }, activeGrants: 1 } },
+        },
+      ]);
+      expect(openTenant).not.toHaveBeenCalled();
+      expect(lease).not.toHaveBeenCalled();
+    });
+
+    it("gives a registration with no rollup yet a null latestRollup", async () => {
+      const { app } = setup();
+      await request(app).post("/api/platform/enrolments").send(body);
+      const res = await request(app).get("/api/platform/tenants");
+      expect(res.body.tenants[0].latestRollup).toBeNull();
+    });
+
+    it("is refused for non-operators", async () => {
+      const { app, otherId, actAs } = setup();
+      actAs(otherId);
+      const res = await request(app).get("/api/platform/tenants");
+      expect(res.status).toBe(403);
+    });
   });
 
   it("refuses a non-operator", async () => {

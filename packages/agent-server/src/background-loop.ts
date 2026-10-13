@@ -475,3 +475,66 @@ export class BackupScheduler {
     return null;
   }
 }
+
+// ── DailyJob ─────────────────────────────────────────────────
+
+export interface DailyJobDeps {
+  name: string;
+  /** Does the day's work. A throw is logged and the job tries again at the next look at the clock. */
+  run: (now: Date) => Promise<void>;
+  logger: Logger;
+  now?: () => Date;
+  /** How often to look at the clock. The job itself runs once per UTC day. */
+  checkIntervalMs?: number;
+}
+
+/**
+ * Runs a job once per UTC day (the first look at the clock on a new day; it also runs once at start). Same shape as the other loops:
+ * an unref'd timer, no overlap, stop() awaits the run in flight, and nothing here throws. A run that failed is retried at the next look.
+ * Jobs must be safe to run twice in a day (a restart runs them again).
+ */
+export class DailyJob {
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private inFlight: Promise<void> | null = null;
+  private lastDay: string | null = null;
+  private readonly now: () => Date;
+
+  constructor(private readonly deps: DailyJobDeps) {
+    this.now = deps.now ?? (() => new Date());
+  }
+
+  start(): void {
+    if (this.timer !== null) return;
+    void this.tick();
+    this.timer = setInterval(() => void this.tick(), this.deps.checkIntervalMs ?? 60 * 60 * 1000);
+    this.timer.unref();
+  }
+
+  async stop(): Promise<void> {
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    if (this.inFlight !== null) await this.inFlight;
+  }
+
+  tick(): Promise<void> {
+    if (this.inFlight !== null) return this.inFlight;
+    this.inFlight = this.run().finally(() => {
+      this.inFlight = null;
+    });
+    return this.inFlight;
+  }
+
+  private async run(): Promise<void> {
+    const now = this.now();
+    const today = now.toISOString().slice(0, 10);
+    if (this.lastDay === today) return;
+    try {
+      await this.deps.run(now);
+      this.lastDay = today;
+    } catch (error) {
+      this.deps.logger.error(`${this.deps.name} failed`, { day: today, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+}

@@ -12,7 +12,8 @@ config({ path: resolve(import.meta.dirname!, "../../..", ".env") });
 import { loadEnv, retiredEnvWarnings } from "./config/env.js";
 import { createContainer } from "./container.js";
 import { registerRoutes } from "./routes/index.js";
-import { BackgroundLoop, BackupScheduler } from "./background-loop.js";
+import { BackgroundLoop, BackupScheduler, DailyJob } from "./background-loop.js";
+import { checkLinks, writeRollups } from "./tenant-jobs.js";
 import { prepareStorage } from "./storage-startup.js";
 import { runActionRecovery, runActionStartupTasks } from "./actions-wiring.js";
 import {
@@ -117,6 +118,7 @@ registerRoutes(app, container);
 
 // ── Graceful Shutdown ────────────────────────────────────────
 let server: ReturnType<typeof app.listen>;
+const dailyJobs: DailyJob[] = [];
 
 function handleShutdown(signal: string): void {
   logger.info(`Received ${signal}, shutting down gracefully`);
@@ -126,7 +128,7 @@ function handleShutdown(signal: string): void {
     });
   }
   // Databases close only after the background work has stopped (a backup in flight holds open handles).
-  const backupStopped = backupScheduler ? backupScheduler.stop() : Promise.resolve();
+  const backupStopped = Promise.all([backupScheduler?.stop(), ...dailyJobs.map((job) => job.stop())]);
   server?.close(() => {
     void backupStopped.then(() => {
       container.shutdown();
@@ -356,6 +358,28 @@ if (backupKey) {
     logger,
   });
   backupScheduler.start();
+}
+
+// Daily rollups (the previous UTC day) and the nightly link check. Both read tenant files through the gate, one at a time.
+{
+  const { gate, control } = container.backupSources;
+  const jobDeps = { gate, control, registrations: container.tenantRegistrations };
+  const jobLogger = new StructuredLogger("tenant-jobs", env.LOG_LEVEL);
+  dailyJobs.push(
+    new DailyJob({
+      name: "Tenant rollups",
+      run: async (now) => {
+        const day = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        const result = await writeRollups({ ...jobDeps, logger: jobLogger }, day);
+        if (result.refused.length > 0) jobLogger.warn("Tenant rollups skipped refused tenants", { day, refused: result.refused.length });
+        // Rollups are idempotent, so a day with a failed tenant is tried again at the next look.
+        if (result.failed.length > 0) throw new Error(`rollups failed for ${result.failed.length} tenant(s)`);
+      },
+      logger: jobLogger,
+    }),
+    new DailyJob({ name: "Link check", run: async () => void (await checkLinks({ ...jobDeps, logger: jobLogger })), logger: jobLogger }),
+  );
+  for (const job of dailyJobs) job.start();
 }
 
 server = app.listen(env.PORT, () => {
