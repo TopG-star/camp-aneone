@@ -76,7 +76,7 @@ describe("restoreBackup", () => {
   });
 
   it("resolves relative paths against INIT_CWD (where the operator typed the command), not the package directory", () => {
-    const { dir, keyB64, file, database } = setup();
+    const { dir, keyB64, database } = setup();
     const typedIn = join(dir, "backups");
     const elsewhere = mkdtempSync(join(tmpdir(), "restore-cwd-"));
     dirs.push(elsewhere);
