@@ -165,9 +165,9 @@ describe("backups", () => {
     const broken = { on: true };
     const wrapped = {
       openPersonal: () => gate.openPersonal(),
-      openTenant: (id: string) => {
+      lease: (id: string) => {
         if (broken.on && id === registrationId) throw error;
-        return gate.openTenant(id);
+        return gate.lease(id);
       },
     } as unknown as ContextDbGate;
     return { wrapped, broken };
@@ -240,7 +240,7 @@ describe("backups", () => {
       const { deps, gate } = setup();
       const wrapped = {
         openPersonal: () => gate.openPersonal(),
-        openTenant: (id: string) => {
+        lease: (id: string) => {
           if (id === "reg-1") throw new TenantRefusedError("tenant_unavailable");
           throw new Error("disk error");
         },

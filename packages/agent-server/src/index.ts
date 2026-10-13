@@ -327,7 +327,7 @@ if (env.FEATURE_BACKGROUND_LOOP) {
 void runActionStartupTasks(
   {
     ...container,
-    tenants: { registrations: container.tenantRegistrations, openTenant: container.openTenant, actionsFor: container.actionsFor },
+    tenants: { registrations: container.tenantRegistrations, gate: container.backupSources.gate, actionsFor: container.actionsFor },
   },
   logger,
 ).catch((error: unknown) =>

@@ -32,9 +32,11 @@ import {
 } from "@oneon/application";
 import {
   GCalHttpClient,
+  forEachTenant,
   GoogleCalendarAdapter,
   TTLCache,
   runActionDriftCheck,
+  type ForEachTenantDeps,
   type TokenProvider,
 } from "@oneon/infrastructure";
 import { contextRepos } from "./context-wiring.js";
@@ -177,12 +179,19 @@ export function createActionsFor(base: Omit<ActionsWiringDeps, "context">): (db:
 
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
-/** Spec §7.4: sweep and expire for one user. Never throws, so recovery cannot fail a cycle. */
-export async function runActionRecovery(actions: ActionsModule, userId: string, logger: Logger): Promise<void> {
+/**
+ * Spec §7.4: sweep and expire for one user. Never throws, so recovery cannot fail a cycle. The deadline is cooperative: a sweep that
+ * is already running is not cut short, but expiry waits for the next pass once the deadline has gone.
+ */
+export async function runActionRecovery(actions: ActionsModule, userId: string, logger: Logger, deadline?: number): Promise<void> {
   try {
     await actions.orchestrator.sweep(userId);
   } catch (error) {
     logger.warn("Action sweep failed", { userId, error: errorMessage(error) });
+  }
+  if (deadline !== undefined && Date.now() >= deadline) {
+    logger.warn("Action recovery passed its time budget; expiry continues next pass", { userId });
+    return;
   }
   try {
     await actions.orchestrator.expireStale(userId);
@@ -191,30 +200,30 @@ export async function runActionRecovery(actions: ActionsModule, userId: string, 
   }
 }
 
-/** Recovery for every active tenant, one file at a time. A tenant that cannot be opened or swept is logged and skipped. */
+/** Recovery for every active tenant, one leased file at a time. A tenant that cannot be opened or swept is logged and skipped. */
 export async function runTenantActionRecovery(
   deps: {
-    registrations: { listActive(): Array<{ id: string }> };
-    openTenant(registrationId: string): TenantDb;
+    registrations: ForEachTenantDeps["registrations"];
+    gate: ForEachTenantDeps["gate"];
     actionsFor(db: ContextDb): ActionsModule;
   },
   logger: Logger,
 ): Promise<void> {
-  let registrations: Array<{ id: string }>;
+  let result;
   try {
-    registrations = deps.registrations.listActive();
+    // A tenant's actions are owned by the tenant id (spec §7.4), so one sweep covers all its people.
+    result = await forEachTenant({ gate: deps.gate, registrations: deps.registrations, logger }, (db, deadline) =>
+      runActionRecovery(deps.actionsFor(db), db.tenantId, logger, deadline),
+    );
   } catch (error) {
     logger.warn("Tenant action recovery could not list registrations", { error: errorMessage(error) });
     return;
   }
-  for (const registration of registrations) {
-    try {
-      const db = deps.openTenant(registration.id);
-      // A tenant's actions are owned by the tenant id (spec §7.4), so one sweep covers all its people.
-      await runActionRecovery(deps.actionsFor(db), db.tenantId, logger);
-    } catch (error) {
-      logger.warn("Tenant action recovery failed", { registrationId: registration.id, error: errorMessage(error) });
-    }
+  for (const registrationId of result.failed) {
+    logger.warn("Tenant action recovery failed", { registrationId, error: result.errors[registrationId] });
+  }
+  for (const { registrationId, code } of result.refused) {
+    logger.warn("Tenant action recovery failed", { registrationId, error: code });
   }
 }
 

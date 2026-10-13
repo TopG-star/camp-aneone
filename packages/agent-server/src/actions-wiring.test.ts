@@ -166,11 +166,13 @@ describe("runTenantActionRecovery", () => {
     return {
       trail,
       deps: {
-        registrations: { listActive: () => [{ id: "r1" }, { id: "r2" }] },
-        openTenant: (id: string) => {
-          trail.push("open " + id);
-          if (id === failOpenFor) throw new Error("tenant_unavailable");
-          return handle(id);
+        registrations: { listActive: () => [{ id: "r1" }, { id: "r2" }] as never },
+        gate: {
+          lease: (id: string) => {
+            trail.push("open " + id);
+            if (id === failOpenFor) throw new Error("tenant_unavailable");
+            return { db: handle(id), release: () => void trail.push("release " + id) };
+          },
         },
         actionsFor: (_db: ContextDb) => module(),
       },
@@ -180,15 +182,30 @@ describe("runTenantActionRecovery", () => {
   it("visits each active tenant once, opening one file at a time", async () => {
     const { trail, deps } = tenants();
     await runTenantActionRecovery(deps, fakeLogger());
-    expect(trail).toEqual(["open r1", "sweep t-r1", "expire t-r1", "open r2", "sweep t-r2", "expire t-r2"]);
+    expect(trail).toEqual(["open r1", "sweep t-r1", "expire t-r1", "release r1", "open r2", "sweep t-r2", "expire t-r2", "release r2"]);
   });
 
   it("logs a tenant that fails to open and still recovers the others", async () => {
     const { trail, deps } = tenants("r1");
     const logger = fakeLogger();
     await expect(runTenantActionRecovery(deps, logger)).resolves.toBeUndefined();
-    expect(trail).toEqual(["open r1", "open r2", "sweep t-r2", "expire t-r2"]);
+    expect(trail).toEqual(["open r1", "open r2", "sweep t-r2", "expire t-r2", "release r2"]);
     expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it("stops a tenant's expiry at the deadline and leaves it for the next pass, without cutting the sweep short", async () => {
+    const { trail, deps } = tenants();
+    const logger = fakeLogger();
+    const slow = vi.spyOn(Date, "now");
+    try {
+      slow.mockReturnValueOnce(0).mockReturnValue(10_000); // the deadline is set at 2000; every later look at the clock is past it
+      await runTenantActionRecovery(deps, logger);
+    } finally {
+      slow.mockRestore();
+    }
+    expect(trail).toContain("sweep t-r1");
+    expect(trail).not.toContain("expire t-r1");
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("time budget"), expect.anything());
   });
 
   it("runs after personal recovery in the startup tasks", async () => {

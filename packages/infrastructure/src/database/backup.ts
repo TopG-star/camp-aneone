@@ -5,7 +5,8 @@ import { basename, dirname, join } from "node:path";
 import type { Logger } from "@oneon/domain";
 import { openBuffer, sealBuffer } from "../crypto/envelope.js";
 import type { ContextDbGate } from "./context-db-gate.js";
-import { TenantRefusedError, rawDb } from "./context-db-gate.js";
+import { rawDb, type TenantRefusedError } from "./context-db-gate.js";
+import { forEachTenant } from "./for-each-tenant.js";
 import type { ControlDb } from "./control/open-control-db.js";
 import { TenantRegistrationRepository } from "./control/tenant-registration-repository.js";
 
@@ -54,6 +55,8 @@ const EXTENSION = ".db.enc";
 const BACKUP_SCRATCH_PREFIX = "oneon-backup-";
 const RESTORE_SCRATCH_PREFIX = "oneon-restore-";
 const PARTIAL_SUFFIX = ".partial";
+/** A tenant backup that runs longer than this is logged as an overrun; it is never cut short. */
+const TENANT_BACKUP_BUDGET_MS = 10 * 60 * 1000;
 
 /** Where the restore test's scratch folders go. */
 export function restoreTestTmpDir(): string {
@@ -130,28 +133,42 @@ export async function backupAll(deps: {
 
   // Handles come from the gate (and the control handle): tenant files are never opened any other way.
   const skipped: SkippedTenant[] = [];
-  const jobs: Array<{ context: string; registrationId?: string; name: string; db: () => Database.Database }> = [
+  const fixed: Array<{ context: string; name: string; db: () => Database.Database }> = [
     { context: "control", name: "control", db: () => deps.control },
     { context: "personal", name: "personal", db: () => rawDb(deps.gate.openPersonal()) },
   ];
-  for (const reg of new TenantRegistrationRepository(deps.control).listActive()) {
-    jobs.push({ context: reg.tenantId, registrationId: reg.id, name: reg.fileName.replace(/\.db$/, ""), db: () => rawDb(deps.gate.openTenant(reg.id)) });
-  }
-
-  for (const job of jobs) {
+  for (const job of fixed) {
     try {
-      const db = job.db();
-      completed.push({ file: await backupDatabase(db, { dir, name: job.name, keyB64: deps.keyB64, sealAsDir: finalDir }), context: job.context });
+      completed.push({ file: await backupDatabase(job.db(), { dir, name: job.name, keyB64: deps.keyB64, sealAsDir: finalDir }), context: job.context });
     } catch (error) {
-      if (error instanceof TenantRefusedError && job.registrationId) {
-        skipped.push({ registrationId: job.registrationId, code: error.code });
-        deps.logger?.error("backup skipped: the tenant is refused service", { registrationId: job.registrationId, code: error.code });
-        continue;
-      }
       const message = error instanceof Error ? error.message : String(error);
       failed.push({ context: job.context, error: message });
       deps.logger?.error("backup failed", { context: job.context, error: message });
     }
+  }
+
+  // Tenants go through the shared runner (one leased file at a time). The budget is cooperative and a backup cannot be preempted:
+  // an overrun is logged, never aborted, because half a backup is worthless.
+  const registrations = new TenantRegistrationRepository(deps.control);
+  const byId = new Map(registrations.listActive().map((r) => [r.id, r]));
+  const visit = await forEachTenant(
+    { gate: deps.gate, registrations, logger: deps.logger },
+    async (db, _deadline, reg) => {
+      completed.push({
+        file: await backupDatabase(rawDb(db), { dir, name: reg.fileName.replace(/\.db$/, ""), keyB64: deps.keyB64, sealAsDir: finalDir }),
+        context: reg.tenantId,
+      });
+    },
+    { budgetMs: TENANT_BACKUP_BUDGET_MS },
+  );
+  for (const refusal of visit.refused) {
+    skipped.push(refusal);
+    deps.logger?.error("backup skipped: the tenant is refused service", { registrationId: refusal.registrationId, code: refusal.code });
+  }
+  for (const registrationId of visit.failed) {
+    const message = visit.errors[registrationId]!;
+    failed.push({ context: byId.get(registrationId)?.tenantId ?? registrationId, error: message });
+    deps.logger?.error("backup failed", { context: byId.get(registrationId)?.tenantId ?? registrationId, error: message });
   }
   if (failed.length > 0) throw new BackupIncompleteError(completed, failed);
   if (skipped.length > 0) writeFileSync(join(dir, "skipped.json"), JSON.stringify(skipped, null, 2), { mode: 0o600 });
