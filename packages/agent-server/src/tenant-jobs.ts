@@ -1,5 +1,6 @@
 import type { Logger } from "@oneon/domain";
 import { forEachTenant, rawDb, type ControlDb, type ForEachTenantDeps, type ForEachTenantResult } from "@oneon/infrastructure";
+import { DailyJob } from "./background-loop.js";
 
 // The runner lives beside the gate (infrastructure) so the backup, which also lives there, can use it; the jobs here use it from the server.
 export { forEachTenant };
@@ -100,4 +101,21 @@ export async function checkLinks(deps: TenantJobDeps & { logger: Logger }): Prom
   }
   if (result.failed.length > 0) throw new Error(`link check failed for ${result.failed.length} tenant(s)`);
   return dangling;
+}
+
+/**
+ * Refreshes every enrolled deployment's public keys (spec §5.4) once per UTC day, and once at startup: a deployment's retiring key
+ * stays valid for 7 days, so the refresh must not wait a day after each restart. One failing deployment does not stop the others.
+ */
+export function deploymentKeyRefreshJob(
+  enrolment: { refreshAll(onError: (registrationId: string) => void): Promise<void> },
+  logger: Logger,
+  now?: () => Date,
+): DailyJob {
+  return new DailyJob({
+    name: "Deployment key refresh",
+    run: () => enrolment.refreshAll((registrationId) => logger.warn("Deployment key refresh failed", { registrationId })),
+    logger,
+    now,
+  });
 }

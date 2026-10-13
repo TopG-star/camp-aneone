@@ -13,7 +13,7 @@ import { loadEnv, retiredEnvWarnings } from "./config/env.js";
 import { createContainer } from "./container.js";
 import { registerRoutes } from "./routes/index.js";
 import { BackgroundLoop, BackupScheduler, DailyJob, PeriodicJob } from "./background-loop.js";
-import { checkLinks, writeRollups } from "./tenant-jobs.js";
+import { checkLinks, deploymentKeyRefreshJob, writeRollups } from "./tenant-jobs.js";
 import { prepareStorage } from "./storage-startup.js";
 import { runActionRecovery, runActionStartupTasks, runTenantActionRecovery } from "./actions-wiring.js";
 import {
@@ -331,14 +331,11 @@ void runActionStartupTasks({ ...container, tenants: tenantRecovery }, logger).ca
   logger.error("Action startup tasks failed", { error: error instanceof Error ? error.message : String(error) }),
 );
 
-// Nightly: refresh every enrolled deployment's public keys (spec �5.4). Only when signing keys can be opened at all.
+// Daily, and once at startup: refresh every enrolled deployment's public keys (spec §5.4). Only when signing keys can be opened at all.
 if (env.ONEON_SIGNING_KEY_MASTER_KEY) {
-  const nightly = setInterval(() => {
-    void container.enrolment
-      .refreshAll((registrationId) => logger.warn("Deployment key refresh failed", { registrationId }))
-      .catch((error: unknown) => logger.error("Deployment key refresh crashed", { error: error instanceof Error ? error.message : String(error) }));
-  }, 24 * 60 * 60 * 1000);
-  nightly.unref();
+  const keyRefresh = deploymentKeyRefreshJob(container.enrolment, logger);
+  dailyJobs.push(keyRefresh);
+  keyRefresh.start();
 }
 
 // Nightly encrypted backup and monthly restore test (spec 8.7). Without the key there are none; prepareStorage has already warned.

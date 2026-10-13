@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { DailyJob, PeriodicJob } from "./background-loop.js";
+import { deploymentKeyRefreshJob } from "./tenant-jobs.js";
 
 const logger = () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() });
 
@@ -80,5 +81,28 @@ describe("PeriodicJob", () => {
     await first;
     await stopping;
     expect(stopped).toBe(true);
+  });
+});
+
+describe("deploymentKeyRefreshJob", () => {
+  it("refreshes every deployment's keys once at startup, not only after a day, and logs each failed one", async () => {
+    const log = logger();
+    const refreshAll = vi.fn(async (onError: (registrationId: string) => void) => onError("reg-2"));
+    const job = deploymentKeyRefreshJob({ refreshAll }, log);
+    job.start();
+    await job.stop();
+    expect(refreshAll).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalledWith("Deployment key refresh failed", { registrationId: "reg-2" });
+  });
+
+  it("runs again on the next UTC day", async () => {
+    let now = new Date("2026-10-10T03:00:00.000Z");
+    const refreshAll = vi.fn(async () => {});
+    const job = deploymentKeyRefreshJob({ refreshAll }, logger(), () => now);
+    await job.tick();
+    await job.tick();
+    now = new Date("2026-10-11T00:00:01.000Z");
+    await job.tick();
+    expect(refreshAll).toHaveBeenCalledTimes(2);
   });
 });
