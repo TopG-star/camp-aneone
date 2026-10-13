@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,7 @@ import { restoreBackup } from "./restore-backup.js";
 describe("restoreBackup", () => {
   const dirs: string[] = [];
   afterEach(() => {
+    vi.unstubAllEnvs();
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
@@ -54,7 +55,7 @@ describe("restoreBackup", () => {
     expect(() => restoreBackup([file, "--out", out], randomBytes(32).toString("base64"))).toThrow();
     const renamed = join(dir, "backups", "2026-10-10", "tenant.db.enc");
     copyFileSync(file, renamed);
-    expect(() => restoreBackup([renamed, "--out", out], keyB64)).toThrow(/original folder and file name/);
+    expect(() => restoreBackup([renamed, "--out", out], keyB64)).toThrow(/renamed or moved.*--as/);
     expect(existsSync(out)).toBe(false);
   });
 
@@ -63,6 +64,7 @@ describe("restoreBackup", () => {
     const previous = process.cwd();
     const cwd = mkdtempSync(join(tmpdir(), "restore-cwd-"));
     dirs.push(cwd);
+    vi.stubEnv("INIT_CWD", "");
     process.chdir(cwd);
     try {
       const out = restoreBackup([file], keyB64);
@@ -71,6 +73,35 @@ describe("restoreBackup", () => {
     } finally {
       process.chdir(previous);
     }
+  });
+
+  it("resolves relative paths against INIT_CWD (where the operator typed the command), not the package directory", () => {
+    const { dir, keyB64, file, database } = setup();
+    const typedIn = join(dir, "backups");
+    const elsewhere = mkdtempSync(join(tmpdir(), "restore-cwd-"));
+    dirs.push(elsewhere);
+    vi.stubEnv("INIT_CWD", typedIn);
+    const previous = process.cwd();
+    process.chdir(elsewhere); // what pnpm --filter does: the script runs in the package directory
+    try {
+      const out = restoreBackup([join("2026-10-10", "personal.db.enc"), "--out", "restored.db"], keyB64);
+      expect(out).toBe(join(typedIn, "restored.db"));
+      expect(readFileSync(out).equals(database)).toBe(true);
+      expect(existsSync(join(elsewhere, "restored.db"))).toBe(false);
+    } finally {
+      process.chdir(previous);
+    }
+  });
+
+  it("decrypts a file that was renamed or moved when --as names its original <day>/<name>", () => {
+    const { dir, keyB64, file, database } = setup();
+    const moved = join(dir, "fetched", "personal-copy.enc");
+    mkdirSync(join(dir, "fetched"));
+    copyFileSync(file, moved);
+    const out = join(dir, "restored.db");
+    expect(() => restoreBackup([moved, "--out", out], keyB64)).toThrow(/--as/);
+    expect(restoreBackup([moved, "--out", out, "--as", "2026-10-10/personal.db.enc"], keyB64)).toBe(out);
+    expect(readFileSync(out).equals(database)).toBe(true);
   });
 
   it("explains its usage when no file is given", () => {

@@ -142,9 +142,12 @@ export async function backupAll(deps: {
   return completed.map((c) => ({ ...c, file: join(finalDir, basename(c.file)) }));
 }
 
-/** Decrypts a backup file to its database bytes. Throws when the key is wrong or the file is not where (and what) it was written. */
-export function decryptBackup(file: string, keyB64: string): Buffer {
-  return openBuffer(readFileSync(file), keyB64, backupAad(file));
+/**
+ * Decrypts a backup file to its database bytes. Throws when the key is wrong or the file is not where (and what) it was written.
+ * `as` (`<folder>/<file>`, e.g. `2026-10-10/personal.db.enc`) supplies the original location of a file that was renamed or moved.
+ */
+export function decryptBackup(file: string, keyB64: string, as?: string): Buffer {
+  return openBuffer(readFileSync(file), keyB64, as ?? backupAad(file));
 }
 
 /**
