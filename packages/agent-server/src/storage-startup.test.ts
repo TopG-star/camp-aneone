@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { Logger } from "@oneon/domain";
-import { createDatabase, openControlDb } from "@oneon/infrastructure";
+import { acquireStorageLock, createDatabase, openControlDb } from "@oneon/infrastructure";
 import { prepareStorage } from "./storage-startup.js";
 
 const NOW = "2026-10-08T00:00:00.000Z";
@@ -70,16 +70,53 @@ describe("prepareStorage", () => {
     db.close();
   });
 
-  it("explains a leftover migration lock instead of failing with a bare EEXIST", async () => {
+  it("is not blocked by a leftover lock file, and leaves nothing held", async () => {
     const { dir, env, log } = setup({ existingPersonal: true });
-    writeFileSync(join(dir, "migrate.lock"), "");
-    await expect(prepareStorage(env, log)).rejects.toThrow(/migrate\.lock/);
+    writeFileSync(join(dir, "storage.lock"), "");
+    await prepareStorage(env, log);
+    // Released: a second preparation runs straight after.
+    await prepareStorage(env, log);
   });
 
-  it("leaves no lock behind", async () => {
+  it("refuses with a readable error while another process holds the storage lock, and touches nothing", async () => {
     const { dir, env, log } = setup({ existingPersonal: true });
-    await prepareStorage(env, log);
-    expect(existsSync(join(dir, "migrate.lock"))).toBe(false);
+    const release = acquireStorageLock(join(dir, "storage.lock"));
+    try {
+      await expect(prepareStorage(env, log)).rejects.toThrow(/another Oneon process is preparing storage/i);
+    } finally {
+      release();
+    }
+    expect(existsSync(env.CONTROL_DATABASE_PATH)).toBe(false);
+  });
+
+  it("holds the lock while the control database is opened and migrated, and releases it when it fails", async () => {
+    const { dir, env, log } = setup({ key: false, registration: true });
+    await expect(prepareStorage(env, log)).rejects.toThrow(/BACKUP_ENCRYPTION_KEY is required/);
+    acquireStorageLock(join(dir, "storage.lock"))();
+  });
+
+  it("sweeps leftover plaintext scratch folders and .part files, and only those", async () => {
+    const { dir, env, log } = setup({ existingPersonal: true });
+    const scratch = mkdtempSync(join(tmpdir(), "oneon-backup-"));
+    const restoreRoot = join(tmpdir(), "oneon-restore-test");
+    mkdirSync(restoreRoot, { recursive: true });
+    const restoreScratch = mkdtempSync(join(restoreRoot, "oneon-restore-"));
+    writeFileSync(join(scratch, "copy.db"), "plaintext");
+    mkdirSync(join(env.BACKUP_DIR, "2026-10-09"), { recursive: true });
+    writeFileSync(join(env.BACKUP_DIR, "2026-10-09", "a.db.enc.part"), "x");
+    writeFileSync(join(env.BACKUP_DIR, "2026-10-09", "a.db.enc"), "keep");
+    writeFileSync(join(dir, "notes.part"), "outside the backup dir");
+    try {
+      await prepareStorage(env, log);
+      expect(existsSync(scratch)).toBe(false);
+      expect(existsSync(restoreScratch)).toBe(false);
+      expect(existsSync(join(env.BACKUP_DIR, "2026-10-09", "a.db.enc.part"))).toBe(false);
+      expect(existsSync(join(env.BACKUP_DIR, "2026-10-09", "a.db.enc"))).toBe(true);
+      expect(existsSync(join(dir, "notes.part"))).toBe(true);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+      rmSync(restoreScratch, { recursive: true, force: true });
+    }
   });
 
   it("does nothing to in-memory databases", async () => {

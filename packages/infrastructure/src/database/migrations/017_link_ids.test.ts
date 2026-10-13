@@ -98,7 +98,7 @@ describe("Migration 017 on a tenant file", () => {
     }
     expect(code).toBe("tenant_schema_behind");
 
-    const result = await migrateAll({ control, personalPath: join(dir, "personal.db"), tenantDir, lockPath: join(dir, "migrate.lock"), logger: { info() {}, warn() {}, error() {}, debug() {} } });
+    const result = await migrateAll({ control, personalPath: join(dir, "personal.db"), tenantDir, logger: { info() {}, warn() {}, error() {}, debug() {} } });
     expect(result.failed).toEqual([]);
     expect(result.migrated).toEqual(["personal", "reg-1"]);
 

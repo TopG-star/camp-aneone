@@ -1,6 +1,5 @@
 import { config } from "dotenv";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import express from "express";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
@@ -28,7 +27,8 @@ import {
   GmailStatementDocumentProvider,
   StructuredLogger,
   backupAll,
-  restoreTest,
+  restoreTestOwned,
+  restoreTestTmpDir,
 } from "@oneon/infrastructure";
 
 function emptyCycleSummary(): CycleSummary {
@@ -125,10 +125,13 @@ function handleShutdown(signal: string): void {
       logger.info("Background loop stopped");
     });
   }
-  void backupScheduler?.stop();
+  // Databases close only after the background work has stopped (a backup in flight holds open handles).
+  const backupStopped = backupScheduler ? backupScheduler.stop() : Promise.resolve();
   server?.close(() => {
-    container.shutdown();
-    process.exit(0);
+    void backupStopped.then(() => {
+      container.shutdown();
+      process.exit(0);
+    });
   });
   // Force exit after 5 seconds if server doesn't close
   setTimeout(() => process.exit(1), 5000).unref();
@@ -349,7 +352,7 @@ if (backupKey) {
   backupScheduler = new BackupScheduler({
     outDir: env.BACKUP_DIR,
     backupAll: () => backupAll({ gate, control, outDir: env.BACKUP_DIR, keyB64: backupKey, now: () => new Date(), logger }),
-    restoreTest: (file) => restoreTest({ file, keyB64: backupKey, tmpDir: join(tmpdir(), "oneon-restore-test") }),
+    restoreTest: (file) => restoreTestOwned({ file, keyB64: backupKey, tmpDir: restoreTestTmpDir(), control }),
     logger,
   });
   backupScheduler.start();

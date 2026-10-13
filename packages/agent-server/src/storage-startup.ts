@@ -1,7 +1,16 @@
 import { mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Logger } from "@oneon/domain";
-import { hasRegistrations, migrateAll, openControlDbForStartup, type PreMigrationBackup } from "@oneon/infrastructure";
+import {
+  acquireStorageLock,
+  hasRegistrations,
+  migrateAll,
+  openControlDbForStartup,
+  restoreTestTmpDir,
+  sweepBackupLeftovers,
+  type PreMigrationBackup,
+} from "@oneon/infrastructure";
 import type { Env } from "./config/env.js";
 
 export type StorageEnv = Pick<Env, "DATABASE_PATH" | "CONTROL_DATABASE_PATH" | "TENANT_DATA_DIR" | "BACKUP_DIR" | "BACKUP_ENCRYPTION_KEY">;
@@ -21,6 +30,19 @@ export async function prepareStorage(env: StorageEnv, logger: Logger): Promise<v
   mkdirSync(dirname(env.DATABASE_PATH), { recursive: true });
   mkdirSync(dirname(env.CONTROL_DATABASE_PATH), { recursive: true });
 
+  // An OS file lock held for the whole preparation, control.db's open and migration included. The kernel releases it when the
+  // process dies, so a lock file left by a crash never blocks the restart.
+  const release = acquireStorageLock(join(dirname(env.CONTROL_DATABASE_PATH), "storage.lock"));
+  try {
+    const swept = sweepBackupLeftovers({ backupDir: env.BACKUP_DIR, scratchRoots: [tmpdir(), restoreTestTmpDir()] });
+    if (swept.length > 0) logger.warn("Removed leftovers of an interrupted backup", { count: swept.length });
+    await prepareLocked(env, logger);
+  } finally {
+    release();
+  }
+}
+
+async function prepareLocked(env: StorageEnv, logger: Logger): Promise<void> {
   const keyB64 = env.BACKUP_ENCRYPTION_KEY;
   const backup: PreMigrationBackup | null = keyB64 ? { outDir: env.BACKUP_DIR, keyB64, now: () => new Date() } : null;
 
@@ -33,23 +55,13 @@ export async function prepareStorage(env: StorageEnv, logger: Logger): Promise<v
       logger.warn("BACKUP_ENCRYPTION_KEY is not set: backups are disabled. It is required as soon as the first pharmacy is enrolled.");
     }
 
-    const lockPath = join(dirname(env.CONTROL_DATABASE_PATH), "migrate.lock");
-    let result;
-    try {
-      result = await migrateAll({
-        control,
-        personalPath: env.DATABASE_PATH,
-        tenantDir: env.TENANT_DATA_DIR,
-        lockPath,
-        logger,
-        backup: backup ?? undefined,
-      });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-        throw new Error(`A migration is already running, or a previous one was interrupted: remove ${lockPath} if no migration is running, then start again`);
-      }
-      throw error;
-    }
+    const result = await migrateAll({
+      control,
+      personalPath: env.DATABASE_PATH,
+      tenantDir: env.TENANT_DATA_DIR,
+      logger,
+      backup: backup ?? undefined,
+    });
 
     // A tenant that failed was logged by migrateAll and is refused service by the gate; the personal file is not optional.
     const personal = result.failed.find((f) => f.registrationId === "personal");

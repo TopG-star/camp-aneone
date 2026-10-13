@@ -42,7 +42,7 @@ describe("migrateAll", () => {
         .run(`reg-${n}`, `t-${n}`, `s-${n}`, fileName, status, NOW);
       return { id: `reg-${n}`, path: join(tenantDir, fileName) };
     };
-    return { control, register, deps: { control, personalPath: join(dir, "personal.db"), tenantDir, lockPath: join(dir, "migrate.lock"), logger } };
+    return { control, register, deps: { control, personalPath: join(dir, "personal.db"), tenantDir, logger } };
   }
 
   const version = (path: string) => {
@@ -69,7 +69,6 @@ describe("migrateAll", () => {
     expect(version(good.path)).toBe(latestMigrationVersion());
     expect(existsSync(suspended.path)).toBe(false);
     expect(existsSync(missing.path)).toBe(false);
-    expect(existsSync(deps.lockPath)).toBe(false);
     control.close();
   });
 
@@ -105,14 +104,6 @@ describe("migrateAll", () => {
     const check = createDatabase(reg.path);
     expect(check.prepare("SELECT name FROM sqlite_master WHERE name = 'schema_migrations'").get()).toBeUndefined();
     check.close();
-    control.close();
-  });
-
-  it("refuses to run while the lock file exists", async () => {
-    const { control, deps } = setup();
-    writeFileSync(deps.lockPath, "");
-    await expect(migrateAll(deps)).rejects.toThrow();
-    expect(existsSync(deps.lockPath)).toBe(true);
     control.close();
   });
 

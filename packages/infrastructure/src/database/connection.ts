@@ -41,6 +41,33 @@ export function createDatabase(dbPath: string): Database.Database {
   return db;
 }
 
+/**
+ * Takes the storage-preparation lock: a dedicated SQLite file held under `BEGIN EXCLUSIVE` with `locking_mode=EXCLUSIVE`. It is an
+ * OS file lock, so the kernel releases it when the process dies (SIGKILL, OOM) and a file left on disk never blocks a restart.
+ * This handle opens only the lock file, never a context database. Throws at once (busy timeout 0) when another process holds it.
+ * Returns the release function.
+ */
+export function acquireStorageLock(lockPath: string): () => void {
+  const db = new Database(lockPath, { timeout: 0 });
+  try {
+    db.pragma("locking_mode = EXCLUSIVE");
+    db.exec("BEGIN EXCLUSIVE");
+  } catch (error) {
+    db.close();
+    if ((error as { code?: string }).code === "SQLITE_BUSY") {
+      throw new Error(`Another Oneon process is preparing storage (lock held on ${lockPath}). Wait for it to finish, then start again.`);
+    }
+    throw error;
+  }
+  return () => {
+    try {
+      db.exec("ROLLBACK");
+    } finally {
+      db.close();
+    }
+  };
+}
+
 function hasTable(db: Database.Database, tableName: string): boolean {
   const row = db
     .prepare(

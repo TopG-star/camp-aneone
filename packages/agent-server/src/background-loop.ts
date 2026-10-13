@@ -363,6 +363,8 @@ export interface RestoreCheck {
   ok: boolean;
   integrity: string;
   contextMeta: { kind: string; tenant_id: string | null } | null;
+  /** Why a decryptable, intact file still failed (it does not belong to the context its name says). */
+  reason?: string;
 }
 
 export interface BackupSchedulerDeps {
@@ -444,7 +446,7 @@ export class BackupScheduler {
       if (result.ok) {
         logger.info("Monthly restore test passed", { file, tenantId: result.contextMeta?.tenant_id ?? null });
       } else {
-        logger.error("Monthly restore test failed", { file, integrity: result.integrity, contextMeta: result.contextMeta });
+        logger.error("Monthly restore test failed", { file, integrity: result.integrity, contextMeta: result.contextMeta, reason: result.reason });
       }
     } catch (error) {
       logger.error("Monthly restore test crashed", { error: error instanceof Error ? error.message : String(error) });

@@ -7,7 +7,7 @@ import { createDatabase } from "./connection.js";
 import { ContextDbGate, rawDb } from "./context-db-gate.js";
 import { openControlDb } from "./control/open-control-db.js";
 import { sealBuffer } from "../crypto/envelope.js";
-import { backupAll, decryptBackup, restoreTest } from "./backup.js";
+import { backupAll, decryptBackup, restoreTest, restoreTestOwned, sweepBackupLeftovers } from "./backup.js";
 
 const NOW = "2026-10-08T00:00:00.000Z";
 const TODAY = new Date("2026-10-10T03:00:00.000Z");
@@ -167,7 +167,106 @@ describe("backups", () => {
     const errors: string[] = [];
     const logger = { info() {}, warn() {}, debug() {}, error: (m: string) => void errors.push(m) };
     await expect(backupAll({ ...deps, logger })).rejects.toThrow(/t-1/);
-    expect(existsSync(join(deps.outDir, "2026-10-10", `${regs[1]!.fileName.replace(/\.db$/, "")}.db.enc`))).toBe(true);
+    expect(existsSync(join(deps.outDir, "2026-10-10.partial", `${regs[1]!.fileName.replace(/\.db$/, "")}.db.enc`))).toBe(true);
     expect(errors.length).toBe(1);
+  });
+
+  describe("a day is only complete when every file is in it", () => {
+    it("leaves no day folder when one file fails, and the next run writes the whole day", async () => {
+      const { deps, tenantDir, regs, gate } = setup();
+      const saved = join(tenantDir, "saved.db");
+      gate.close();
+      copyFileSync(join(tenantDir, regs[0]!.fileName), saved);
+      rmSync(join(tenantDir, regs[0]!.fileName), { force: true });
+      await expect(backupAll(deps)).rejects.toThrow();
+      expect(existsSync(join(deps.outDir, "2026-10-10"))).toBe(false);
+
+      copyFileSync(saved, join(tenantDir, regs[0]!.fileName));
+      const results = await backupAll(deps);
+      expect(results.length).toBe(4);
+      expect(readdirSync(deps.outDir)).toEqual(["2026-10-10"]);
+      // Sealed for its final place: it restores from there.
+      for (const r of results) expect((await restoreTest({ file: r.file, keyB64: deps.keyB64, tmpDir: join(deps.outDir, "..", "tmp") })).ok).toBe(true);
+    });
+
+    it("clears a leftover partial folder at the start of a run", async () => {
+      const { deps } = setup(1);
+      mkdirSync(join(deps.outDir, "2026-10-10.partial"), { recursive: true });
+      writeFileSync(join(deps.outDir, "2026-10-10.partial", "stale.db.enc"), "x");
+      await backupAll(deps);
+      const names = walk(deps.outDir).map((f) => basename(f));
+      expect(names.length).toBe(3);
+      expect(names).not.toContain("stale.db.enc");
+      expect(existsSync(join(deps.outDir, "2026-10-10.partial"))).toBe(false);
+    });
+  });
+
+  describe("restoreTestOwned: the file must belong to the context its name says", () => {
+    it("passes for a tenant file whose context_meta matches its registration", async () => {
+      const { deps, tmpDir, control } = setup();
+      const results = await backupAll(deps);
+      const check = await restoreTestOwned({ file: results.find((r) => r.context === "t-2")!.file, keyB64: deps.keyB64, tmpDir, control });
+      expect(check).toMatchObject({ ok: true, contextMeta: { kind: "tenant", tenant_id: "t-2" } });
+    });
+
+    it("fails when the registration that owns the file has a different tenant id", async () => {
+      const { deps, tmpDir, control } = setup();
+      const results = await backupAll(deps);
+      control.prepare("UPDATE tenant_registrations SET tenant_id = 'someone-else' WHERE id = 'reg-2'").run();
+      const check = await restoreTestOwned({ file: results.find((r) => r.context === "t-2")!.file, keyB64: deps.keyB64, tmpDir, control });
+      expect(check.ok).toBe(false);
+      expect(check.reason).toMatch(/tenant_id.*t-2.*someone-else/);
+    });
+
+    it("fails when no registration owns the file", async () => {
+      const { deps, tmpDir, control } = setup();
+      const results = await backupAll(deps);
+      control.prepare("DELETE FROM tenant_registrations WHERE id = 'reg-2'").run();
+      const check = await restoreTestOwned({ file: results.find((r) => r.context === "t-2")!.file, keyB64: deps.keyB64, tmpDir, control });
+      expect(check.ok).toBe(false);
+      expect(check.reason).toMatch(/no registration/i);
+    });
+
+    it("fails when the file holds a personal context, or no context_meta at all", async () => {
+      const { deps, tmpDir, control, regs, dir } = setup();
+      const results = await backupAll(deps);
+      const day = join(deps.outDir, "2026-10-10");
+      const name = `${regs[0]!.fileName.replace(/\.db$/, "")}.db.enc`;
+      // The personal database sealed under the tenant's file name.
+      writeFileSync(join(day, name), sealBuffer(decryptBackup(results.find((r) => r.context === "personal")!.file, deps.keyB64), deps.keyB64, `2026-10-10/${name}`));
+      const personal = await restoreTestOwned({ file: join(day, name), keyB64: deps.keyB64, tmpDir, control });
+      expect(personal.ok).toBe(false);
+      expect(personal.reason).toMatch(/kind/);
+
+      const bare = join(dir, "bare.db");
+      const db = createDatabase(bare);
+      db.exec("CREATE TABLE t (a)");
+      db.close();
+      writeFileSync(join(day, name), sealBuffer(readFileSync(bare), deps.keyB64, `2026-10-10/${name}`));
+      const missing = await restoreTestOwned({ file: join(day, name), keyB64: deps.keyB64, tmpDir, control });
+      expect(missing.ok).toBe(false);
+      expect(missing.reason).toMatch(/context_meta/);
+    });
+  });
+
+  describe("sweepBackupLeftovers", () => {
+    it("removes our scratch folders and .part files, and nothing else", () => {
+      const { dir, outDir } = setup(0);
+      const scratchRoot = join(dir, "scratch");
+      mkdirSync(join(scratchRoot, "oneon-backup-abc"), { recursive: true });
+      writeFileSync(join(scratchRoot, "oneon-backup-abc", "copy.db"), "plain");
+      mkdirSync(join(scratchRoot, "oneon-restore-xyz"));
+      mkdirSync(join(scratchRoot, "someone-elses"));
+      mkdirSync(join(outDir, "2026-10-10"), { recursive: true });
+      writeFileSync(join(outDir, "2026-10-10", "a.db.enc.part"), "x");
+      writeFileSync(join(outDir, "2026-10-10", "a.db.enc"), "keep");
+      writeFileSync(join(scratchRoot, "other.part"), "not in the backup dir");
+
+      const removed = sweepBackupLeftovers({ backupDir: outDir, scratchRoots: [scratchRoot, join(dir, "missing")] });
+
+      expect(removed.length).toBe(3);
+      expect(readdirSync(scratchRoot).sort()).toEqual(["other.part", "someone-elses"]);
+      expect(readdirSync(join(outDir, "2026-10-10"))).toEqual(["a.db.enc"]);
+    });
   });
 });

@@ -117,6 +117,28 @@ describe("BackupScheduler", () => {
     expect(restoreTest).toHaveBeenCalledTimes(1);
   });
 
+  it("does not count a partial day as done, and never restore-tests from a partial or pre-migration folder", async () => {
+    mkdirSync(join(outDir, "2026-10-10.partial"));
+    writeFileSync(join(outDir, "2026-10-10.partial", "tenant-p.db.enc"), "x");
+    mkdirSync(join(outDir, "pre-migration", "2026-10-10T01-00-00Z"), { recursive: true });
+    writeFileSync(join(outDir, "pre-migration", "2026-10-10T01-00-00Z", "tenant-q.db.enc"), "x");
+    mkdirSync(join(outDir, "2026-10-09"));
+    writeFileSync(join(outDir, "2026-10-09", "tenant-ok.db.enc"), "x");
+    const backupAll = vi.fn(async () => {});
+    const { scheduler, restoreTest } = make(backupAll);
+    await scheduler.tick();
+    expect(backupAll).toHaveBeenCalledTimes(1);
+    expect(restoreTest).toHaveBeenCalledTimes(1);
+    expect(restoreTest.mock.calls[0]![0]).toBe(join(outDir, "2026-10-09", "tenant-ok.db.enc"));
+  });
+
+  it("logs the reason when a restored file does not belong to its context", async () => {
+    const owned = vi.fn(async (_file: string) => ({ ok: false, integrity: "ok", contextMeta: null, reason: "no registration owns x.db" }));
+    const { scheduler, log } = make(fakeBackup(), owned);
+    await scheduler.tick();
+    expect(log.error).toHaveBeenCalledWith("Monthly restore test failed", expect.objectContaining({ reason: "no registration owns x.db" }));
+  });
+
   it("stop() waits for the tick in flight", async () => {
     let release!: () => void;
     const backupAll = vi.fn(

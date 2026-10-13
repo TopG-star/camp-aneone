@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { Logger } from "@oneon/domain";
@@ -19,6 +19,8 @@ export interface RestoreTestResult {
   ok: boolean;
   integrity: string;
   contextMeta: { kind: string; tenant_id: string | null } | null;
+  /** Why a restore that decrypted and passed integrity_check is still not ok (restoreTestOwned only). */
+  reason?: string;
 }
 
 /** Where and how to back a file up before a migration changes it. */
@@ -39,6 +41,15 @@ export class BackupIncompleteError extends Error {
 }
 
 const EXTENSION = ".db.enc";
+/** Prefixes of the private folders this module creates, so a startup sweep removes only its own leftovers. */
+const BACKUP_SCRATCH_PREFIX = "oneon-backup-";
+const RESTORE_SCRATCH_PREFIX = "oneon-restore-";
+const PARTIAL_SUFFIX = ".partial";
+
+/** Where the restore test's scratch folders go. */
+export function restoreTestTmpDir(): string {
+  return join(tmpdir(), "oneon-restore-test");
+}
 
 /** The UTC date, the name of a day's backup folder. */
 export function backupDay(date: Date): string {
@@ -62,14 +73,19 @@ function backupAad(file: string): string {
  * Copies one open database with SQLite's online backup API (consistent while other connections write), seals the copy and writes it
  * to `<dir>/<name>.db.enc`. The plaintext copy lives only in a private temp folder outside `dir` and is removed in `finally`.
  */
-export async function backupDatabase(db: Database.Database, target: { dir: string; name: string; keyB64: string }): Promise<string> {
+export async function backupDatabase(
+  db: Database.Database,
+  /** `sealAsDir` is the folder the file will finally live in, when it is written elsewhere first and renamed (it is sealed for that place). */
+  target: { dir: string; name: string; keyB64: string; sealAsDir?: string },
+): Promise<string> {
   const file = join(target.dir, `${target.name}${EXTENSION}`);
-  const scratch = mkdtempSync(join(tmpdir(), "oneon-backup-")); // 0700 where the OS has modes
+  const aad = backupAad(join(target.sealAsDir ?? target.dir, `${target.name}${EXTENSION}`));
+  const scratch = mkdtempSync(join(tmpdir(), BACKUP_SCRATCH_PREFIX)); // 0700 where the OS has modes
   const partial = `${file}.part`;
   try {
     const copy = join(scratch, "copy.db");
     await db.backup(copy);
-    const sealed = sealBuffer(readFileSync(copy), target.keyB64, backupAad(file));
+    const sealed = sealBuffer(readFileSync(copy), target.keyB64, aad);
     mkdirSync(target.dir, { recursive: true });
     // Written beside its final name and renamed, so a crash never leaves a short file under a real name.
     writeFileSync(partial, sealed, { mode: 0o600 });
@@ -81,7 +97,12 @@ export async function backupDatabase(db: Database.Database, target: { dir: strin
   }
 }
 
-/** Backs up control, personal and every active tenant into `<outDir>/<yyyy-mm-dd>/`. Every file is tried; any failure is thrown at the end. */
+/**
+ * Backs up control, personal and every active tenant into `<outDir>/<yyyy-mm-dd>/`. The files are written into
+ * `<yyyy-mm-dd>.partial/` and that folder is renamed only when every file succeeded, so a day folder always means a complete day:
+ * after a failure (or a crash) no day folder exists and the next run starts the day again. Every file is tried; any failure is
+ * thrown at the end. Files are sealed for their final folder, not the partial one.
+ */
 export async function backupAll(deps: {
   gate: ContextDbGate;
   control: ControlDb;
@@ -90,7 +111,10 @@ export async function backupAll(deps: {
   now: () => Date;
   logger?: Logger;
 }): Promise<BackupResult[]> {
-  const dir = join(deps.outDir, backupDay(deps.now()));
+  const finalDir = join(deps.outDir, backupDay(deps.now()));
+  const dir = `${finalDir}${PARTIAL_SUFFIX}`;
+  if (existsSync(finalDir)) throw new Error(`${finalDir} already exists; a day is backed up once`);
+  rmSync(dir, { recursive: true, force: true }); // a crashed run's leftovers
   const completed: BackupResult[] = [];
   const failed: Array<{ context: string; error: string }> = [];
 
@@ -106,7 +130,7 @@ export async function backupAll(deps: {
   for (const job of jobs) {
     try {
       const db = job.db();
-      completed.push({ file: await backupDatabase(db, { dir, name: job.name, keyB64: deps.keyB64 }), context: job.context });
+      completed.push({ file: await backupDatabase(db, { dir, name: job.name, keyB64: deps.keyB64, sealAsDir: finalDir }), context: job.context });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       failed.push({ context: job.context, error: message });
@@ -114,7 +138,8 @@ export async function backupAll(deps: {
     }
   }
   if (failed.length > 0) throw new BackupIncompleteError(completed, failed);
-  return completed;
+  renameSync(dir, finalDir);
+  return completed.map((c) => ({ ...c, file: join(finalDir, basename(c.file)) }));
 }
 
 /** Decrypts a backup file to its database bytes. Throws when the key is wrong or the file is not where (and what) it was written. */
@@ -128,7 +153,7 @@ export function decryptBackup(file: string, keyB64: string): Buffer {
  */
 export async function restoreTest(deps: { file: string; keyB64: string; tmpDir: string }): Promise<RestoreTestResult> {
   mkdirSync(deps.tmpDir, { recursive: true });
-  const scratch = mkdtempSync(join(deps.tmpDir, "oneon-restore-"));
+  const scratch = mkdtempSync(join(deps.tmpDir, RESTORE_SCRATCH_PREFIX));
   try {
     let plaintext: Buffer;
     try {
@@ -160,4 +185,54 @@ export async function restoreTest(deps: { file: string; keyB64: string; tmpDir: 
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+/**
+ * `restoreTest` plus the check that the file belongs where its name says (spec 8.7): the registration whose tenant file id is the
+ * file's name must exist, and `context_meta` must say kind "tenant" with that registration's tenant id. Anything else is not ok,
+ * with the reason in `reason`.
+ */
+export async function restoreTestOwned(deps: { file: string; keyB64: string; tmpDir: string; control: ControlDb }): Promise<RestoreTestResult> {
+  const result = await restoreTest(deps);
+  if (!result.ok) return result;
+  const fileName = `${basename(deps.file).replace(/\.db\.enc$/, "")}.db`;
+  const owner = deps.control.prepare("SELECT tenant_id FROM tenant_registrations WHERE file_name = ?").get(fileName) as { tenant_id: string } | undefined;
+  const meta = result.contextMeta;
+  let reason: string | null = null;
+  if (!owner) reason = `no registration owns ${fileName}`;
+  else if (!meta) reason = "the restored file has no context_meta";
+  else if (meta.kind !== "tenant") reason = `context_meta kind is "${meta.kind}", expected "tenant"`;
+  else if (meta.tenant_id !== owner.tenant_id) reason = `context_meta tenant_id is "${meta.tenant_id}", the registration says "${owner.tenant_id}"`;
+  return reason === null ? result : { ...result, ok: false, reason };
+}
+
+/**
+ * Removes what an interrupted run of this module can leave behind: its private plaintext scratch folders (by prefix, in each of
+ * `scratchRoots`) and `.part` files anywhere under `backupDir`. Nothing else is touched. Returns the removed paths.
+ */
+export function sweepBackupLeftovers(deps: { backupDir: string; scratchRoots: string[] }): string[] {
+  const removed: string[] = [];
+  for (const root of deps.scratchRoots) {
+    if (!existsSync(root) || !statSync(root).isDirectory()) continue;
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (entry.isDirectory() && (entry.name.startsWith(BACKUP_SCRATCH_PREFIX) || entry.name.startsWith(RESTORE_SCRATCH_PREFIX))) {
+        const path = join(root, entry.name);
+        rmSync(path, { recursive: true, force: true });
+        removed.push(path);
+      }
+    }
+  }
+  const walk = (dir: string): void => {
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.name.endsWith(`${EXTENSION}.part`)) {
+        rmSync(path, { force: true });
+        removed.push(path);
+      }
+    }
+  };
+  walk(deps.backupDir);
+  return removed;
 }
