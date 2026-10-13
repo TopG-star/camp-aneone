@@ -1,11 +1,11 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { assertRowTenant } from "@oneon/domain";
 import { createDatabase, latestMigrationVersion, runMigrations } from "./connection.js";
-import { ContextDbGate, TenantRefusedError, rawDb, ensureIdentityAnchor } from "./context-db-gate.js";
+import { ContextDbGate, EVICTION_GRACE_MS, TenantRefusedError, rawDb, ensureIdentityAnchor } from "./context-db-gate.js";
 import { openControlDb, type ControlDb } from "./control/open-control-db.js";
 
 const NOW = "2026-10-08T00:00:00.000Z";
@@ -127,12 +127,19 @@ describe("ContextDbGate", () => {
     expect(refusal(() => gate.openTenant(reg.id))).toBe("tenant_schema_behind");
   });
 
-  it("the cache closes the least recently used handle beyond its size", () => {
-    const { gate, register } = setup(2);
-    const handles = [register(), register(), register()].map((r) => gate.createTenantFile(r.id, r.tenantId));
-    expect(rawDb(handles[0]!).open).toBe(false);
-    expect(rawDb(handles[1]!).open).toBe(true);
-    expect(rawDb(handles[2]!).open).toBe(true);
+  it("the cache closes the least recently used handle beyond its size, after a grace period", () => {
+    vi.useFakeTimers();
+    try {
+      const { gate, register } = setup(2);
+      const handles = [register(), register(), register()].map((r) => gate.createTenantFile(r.id, r.tenantId));
+      expect(rawDb(handles[0]!).open).toBe(true);
+      vi.advanceTimersByTime(EVICTION_GRACE_MS);
+      expect(rawDb(handles[0]!).open).toBe(false);
+      expect(rawDb(handles[1]!).open).toBe(true);
+      expect(rawDb(handles[2]!).open).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("anchors an identity in a tenant file", () => {

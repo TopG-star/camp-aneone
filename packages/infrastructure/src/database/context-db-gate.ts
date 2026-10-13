@@ -32,10 +32,24 @@ export function ensureIdentityAnchor(db: ContextDb, identityId: string): void {
 
 type Registration = { tenant_id: string; file_name: string; status: string };
 
+type Entry = { db: TenantDb; conn: Database.Database; leases: number; closed: boolean; timer?: ReturnType<typeof setTimeout> };
+
+/** A handle held for the length of a job: never evicted by the cache, and closed only after release. */
+export interface TenantLease {
+  db: TenantDb;
+  /** Idempotent. */
+  release(): void;
+}
+
+/** How long a handle that the LRU pushed out stays open, so a request holding it across awaits is not cut off. */
+export const EVICTION_GRACE_MS = 60_000;
+
 /** The only module that turns a context into a database handle. */
 export class ContextDbGate {
   private personal: PersonalDb | null = null;
-  private readonly cache = new Map<string, { db: TenantDb; conn: Database.Database }>();
+  private readonly cache = new Map<string, Entry>();
+  /** Entries out of the cache whose connection is still open (waiting for a grace period or for the last lease). */
+  private readonly detached = new Set<Entry>();
   private readonly cacheSize: number;
 
   constructor(private readonly deps: { control: ControlDb; personalPath: string; tenantDir: string; cacheSize?: number }) {
@@ -90,6 +104,26 @@ export class ContextDbGate {
     return this.remember(registrationId, reg.tenant_id, conn);
   }
 
+  /**
+   * Opens the tenant like openTenant and holds the handle until `release()`. A leased entry is never evicted by the LRU (the cache may
+   * exceed its size meanwhile); if the tenant is suspended while leased, new opens are refused at once but the file closes at the last release.
+   */
+  lease(registrationId: string): TenantLease {
+    const db = this.openTenant(registrationId);
+    const entry = this.cache.get(registrationId)!;
+    entry.leases += 1;
+    let released = false;
+    return {
+      db,
+      release: () => {
+        if (released) return;
+        released = true;
+        entry.leases -= 1;
+        if (entry.leases === 0 && this.detached.has(entry)) this.closeEntry(entry);
+      },
+    };
+  }
+
   createTenantFile(registrationId: string, tenantId: string): TenantDb {
     const reg = this.registration(registrationId);
     if (reg.tenant_id !== tenantId) throw new TenantRefusedError("tenant_unavailable");
@@ -114,6 +148,7 @@ export class ContextDbGate {
 
   close(): void {
     for (const id of [...this.cache.keys()]) this.evict(id);
+    for (const entry of [...this.detached]) this.closeEntry(entry);
     if (this.personal) {
       rawDb(this.personal).close();
       this.personal = null;
@@ -153,17 +188,37 @@ export class ContextDbGate {
 
   private remember(registrationId: string, tenantId: string, conn: Database.Database): TenantDb {
     const db: TenantDb = { kind: "tenant", tenantId, raw: conn, __brand: "TenantDb" };
-    this.cache.set(registrationId, { db, conn });
-    while (this.cache.size > this.cacheSize) {
-      this.evict(this.cache.keys().next().value as string);
+    this.cache.set(registrationId, { db, conn, leases: 0, closed: false });
+    // Least recently used first; a leased entry is skipped, so the cache can stay over its size while leases are held.
+    for (const [id, entry] of this.cache) {
+      if (this.cache.size <= this.cacheSize) break;
+      if (entry.leases > 0 || id === registrationId) continue;
+      this.cache.delete(id);
+      this.detach(entry);
+      entry.timer = setTimeout(() => this.closeEntry(entry), EVICTION_GRACE_MS);
+      entry.timer.unref();
     }
     return db;
   }
 
+  /** Takes the entry out of the cache. It closes now, or at the last release when it is leased. */
   private evict(registrationId: string): void {
     const entry = this.cache.get(registrationId);
     if (!entry) return;
     this.cache.delete(registrationId);
+    if (entry.leases > 0) this.detach(entry);
+    else this.closeEntry(entry);
+  }
+
+  private detach(entry: Entry): void {
+    this.detached.add(entry);
+  }
+
+  private closeEntry(entry: Entry): void {
+    if (entry.timer) clearTimeout(entry.timer);
+    this.detached.delete(entry);
+    if (entry.closed) return;
+    entry.closed = true;
     entry.conn.close();
   }
 }
