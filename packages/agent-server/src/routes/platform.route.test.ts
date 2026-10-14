@@ -11,6 +11,7 @@ import {
   FakeImpressorx,
   PlatformOperatorRepository,
   SqliteIdentityRepository,
+  TenantRefusedError,
   TenantRegistrationRepository,
   openControlDb,
   rawDb,
@@ -109,6 +110,7 @@ describe("platform route", () => {
           displayName: reg.displayName,
           origin: ORIGIN,
           enrolledAt: reg.enrolledAt,
+          status: "active",
           latestRollup: { day: "2026-10-09", metrics: { modelCalls: 3, modelDenials: 1, actionsByStatus: { completed: 2 }, activeGrants: 1 } },
         },
       ]);
@@ -218,6 +220,71 @@ describe("platform route", () => {
 
     expect((await request(app).post(`/api/platform/registrations/${id}/rotate-key`)).status).toBe(204);
     expect(fake.oneonKeys).toHaveLength(2);
+  });
+
+  describe("operator Suspend and Resume (spec §5.5)", () => {
+    const events = (control: ReturnType<typeof openControlDb>, id: string) =>
+      control
+        .prepare("SELECT event, actor_identity_id AS actor, detail_json AS detail FROM tenant_registration_events WHERE tenant_registration_id = ? AND event = 'status_changed' ORDER BY created_at, rowid")
+        .all(id)
+        .map((e) => ({ ...(e as { event: string; actor: string; detail: string }), detail: JSON.parse((e as { detail: string }).detail) }));
+
+    it("suspends an active pharmacy: the gate refuses even its cached handle at once, an event and a log line are written", async () => {
+      const { app, control, gate, logger } = setup();
+      const id = (await request(app).post("/api/platform/enrolments").send(body)).body.registrationId as string;
+      gate.openTenant(id); // cached
+
+      const res = await request(app).post(`/api/platform/registrations/${id}/suspend`);
+
+      expect(res.status).toBe(204);
+      expect(control.prepare("SELECT status FROM tenant_registrations WHERE id = ?").get(id)).toEqual({ status: "suspended_by_operator" });
+      expect(() => gate.openTenant(id)).toThrow(TenantRefusedError);
+      expect(events(control, id)).toEqual([{ event: "status_changed", actor: expect.any(String), detail: { from: "active", to: "suspended_by_operator", reason: "operator_suspend" } }]);
+      expect(logger.info).toHaveBeenCalledWith("Pharmacy suspended by operator", { registrationId: id });
+    });
+
+    it("resumes a suspended pharmacy, and the gate serves it again", async () => {
+      const { app, control, gate, logger } = setup();
+      const id = (await request(app).post("/api/platform/enrolments").send(body)).body.registrationId as string;
+      await request(app).post(`/api/platform/registrations/${id}/suspend`);
+
+      const res = await request(app).post(`/api/platform/registrations/${id}/resume`);
+
+      expect(res.status).toBe(204);
+      expect(control.prepare("SELECT status FROM tenant_registrations WHERE id = ?").get(id)).toEqual({ status: "active" });
+      expect(rawDb(gate.openTenant(id)).prepare("SELECT tenant_id FROM context_meta").get()).toEqual({ tenant_id: id });
+      expect(events(control, id).map((e) => e.detail)).toEqual([
+        { from: "active", to: "suspended_by_operator", reason: "operator_suspend" },
+        { from: "suspended_by_operator", to: "active", reason: "operator_resume" },
+      ]);
+      expect(logger.info).toHaveBeenCalledWith("Pharmacy resumed by operator", { registrationId: id });
+    });
+
+    it("refuses a suspend that is not from active, and a resume that is not from an operator suspension, with 409 and no event", async () => {
+      const { app, control } = setup();
+      const id = (await request(app).post("/api/platform/enrolments").send(body)).body.registrationId as string;
+      expect((await request(app).post(`/api/platform/registrations/${id}/resume`)).status).toBe(409);
+      await request(app).post(`/api/platform/registrations/${id}/suspend`);
+      expect((await request(app).post(`/api/platform/registrations/${id}/suspend`)).status).toBe(409);
+      expect(events(control, id)).toHaveLength(1);
+    });
+
+    it("answers 404 for an unknown registration and 403 for a non-operator", async () => {
+      const { app, control, otherId, actAs } = setup();
+      expect((await request(app).post("/api/platform/registrations/nope/suspend")).status).toBe(404);
+      const id = (await request(app).post("/api/platform/enrolments").send(body)).body.registrationId as string;
+      actAs(otherId);
+      expect((await request(app).post(`/api/platform/registrations/${id}/suspend`)).status).toBe(403);
+      expect(control.prepare("SELECT status FROM tenant_registrations WHERE id = ?").get(id)).toEqual({ status: "active" });
+    });
+
+    it("lists a suspended pharmacy in the platform view with its status, so it can be resumed", async () => {
+      const { app } = setup();
+      const id = (await request(app).post("/api/platform/enrolments").send(body)).body.registrationId as string;
+      await request(app).post(`/api/platform/registrations/${id}/suspend`);
+      const res = await request(app).get("/api/platform/tenants");
+      expect(res.body.tenants).toEqual([expect.objectContaining({ id, status: "suspended_by_operator" })]);
+    });
   });
 
   it("leaves no registration, keys, events or file when creating the tenant file fails,", async () => {

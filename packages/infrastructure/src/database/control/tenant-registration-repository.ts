@@ -138,6 +138,32 @@ export class TenantRegistrationRepository {
     return rows.map(toRegistration);
   }
 
+  /** Every registration whatever its status (the operator's view), oldest first. */
+  listAll(): TenantRegistration[] {
+    const rows = this.db.prepare("SELECT * FROM tenant_registrations ORDER BY enrolled_at, id").all() as RegistrationRow[];
+    return rows.map(toRegistration);
+  }
+
+  /**
+   * Moves a registration from `from` to `to` and records the event, only if it is in `from` now (checked and changed in one
+   * transaction). "unknown" when there is no such registration, "conflict" when it is in another status.
+   */
+  transitionStatus(
+    id: string,
+    from: TenantRegistrationStatus,
+    to: TenantRegistrationStatus,
+    actor: string | null,
+    reason: string,
+  ): "ok" | "unknown" | "conflict" {
+    const run = this.db.transaction((): "ok" | "unknown" | "conflict" => {
+      const changed = this.db.prepare("UPDATE tenant_registrations SET status = ? WHERE id = ? AND status = ?").run(to, id, from).changes;
+      if (changed === 0) return this.findById(id) ? "conflict" : "unknown";
+      this.insertEvent(id, "status_changed", actor, { from, to, reason }, this.clock().toISOString());
+      return "ok";
+    });
+    return run();
+  }
+
   setStatus(id: string, status: TenantRegistrationStatus, actor: string | null, reason: string): void {
     const now = this.clock().toISOString();
     const run = this.db.transaction(() => {

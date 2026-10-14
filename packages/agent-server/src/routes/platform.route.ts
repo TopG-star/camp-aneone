@@ -101,19 +101,44 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
     });
   });
 
+  // Every registration, suspended ones included, so the operator can resume them.
   router.get("/tenants", (_req: Request, res: Response) => {
     const rollups = new Map(latestRollups().map((r) => [r.tenantId, { day: r.day, metrics: r.metrics }]));
     res.json({
-      tenants: registrations.listActive().map((r) => ({
+      tenants: registrations.listAll().map((r) => ({
         id: r.id,
         tenantSlug: r.tenantSlug,
         displayName: r.displayName,
         origin: r.origin,
         enrolledAt: r.enrolledAt,
+        status: r.status,
         latestRollup: rollups.get(r.tenantId) ?? null,
       })),
     });
   });
+
+  // Spec §5.5 Suspend: Oneon stops serving the pharmacy (the gate refuses every open, cached handles included); ImpressoRx is unchanged.
+  // Resume undoes only an operator suspension. Each change is one status_changed event and a log line.
+  const transitions = {
+    suspend: { from: "active", to: "suspended_by_operator", reason: "operator_suspend", log: "Pharmacy suspended by operator" },
+    resume: { from: "suspended_by_operator", to: "active", reason: "operator_resume", log: "Pharmacy resumed by operator" },
+  } as const;
+  for (const [action, t] of Object.entries(transitions)) {
+    router.post(`/registrations/:id/${action}`, (req: Request, res: Response) => {
+      const registrationId = String(req.params.id);
+      const result = registrations.transitionStatus(registrationId, t.from, t.to, req.identityId!, t.reason);
+      if (result === "unknown") {
+        res.status(404).json({ error: "No such registration" });
+        return;
+      }
+      if (result === "conflict") {
+        res.status(409).json({ error: action === "suspend" ? "Only an active pharmacy can be suspended" : "Only a pharmacy you suspended can be resumed" });
+        return;
+      }
+      logger.info(t.log, { registrationId });
+      res.status(204).end();
+    });
+  }
 
   router.post("/registrations/:id/rotate-key", async (req: Request, res: Response) => {
     try {
