@@ -5,7 +5,7 @@ import { signIn } from "next-auth/react";
 import { Link2, Loader2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { HANDOFF_NOTICE, requestLink } from "@/lib/link-account";
+import { HANDOFF_NOTICE, LINK_SCOPE_NOTE, requestLink } from "@/lib/link-account";
 
 /**
  * Spec §4.5: links the signed-in account to the other kind of sign-in in this same browser. The dashboard's server keeps
@@ -42,6 +42,7 @@ export function LinkAccountSettings() {
         <p className="text-label-sm meta-copy">
           Bring your pharmacy sign-in and your personal Oneon account together. Both sign-ins have to happen in this browser.
         </p>
+        <p className="text-label-sm meta-copy">{LINK_SCOPE_NOTE}</p>
       </CardHeader>
       <CardContent>
         <div className="space-y-3">

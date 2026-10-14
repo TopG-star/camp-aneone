@@ -1,6 +1,12 @@
 /** What the Settings button tells a Google session to do: the hand-off is the other sign-in, and it must arrive while the intent lives. */
 export const HANDOFF_NOTICE = "Open Oneon from ImpressoRx within 5 minutes to finish linking your account.";
 export const LINK_START_FAILED = "Couldn't start linking. Try again.";
+/**
+ * What linking does not do, so it does not overclaim: a Google session has no session-bound pharmacy grant (its pharmacy
+ * snapshot goes stale after 5 minutes, then it must relaunch from ImpressoRx), and a hand-off session is never given Personal.
+ */
+export const LINK_SCOPE_NOTE =
+  "Linking doesn't let one session switch freely between Personal and a pharmacy. Signed in with Google, you can use a pharmacy only for a few minutes after you last used it from ImpressoRx. Opened from ImpressoRx, you can't open Personal: sign in with Google for that.";
 
 /**
  * Starts a link on the dashboard's server (/auth/link/start), which keeps the intent's secret in an HttpOnly cookie. `next`

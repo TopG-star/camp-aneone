@@ -3,6 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { AlertTriangle, Link2 } from "lucide-react";
 import { loadLinkConfirmation } from "@/lib/link-confirm";
+import { LINK_SCOPE_NOTE } from "@/lib/link-account";
 import { LINK_MESSAGES } from "@/lib/link-messages";
 
 // Reads the person's cookies on every request.
@@ -49,6 +50,7 @@ export default async function LinkCompletePage() {
           <p className="page-eyebrow">Linking</p>
           <h1 className="page-title">{state.question}</h1>
           <p className="state-subtext">You&apos;ll be signed out afterwards and asked to sign in again.</p>
+          <p className="state-subtext">{LINK_SCOPE_NOTE}</p>
         </div>
         <div className="flex gap-3">
           <form method="post" action="/auth/link/confirm">
