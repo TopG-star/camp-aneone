@@ -224,7 +224,7 @@ Keep a copy of each key somewhere other than the VPS. Nothing can decrypt what a
 2. Check the deployment's HTTPS origin against the tenant registry, out of band. Enrolment trusts whichever deployment answers at that origin and holds the code.
 3. In the dashboard, open **/platform/enrol** and enter the origin, the tenant slug and the code. A successful enrolment creates the pharmacy's registration and its database file.
 
-   The deployment's signed reply names its ImpressoRx tenant id, ImpressoRx's `Tenant.id`. That id is made once per pharmacy database and never reused, and Oneon stores it as the pharmacy's permanent identity. The slug is only a name: a pharmacy deleted and set up again can come back under the same slug, but not with the same id. Enrolment is refused with 502 if the reply names no tenant id (the ImpressoRx release is too old: update it first), or if another registration already holds that id (for example, a copy of an enrolled pharmacy's database). Both refusals come after the code has been used.
+   The deployment's signed reply names its ImpressoRx tenant id, ImpressoRx's `Tenant.id`. That id is made once per pharmacy database and never reused, and Oneon stores it as the pharmacy's permanent identity. The slug is only a name: a pharmacy deleted and set up again can come back under the same slug, but not with the same id. Enrolment is refused with 502 if the reply names no tenant id (the ImpressoRx release is too old: update it first), and with 409 if another registration already holds that id (for example, a copy of an enrolled pharmacy's database). Both refusals come after the code has been used: see "Refusals after the code is used" below.
 4. **/platform** lists every pharmacy with its status, its ImpressoRx tenant id and its latest daily rollup (counts only).
 
 ### Suspending a pharmacy
@@ -250,9 +250,18 @@ Re-enrolment is refused in these cases:
 - with 409 while the pharmacy is active;
 - with 409 at any origin other than the one the pharmacy was enrolled at;
 - with 502 if the deployment's signed reply names a different tenant slug;
-- with 502 if the reply names a different ImpressoRx tenant id from the one stored at enrolment. The pharmacy at that origin was set up again or its database was replaced, so it is not the pharmacy this registration belongs to, and the registration and its data stay with the original. Re-enrolment never moves a registration to a different pharmacy.
+- with 502 if the reply names a different ImpressoRx tenant id from the one stored at enrolment. The pharmacy at that origin was set up again or its database was replaced, so it is not the pharmacy this registration belongs to, and the registration and its data stay with the original. Re-enrolment never moves a registration to a different pharmacy;
+- with 409 if the pharmacy stopped being suspended (another operator resumed it) while the deployment was answering.
 
-The 502 refusals come after the code has been used, so the admin must issue a new one.
+The 502 refusals and the last 409 come after the code has been used.
+
+### Refusals after the code is used
+
+Once the deployment has accepted the code, ImpressoRx shows Oneon as connected on its side, whatever Oneon then decides. While it does, ImpressoRx issues no new code: pressing **Enable** alone does nothing. Every refusal after that point says so: the pharmacy's ImpressoRx admin must press **Remove**, then **Enable**, to issue a new code. Oneon stores nothing in these cases, and it does not undo the connection at ImpressoRx itself.
+
+- **502**: the deployment's answer was wrong: another slug, another ImpressoRx tenant id, or no tenant id. For another tenant id, a new code is refused the same way while that deployment holds a different pharmacy; the admin should still press **Remove** there.
+- **409**: a race or a conflict. Another registration holds the pharmacy's ImpressoRx tenant id; or, while the deployment was answering, the slug or the tenant id was taken by another registration, or the pharmacy stopped being suspended.
+- **500**, with a message that says nothing was stored: storing failed, for example the pharmacy's file could not be created. The cause is logged at error level ("Enrolment error" or "Re-enrolment error").
 
 Every registration holds its ImpressoRx tenant id, and re-enrolment always compares the id in the reply with the stored one. A control database with a registration that has no id (one enrolled before ImpressoRx sent it, on a development database) cannot be upgraded: control migration 007 refuses, and the server does not start, with a message naming each such registration (`<registration id> (<slug>)`). Nothing is changed by the refused migration. Such a database predates the id (no production registration does) and must be created again. After the migration the database itself refuses a registration without an id.
 

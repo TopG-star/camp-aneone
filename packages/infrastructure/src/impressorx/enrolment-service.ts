@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { decodeJwt, decodeProtectedHeader } from "jose";
 import { openSecret, sealSecret, type SealedSecret } from "../crypto/envelope.js";
 import { JwsError, generateEd25519Key, parsePublicJwk, signJws, verifyJws, type JWK, type VerifiedJws } from "../crypto/jws.js";
-import type { TenantRegistration, TenantRegistrationRepository } from "../database/control/tenant-registration-repository.js";
+import {
+  ReenrolmentConflictError,
+  type TenantRegistration,
+  type TenantRegistrationRepository,
+} from "../database/control/tenant-registration-repository.js";
 
 export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
@@ -20,6 +24,30 @@ export class EnrolmentFailedError extends Error {
   ) {
     super(message);
     this.name = "EnrolmentFailedError";
+  }
+}
+
+/**
+ * The deployment accepted the code, so ImpressoRx now shows Oneon as connected, but Oneon stored nothing (review I2):
+ * - `registration_changed`: the registration is no longer suspended (another operation moved it while the deployment answered);
+ * - `slug_taken` / `impressorx_tenant_taken`: another registration took the slug or the ImpressoRx tenant id meanwhile;
+ * - `not_stored`: storing failed for another reason (for example the tenant file could not be created). `cause` holds the error.
+ */
+export class EnrolmentNotStoredError extends Error {
+  constructor(
+    readonly reason: "registration_changed" | "slug_taken" | "impressorx_tenant_taken" | "not_stored",
+    options?: { cause?: unknown },
+  ) {
+    super(`Enrolment not stored: ${reason}`, options);
+    this.name = "EnrolmentNotStoredError";
+  }
+}
+
+/** A re-enrolment refused before anything was sent: the code is not spent. */
+export class ReenrolmentRefusedError extends Error {
+  constructor(readonly reason: "not_suspended" | "origin_mismatch") {
+    super(reason === "not_suspended" ? "Only a suspended registration can be re-enrolled" : "Re-enrolment must use the registration's pinned origin");
+    this.name = "ReenrolmentRefusedError";
   }
 }
 
@@ -65,6 +93,30 @@ export interface EnrolInput {
 }
 
 const REQUEST_TIMEOUT_MS = 10_000;
+
+/**
+ * Runs the write that follows a successful proof. The code is spent by then, so every failure becomes a typed error the route can
+ * explain (review I2): a refusal stays an EnrolmentFailedError, a race or a constraint violation is EnrolmentNotStoredError
+ * (`registration_changed`, `slug_taken`, `impressorx_tenant_taken`), and anything else is EnrolmentNotStoredError `not_stored`.
+ */
+function storeAfterProof<T>(write: () => T): T {
+  try {
+    return write();
+  } catch (error) {
+    if (error instanceof EnrolmentFailedError || error instanceof EnrolmentNotStoredError) throw error;
+    if (error instanceof ReenrolmentConflictError) {
+      if (error.reason === "impressorx_tenant_mismatch") throw new EnrolmentFailedError("Enrolment failed", "impressorx_tenant_mismatch");
+      throw new EnrolmentNotStoredError("registration_changed", { cause: error });
+    }
+    // better-sqlite3 names the column: "UNIQUE constraint failed: tenant_registrations.tenant_slug".
+    if ((error as { code?: unknown }).code === "SQLITE_CONSTRAINT_UNIQUE") {
+      const message = error instanceof Error ? error.message : "";
+      if (message.includes("tenant_registrations.tenant_slug")) throw new EnrolmentNotStoredError("slug_taken", { cause: error });
+      if (message.includes("tenant_registrations.impressorx_tenant_id")) throw new EnrolmentNotStoredError("impressorx_tenant_taken", { cause: error });
+    }
+    throw new EnrolmentNotStoredError("not_stored", { cause: error });
+  }
+}
 const VERIFY_REFRESH_MIN_INTERVAL_MS = 60_000;
 
 export class EnrolmentService {
@@ -84,16 +136,18 @@ export class EnrolmentService {
   async enrol(input: EnrolInput): Promise<TenantRegistration> {
     const proved = await this.prove(input.origin, input.tenantSlug, input.enrolmentCode);
     this.refuseIfHeldByAnother(proved.impressorxTenantId);
-    return this.deps.repo.create(
-      {
-        tenantSlug: input.tenantSlug,
-        displayName: input.displayName?.trim() || input.tenantSlug,
-        origin: proved.origin,
-        ...proved.keys,
-        impressorxTenantId: proved.impressorxTenantId,
-        enrolledBy: input.enrolledBy,
-      },
-      input.inTransaction,
+    return storeAfterProof(() =>
+      this.deps.repo.create(
+        {
+          tenantSlug: input.tenantSlug,
+          displayName: input.displayName?.trim() || input.tenantSlug,
+          origin: proved.origin,
+          ...proved.keys,
+          impressorxTenantId: proved.impressorxTenantId,
+          enrolledBy: input.enrolledBy,
+        },
+        input.inTransaction,
+      ),
     );
   }
 
@@ -106,18 +160,14 @@ export class EnrolmentService {
    */
   async reenrol(input: ReenrolInput): Promise<TenantRegistration> {
     const registration = this.deps.repo.findById(input.registrationId);
-    if (!registration || registration.status !== "suspended_by_operator") throw new Error("Only a suspended registration can be re-enrolled");
-    if (new URL(input.origin).origin !== registration.origin) throw new Error("Re-enrolment must use the registration's pinned origin");
+    if (!registration || registration.status !== "suspended_by_operator") throw new ReenrolmentRefusedError("not_suspended");
+    if (new URL(input.origin).origin !== registration.origin) throw new ReenrolmentRefusedError("origin_mismatch");
     const proved = await this.prove(registration.origin, registration.tenantSlug, input.enrolmentCode);
     if (proved.impressorxTenantId !== registration.impressorxTenantId) {
       throw new EnrolmentFailedError("Enrolment failed", "impressorx_tenant_mismatch");
     }
-    return this.deps.repo.replaceKeysOnReenrolment(
-      registration.id,
-      proved.keys,
-      proved.impressorxTenantId,
-      input.reenrolledBy,
-      input.inTransaction,
+    return storeAfterProof(() =>
+      this.deps.repo.replaceKeysOnReenrolment(registration.id, proved.keys, proved.impressorxTenantId, input.reenrolledBy, input.inTransaction),
     );
   }
 
@@ -141,6 +191,8 @@ export class EnrolmentService {
     const origin = new URL(originInput).origin;
     const issuer = `impressorx:${input.tenantSlug}`;
     const key = await generateEd25519Key();
+    // Sealed before the request: a master key that cannot seal must fail before the code is spent.
+    const oneonPrivateKeySealed = sealSecret(JSON.stringify(key.privateKeyJwk), master);
     const nonce = randomUUID();
 
     // Every JWK travels as a JSON string.
@@ -195,7 +247,7 @@ export class EnrolmentService {
         deploymentPublicKeyJwk: deploymentJwk,
         oneonKeyId: key.keyId,
         oneonPublicKeyJwk: key.publicKeyJwk,
-        oneonPrivateKeySealed: sealSecret(JSON.stringify(key.privateKeyJwk), master),
+        oneonPrivateKeySealed,
       },
     };
   }

@@ -24,6 +24,8 @@ import { createPlatformRouter } from "./platform.route.js";
 const ORIGIN = "https://acme.example";
 const CODE = "ABCD-EFGH-JKLM";
 const body = { origin: ORIGIN, tenantSlug: "acme", code: CODE };
+/** Every refusal after the code is spent says this (review I2): ImpressoRx issues no new code while it shows Oneon as connected. */
+const CONNECTED = /ImpressoRx now shows Oneon as connected on its side\. The pharmacy's ImpressoRx admin must press Remove, then Enable, to issue a new code\./;
 
 describe("platform route", () => {
   const dirs: string[] = [];
@@ -56,7 +58,19 @@ describe("platform route", () => {
     const registrations = new TenantRegistrationRepository(control);
     const fake = new FakeImpressorx(ORIGIN, "acme", CODE);
     const masterKey = opts.masterKey === null ? undefined : (opts.masterKey ?? randomBytes(32).toString("base64"));
-    const enrolment = new EnrolmentService({ repo: registrations, oneonOrigin: "https://oneon.example", masterKeyB64: masterKey, fetchImpl: fake.fetch });
+    // `onNextAnswer(fn)`: fn runs once the deployment has answered the next request (the code is spent) and before Oneon reads the answer.
+    let afterAnswer: (() => unknown) | null = null;
+    const onNextAnswer = (fn: () => unknown) => (afterAnswer = fn);
+    const fakes = [fake];
+    const fetchImpl = async (input: string | URL, init?: RequestInit): Promise<Response> => {
+      const target = fakes.find((f) => new URL(input.toString()).origin === f.origin) ?? fake;
+      const res = await target.fetch(input, init);
+      const hook = afterAnswer;
+      afterAnswer = null;
+      await hook?.();
+      return res;
+    };
+    const enrolment = new EnrolmentService({ repo: registrations, oneonOrigin: "https://oneon.example", masterKeyB64: masterKey, fetchImpl });
     const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
     const logger = opts.logger ?? mockLogger;
     // Production wires the ImpressoRx client's revokeForRegistration (tested with the client); here the same SQL effect.
@@ -87,7 +101,7 @@ describe("platform route", () => {
         logger,
       }),
     );
-    return { app, control, gate, fake, registrations, enrolment, masterKey, logger: mockLogger, dir, actAs: (id: string) => (identityId = id), otherId, revokeGrantsForRegistration };
+    return { app, control, gate, fake, registrations, enrolment, masterKey, logger: mockLogger, dir, actAs: (id: string) => (identityId = id), otherId, operatorId, revokeGrantsForRegistration, onNextAnswer, fakes };
   }
 
   it("enrols against the fake deployment", async () => {
@@ -490,6 +504,131 @@ describe("platform route", () => {
       expect(s.keyRows()).toEqual(keysBefore);
       expect(s.grantStatus()).toEqual({ status: "active", revoked_reason: null });
       expect(s.revokeGrantsForRegistration).not.toHaveBeenCalled();
+    });
+
+    it("a reply for another pharmacy says ImpressoRx now shows Oneon as connected and its admin must press Remove", async () => {
+      const s = await suspendedWithRemoveAndEnable();
+      s.fake.impressorxTenantId = randomUUID();
+      const res = await request(s.app).post("/api/platform/enrolments").send({ ...body, code: CODE2 });
+      expect(res.status).toBe(502);
+      expect(res.body.error).toMatch(/ImpressoRx now shows Oneon as connected on its side/);
+      expect(res.body.error).toMatch(/press Remove/);
+      expect(res.body.error).not.toMatch(/ask for a new/i);
+    });
+
+    it("a registration that stopped being suspended while the deployment answered: an explicit 409, nothing stored, not a 500", async () => {
+      const s = await suspendedWithRemoveAndEnable();
+      const keysBefore = s.keyRows();
+      // Another operation moves it while the code is being proved (the conditional UPDATE then matches no row).
+      s.onNextAnswer(() => s.control.prepare("UPDATE tenant_registrations SET status = 'active' WHERE id = ?").run(s.id));
+
+      const res = await request(s.app).post("/api/platform/enrolments").send({ ...body, code: CODE2 });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/no longer suspended/i);
+      expect(res.body.error).toMatch(CONNECTED);
+      expect(s.fake.active).toBe(true);
+      expect(s.keyRows()).toEqual(keysBefore);
+      expect(s.grantStatus()).toEqual({ status: "active", revoked_reason: null });
+      expect(s.logger.error).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("explicit failures after the code is spent (review I2, option a)", () => {
+    const expectSpent = (error: string) => {
+      expect(error).toMatch(CONNECTED);
+      expect(error).not.toMatch(/ask for a new/i);
+    };
+
+    it("a reply for another slug: 502, ImpressoRx shows Oneon as connected, the admin presses Remove then Enable", async () => {
+      const { app, fake } = setup();
+      fake.replyTenantSlug = "other-pharmacy";
+      const res = await request(app).post("/api/platform/enrolments").send(body);
+      expect(res.status).toBe(502);
+      expect(res.body.error).toMatch(/different pharmacy than acme/);
+      expectSpent(res.body.error);
+    });
+
+    it("a reply that names no ImpressoRx tenant id: 502 with the same advice", async () => {
+      const { app, fake } = setup();
+      fake.impressorxTenantId = null;
+      const res = await request(app).post("/api/platform/enrolments").send(body);
+      expect(res.status).toBe(502);
+      expect(res.body.error).toMatch(/update ImpressoRx/i);
+      expectSpent(res.body.error);
+    });
+
+    it("an ImpressoRx tenant id another registration already holds: 409 with the same advice", async () => {
+      const { app, fake, fakes, control } = setup();
+      expect((await request(app).post("/api/platform/enrolments").send(body)).status).toBe(201);
+      // A copy of that pharmacy's database, set up under another slug at another origin.
+      const copy = new FakeImpressorx("https://acme-copy.example", "acme-copy", "COPY-CODE-0001");
+      copy.impressorxTenantId = fake.impressorxTenantId;
+      fakes.push(copy);
+
+      const res = await request(app)
+        .post("/api/platform/enrolments")
+        .send({ origin: "https://acme-copy.example", tenantSlug: "acme-copy", code: "COPY-CODE-0001" });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/already enrolled under another slug/);
+      expectSpent(res.body.error);
+      expect(copy.active).toBe(true);
+      expect(control.prepare("SELECT COUNT(*) AS n FROM tenant_registrations").get()).toEqual({ n: 1 });
+    });
+
+    it("the tenant file cannot be created: an explicit message and the error logged, never a bare 'Internal server error'", async () => {
+      const { app, fake, logger } = setup({
+        createTenantFile: () => {
+          throw new Error("disk full");
+        },
+      });
+      const res = await request(app).post("/api/platform/enrolments").send(body);
+      expect(res.status).toBe(500);
+      expect(res.body.error).not.toBe("Internal server error");
+      expect(res.body.error).toMatch(/could not be stored/i);
+      expectSpent(res.body.error);
+      expect(fake.active).toBe(true);
+      expect(logger.error).toHaveBeenCalledWith("Enrolment error", { tenantSlug: "acme", error: "disk full" });
+    });
+
+    it("the slug registered by another enrolment while the deployment answered: 409 with the advice, not a 500", async () => {
+      const { app, control, operatorId, onNextAnswer } = setup();
+      onNextAnswer(() =>
+        control
+          .prepare(
+            "INSERT INTO tenant_registrations (id, tenant_id, impressorx_tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES ('other', 'other', 'irx-other', 'acme', 'Acme', 'https://acme-two.example', 'other.db', 'active', ?, 'now')",
+          )
+          .run(operatorId),
+      );
+      const res = await request(app).post("/api/platform/enrolments").send(body);
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/acme/);
+      expectSpent(res.body.error);
+      expect(control.prepare("SELECT id FROM tenant_registrations").all()).toEqual([{ id: "other" }]);
+    });
+
+    it("the ImpressoRx tenant id taken past the in-code check (only a second process could): 409 with the advice, not a 500", async () => {
+      const { app, control, fake, registrations, operatorId, onNextAnswer } = setup();
+      vi.spyOn(registrations, "findByImpressorxTenantId").mockReturnValue(null);
+      onNextAnswer(() =>
+        control
+          .prepare(
+            "INSERT INTO tenant_registrations (id, tenant_id, impressorx_tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES ('other', 'other', ?, 'other-slug', 'Other', 'https://other.example', 'other.db', 'active', ?, 'now')",
+          )
+          .run(fake.impressorxTenantId, operatorId),
+      );
+      const res = await request(app).post("/api/platform/enrolments").send(body);
+      expect(res.status).toBe(409);
+      expectSpent(res.body.error);
+    });
+
+    it("a signing master key that cannot seal is refused before the code is spent", async () => {
+      const { app, fake, control } = setup({ masterKey: Buffer.from("too short").toString("base64") });
+      const res = await request(app).post("/api/platform/enrolments").send(body);
+      expect(res.status).toBe(500);
+      expect(fake.active).toBe(false);
+      expect(control.prepare("SELECT COUNT(*) AS n FROM tenant_registrations").get()).toEqual({ n: 0 });
     });
   });
 

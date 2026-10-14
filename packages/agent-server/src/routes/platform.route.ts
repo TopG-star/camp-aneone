@@ -3,6 +3,8 @@ import { z } from "zod";
 import type { Logger } from "@oneon/domain";
 import {
   EnrolmentFailedError,
+  EnrolmentNotStoredError,
+  ReenrolmentRefusedError,
   type EnrolmentService,
   type PlatformOperatorRepository,
   type TenantRegistrationRepository,
@@ -26,6 +28,14 @@ export interface PlatformRouteDeps {
   revokeGrantsForRegistration: (registrationId: string, reason: string) => void;
   logger: Logger;
 }
+
+/**
+ * Every failure after the code is spent ends with this (review I2). ImpressoRx has already claimed the code and shows Oneon as
+ * connected, and while it does it issues no new code: Enable alone does nothing, so Remove comes first. Oneon does not undo the
+ * connection at ImpressoRx itself (owner decision D4).
+ */
+const CONNECTED_ON_IMPRESSORX =
+  "ImpressoRx now shows Oneon as connected on its side. The pharmacy's ImpressoRx admin must press Remove, then Enable, to issue a new code.";
 
 const EnrolBody = z.object({
   origin: z.string().url().max(300),
@@ -113,21 +123,61 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
     }
   });
 
+  /**
+   * Every failure answers an explicit status and message (review I2): 409 for a race or a conflict, 502 where the deployment's answer
+   * was wrong, and an explicit 500 when storing failed. Each one after the code was spent says what the pharmacy's admin must do.
+   */
   function enrolmentFailure(res: Response, error: unknown, tenantSlug: string, what: "Enrolment" | "Re-enrolment"): void {
-    if (error instanceof EnrolmentFailedError) {
-      logger.warn(`${what} failed`, { tenantSlug, reason: error.reason ?? null });
-      const spent = "Nothing was changed; the code is used up, so ask for a new one.";
-      const explained: Partial<Record<NonNullable<EnrolmentFailedError["reason"]>, string>> = {
-        slug_mismatch: `The deployment answered for a different pharmacy than ${tenantSlug}. ${spent}`,
-        impressorx_tenant_mismatch:
-          `The deployment answered as a different pharmacy from the one enrolled as ${tenantSlug}: it was set up again, or its ` +
-          "database was replaced. The registration and its data stay with the original pharmacy. Nothing was changed.",
-        impressorx_tenant_already_enrolled: `That pharmacy is already enrolled under another slug. ${spent}`,
-        impressorx_tenant_id_missing: `The deployment did not say which pharmacy it is. Update ImpressoRx to a release that sends its tenant id. ${spent}`,
-      };
-      res.status(502).json({ error: (error.reason && explained[error.reason]) ?? `${what} failed` });
+    if (error instanceof ReenrolmentRefusedError) {
+      // The route checks both before the code is spent; the service checks again, so this only answers a change in between.
+      res.status(409).json({
+        error:
+          error.reason === "not_suspended"
+            ? "That tenant is no longer suspended. Nothing was sent, so the code is still valid."
+            : "Re-enrolment must use the pharmacy's pinned origin. Nothing was sent, so the code is still valid.",
+      });
       return;
     }
+    if (error instanceof EnrolmentFailedError) {
+      logger.warn(`${what} failed`, { tenantSlug, reason: error.reason ?? null });
+      const notStored = `Nothing was stored. ${CONNECTED_ON_IMPRESSORX}`;
+      const explained: Partial<Record<NonNullable<EnrolmentFailedError["reason"]>, [number, string]>> = {
+        slug_mismatch: [502, `The deployment answered for a different pharmacy than ${tenantSlug}. ${notStored}`],
+        impressorx_tenant_mismatch: [
+          502,
+          `The deployment answered as a different pharmacy from the one enrolled as ${tenantSlug}: it was set up again, or its ` +
+            "database was replaced. The registration and its data stay with the original pharmacy; nothing was changed. ImpressoRx now " +
+            "shows Oneon as connected on its side, so its admin must press Remove there. A new code (Remove, then Enable) is refused the " +
+            "same way while that deployment holds a different pharmacy.",
+        ],
+        impressorx_tenant_already_enrolled: [409, `That pharmacy is already enrolled under another slug. ${notStored}`],
+        impressorx_tenant_id_missing: [
+          502,
+          `The deployment did not say which pharmacy it is. Update ImpressoRx to a release that sends its tenant id. ${notStored}`,
+        ],
+      };
+      const [status, message] = (error.reason && explained[error.reason]) ?? [502, `${what} failed`];
+      res.status(status).json({ error: message });
+      return;
+    }
+    if (error instanceof EnrolmentNotStoredError) {
+      const conflicts: Partial<Record<EnrolmentNotStoredError["reason"], string>> = {
+        registration_changed: `${tenantSlug} is no longer suspended: another operation changed it while the deployment was answering, so nothing was stored.`,
+        slug_taken: `Another registration took the slug ${tenantSlug} while the deployment was answering, so nothing was stored.`,
+        impressorx_tenant_taken: "Another registration took this pharmacy's ImpressoRx tenant id while the deployment was answering, so nothing was stored.",
+      };
+      const conflict = conflicts[error.reason];
+      if (conflict) {
+        logger.warn(`${what} failed`, { tenantSlug, reason: error.reason });
+        res.status(409).json({ error: `${conflict} ${CONNECTED_ON_IMPRESSORX}` });
+        return;
+      }
+      const cause = error.cause instanceof Error ? error.cause.message : String(error.cause);
+      logger.error(`${what} error`, { tenantSlug, error: cause });
+      res.status(500).json({ error: `${what} could not be stored (the error is in the server log), so nothing was stored. ${CONNECTED_ON_IMPRESSORX}` });
+      return;
+    }
+    // Only an error before the code was spent gets here.
     logger.error(`${what} error`, { tenantSlug, error: error instanceof Error ? error.message : String(error) });
     res.status(500).json({ error: "Internal server error" });
   }

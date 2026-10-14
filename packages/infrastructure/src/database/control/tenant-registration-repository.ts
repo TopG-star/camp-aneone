@@ -53,6 +53,17 @@ export interface ReenrolmentKeys {
   oneonPrivateKeySealed: SealedSecret;
 }
 
+/**
+ * A re-enrolment's write found the registration other than the caller saw it, so nothing was changed: it is no longer suspended
+ * (another operation moved it meanwhile), or it holds another ImpressoRx tenant id than the one the deployment proved.
+ */
+export class ReenrolmentConflictError extends Error {
+  constructor(readonly reason: "not_suspended" | "impressorx_tenant_mismatch") {
+    super(reason === "not_suspended" ? "Only a suspended registration can be re-enrolled" : "The deployment answered as another pharmacy than the one registered");
+    this.name = "ReenrolmentConflictError";
+  }
+}
+
 /** A retiring key stays valid for this long (spec §5.4). */
 export const KEY_OVERLAP_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -141,13 +152,11 @@ export class TenantRegistrationRepository {
       const current = this.db.prepare("SELECT impressorx_tenant_id FROM tenant_registrations WHERE id = ?").get(id) as
         | { impressorx_tenant_id: string }
         | undefined;
-      if (current && current.impressorx_tenant_id !== impressorxTenantId) {
-        throw new Error("The deployment answered as another pharmacy than the one registered");
-      }
+      if (current && current.impressorx_tenant_id !== impressorxTenantId) throw new ReenrolmentConflictError("impressorx_tenant_mismatch");
       const changed = this.db
         .prepare("UPDATE tenant_registrations SET status = 'active' WHERE id = ? AND status = 'suspended_by_operator'")
         .run(id).changes;
-      if (changed !== 1) throw new Error("Only a suspended registration can be re-enrolled");
+      if (changed !== 1) throw new ReenrolmentConflictError("not_suspended");
       // Every key of both owners, a key still inside a rotation overlap included, stops verifying and signing now.
       this.db
         .prepare("UPDATE tenant_keys SET retired_at = ? WHERE tenant_registration_id = ? AND (retired_at IS NULL OR retired_at > ?)")

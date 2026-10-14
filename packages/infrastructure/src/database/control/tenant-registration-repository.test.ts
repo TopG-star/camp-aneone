@@ -9,6 +9,14 @@ import { KEY_OVERLAP_MS, TenantRegistrationRepository } from "./tenant-registrat
 
 const jwk = (x: string) => ({ kty: "OKP", crv: "Ed25519", x });
 const sealed = { wrappedKey: "w", ciphertext: "c" };
+const thrown = (fn: () => unknown): unknown => {
+  try {
+    fn();
+  } catch (error) {
+    return error;
+  }
+  return null;
+};
 
 describe("tenant registration and operator repositories", () => {
   const dirs: string[] = [];
@@ -64,7 +72,10 @@ describe("tenant registration and operator repositories", () => {
     it("throws and changes nothing when the registration is not suspended, or when the in-transaction step fails", () => {
       const { repo, identityId } = setup();
       const reg = repo.create(input(identityId));
-      expect(() => repo.replaceKeysOnReenrolment(reg.id, keys, "irx-acme", identityId)).toThrow(/suspended/);
+      expect(thrown(() => repo.replaceKeysOnReenrolment(reg.id, keys, "irx-acme", identityId))).toMatchObject({
+        name: "ReenrolmentConflictError",
+        reason: "not_suspended",
+      });
       expect(repo.deploymentKeys(reg.id).map((k) => k.keyId)).toEqual(["d-acme"]);
 
       repo.setStatus(reg.id, "suspended_by_operator", identityId, "test");
@@ -83,7 +94,10 @@ describe("tenant registration and operator repositories", () => {
       const reg = repo.create(input(identityId));
       repo.setStatus(reg.id, "suspended_by_operator", identityId, "test");
 
-      expect(() => repo.replaceKeysOnReenrolment(reg.id, keys, "irx-someone-else", identityId)).toThrow(/another pharmacy/);
+      expect(thrown(() => repo.replaceKeysOnReenrolment(reg.id, keys, "irx-someone-else", identityId))).toMatchObject({
+        name: "ReenrolmentConflictError",
+        reason: "impressorx_tenant_mismatch",
+      });
       expect(repo.findById(reg.id)).toMatchObject({ status: "suspended_by_operator", impressorxTenantId: "irx-acme" });
       expect(repo.deploymentKeys(reg.id).map((k) => k.keyId)).toEqual(["d-acme"]);
     });

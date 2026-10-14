@@ -2,6 +2,8 @@ export { FakeImpressorx } from "./fake-impressorx.js";
 export {
   EnrolmentService,
   EnrolmentFailedError,
+  EnrolmentNotStoredError,
+  ReenrolmentRefusedError,
   SigningKeyNotConfiguredError,
   type EnrolInput,
   type EnrolmentServiceDeps,
