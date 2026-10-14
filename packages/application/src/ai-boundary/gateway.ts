@@ -4,14 +4,14 @@ import { ApprovedModelCall, ProviderError, type ModelProvider } from "./approved
 import { checkAnswer, restoreToolParams, type OutputBlockReason } from "./answer-check.js";
 import { assemblePrompt } from "./assemble.js";
 import type { AiDataChoiceRepository, ModelAuditRepository } from "./audit.js";
-import { decide, type Decision, type DenyReason, type FieldDisposition, type SecretLocation, type WithheldItem } from "./decide.js";
+import { decide, lowestOfLayers, type Decision, type DenyReason, type FieldDisposition, type SecretLocation, type WithheldItem } from "./decide.js";
 import type { Fingerprinter } from "./fingerprints.js";
 import { PlaceholderMap } from "./placeholders.js";
 import { findRestoredValue } from "./restored-values.js";
 import { PROVIDER_REGISTRY, providerLimit, type ProviderEntry, type ProviderOverride } from "./providers.js";
 import { PURPOSES, type PurposeDefinition } from "./purposes/index.js";
 import { removeSpans } from "./scanner.js";
-import { classRank, lowerClass, type ClassifiedField, type DataClass, type ModelContext, type ModelRequest, type ProviderId } from "./types.js";
+import { classRank, type ClassifiedField, type DataClass, type ModelContext, type ModelRequest, type ProviderId } from "./types.js";
 
 export const TENANT_CHOICE_LIMIT: DataClass = "D1";
 
@@ -298,7 +298,7 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
           const provider = providerFor(purpose);
           const p = providerLimit(deps.providers[provider] ? registry[provider] : undefined, context.kind, deps.overrides.get(provider));
           if (p === "suspended" || p === "unknown") return null;
-          return lowerClass(lowerClass(p, choiceLimit(context, provider)), def.limit);
+          return lowestOfLayers(p, choiceLimit(context, provider), def.limit);
         },
       };
     },

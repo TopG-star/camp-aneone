@@ -7,7 +7,16 @@ import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TenantAiLimitViewSchema } from "@oneon/contracts";
 import type { ActiveContext } from "@oneon/domain";
-import { PROVIDER_REGISTRY, type ModelRouting, type ProviderEntry, type ProviderId, type ProviderOverride } from "@oneon/application";
+import {
+  Fingerprinter,
+  PROVIDER_REGISTRY,
+  createModelGateway,
+  type ModelProvider,
+  type ModelRouting,
+  type ProviderEntry,
+  type ProviderId,
+  type ProviderOverride,
+} from "@oneon/application";
 import {
   EnrolmentService,
   FakeImpressorx,
@@ -153,14 +162,18 @@ describe("tenant AI limit routes (spec 9.4)", () => {
 
       expect(asAdmin.status).toBe(200);
       expect(TenantAiLimitViewSchema.safeParse(asAdmin.body).success).toBe(true);
-      expect(asAdmin.body).toEqual({ current: "D1", history: [], canChange: true });
-      expect(asViewer.body).toEqual({ current: "D1", history: [], canChange: false });
+      const providers = [
+        { id: "deepseek", label: "DeepSeek", effective: "D1", limitedBy: null },
+        { id: "anthropic", label: "Anthropic", effective: "D1", limitedBy: null },
+      ];
+      expect(asAdmin.body).toEqual({ current: "D1", history: [], providers, canChange: true });
+      expect(asViewer.body).toEqual({ current: "D1", history: [], providers, canChange: false });
       expect(s.sent).toEqual([]); // reading never asks ImpressoRx
     });
 
     it("shows the pharmacy's history, newest first, to a colleague, without who set it, the live check or the evidence", async () => {
       const s = await setup();
-      s.limits.append({ registrationId: s.registration.id, maxClass: "D2", setBy: s.admin.id, liveCheckRef: '{"tokenVersion":7}', evidence: { providers: [{ id: "anthropic" }] } });
+      s.limits.append({ registrationId: s.registration.id, maxClass: "D2", setBy: s.admin.id, liveCheckRef: '{"tokenVersion":7}', evidence: { providers: [{ id: "anthropic", reference: "DPA-EVIDENCE" }] } });
       s.limits.append({ registrationId: s.registration.id, maxClass: "D0", setBy: s.viewer.id, liveCheckRef: "x", evidence: null });
       s.asViewer();
 
@@ -172,7 +185,7 @@ describe("tenant AI limit routes (spec 9.4)", () => {
         { id: expect.any(String), maxClass: "D2", at: "2026-10-09T12:00:00.000Z", byYou: false },
       ]);
       const text = JSON.stringify(res.body);
-      for (const secret of [s.admin.id, s.viewer.id, "tokenVersion", "anthropic"]) expect(text).not.toContain(secret);
+      for (const secret of [s.admin.id, s.viewer.id, "tokenVersion", "DPA-EVIDENCE"]) expect(text).not.toContain(secret);
     });
 
     it("canChange follows the cached snapshot and is no authority: it is not asked of ImpressoRx", async () => {
@@ -181,6 +194,94 @@ describe("tenant AI limit routes (spec 9.4)", () => {
 
       expect((await request(s.app).get("/api/tenant/ai-limit")).body.canChange).toBe(false);
       expect(s.sent).toEqual([]);
+    });
+
+    describe("the effective limit per configured provider (spec 9.4, amendment A3)", () => {
+      const byId = (body: { providers: Array<{ id: string }> }) => Object.fromEntries(body.providers.map((p) => [p.id, p]));
+
+      it("today's providers are held at D1 because they are not reviewed with a DPA, while the stored D2 stays the setting", async () => {
+        const s = await setup();
+        seed(s, "D2");
+
+        const res = await request(s.app).get("/api/tenant/ai-limit");
+
+        expect(res.body.current).toBe("D2");
+        expect(res.body.providers).toEqual([
+          { id: "deepseek", label: "DeepSeek", effective: "D1", limitedBy: "not_cleared" },
+          { id: "anthropic", label: "Anthropic", effective: "D1", limitedBy: "not_cleared" },
+        ]);
+      });
+
+      it("a provider cleared for D2 gets the pharmacy's D2 with no reason; the other is still held", async () => {
+        const s = await setup({ registry: registryWith(reviewed()) });
+        seed(s, "D2");
+
+        const providers = byId((await request(s.app).get("/api/tenant/ai-limit")).body);
+
+        expect(providers.anthropic).toEqual({ id: "anthropic", label: "Anthropic", effective: "D2", limitedBy: null });
+        expect(providers.deepseek).toEqual({ id: "deepseek", label: "DeepSeek", effective: "D1", limitedBy: "not_cleared" });
+      });
+
+      it("names a platform override that lowers a provider, and a suspended provider gets no class at all", async () => {
+        const overrides = new Map<ProviderId, ProviderOverride>([["anthropic", { kind: "limit", max: "D0" }], ["deepseek", { kind: "suspended" }]]);
+        const s = await setup({ registry: registryWith(reviewed()), overrides });
+        seed(s, "D2");
+
+        const providers = byId((await request(s.app).get("/api/tenant/ai-limit")).body);
+
+        expect(providers.anthropic).toMatchObject({ effective: "D0", limitedBy: "override" });
+        expect(providers.deepseek).toMatchObject({ effective: null, limitedBy: "suspended" });
+      });
+
+      it("no provider is below a pharmacy limit that is lower than all of them", async () => {
+        const s = await setup();
+        seed(s, "D0");
+
+        const res = await request(s.app).get("/api/tenant/ai-limit");
+
+        expect(res.body.providers.map((p: { effective: string; limitedBy: string | null }) => [p.effective, p.limitedBy])).toEqual([["D0", null], ["D0", null]]);
+      });
+
+      it("lists configured providers only", async () => {
+        const s = await setup({ configured: ["anthropic"] });
+        expect((await request(s.app).get("/api/tenant/ai-limit")).body.providers.map((p: { id: string }) => p.id)).toEqual(["anthropic"]);
+        const none = await setup({ configured: [] });
+        expect((await request(none.app).get("/api/tenant/ai-limit")).body.providers).toEqual([]);
+      });
+
+      it("is what the gateway applies to a call to that provider in this pharmacy", async () => {
+        const registry = registryWith(reviewed());
+        const cases: Array<{ stored: "D0" | "D1" | "D2"; overrides: Map<ProviderId, ProviderOverride> }> = [
+          { stored: "D2", overrides: new Map() },
+          { stored: "D1", overrides: new Map() },
+          { stored: "D0", overrides: new Map() },
+          { stored: "D2", overrides: new Map<ProviderId, ProviderOverride>([["anthropic", { kind: "limit", max: "D1" }]]) },
+        ];
+        for (const { stored, overrides } of cases) {
+          const s = await setup({ registry, overrides });
+          seed(s, stored);
+          const shown = byId((await request(s.app).get("/api/tenant/ai-limit")).body);
+          for (const provider of ["deepseek", "anthropic"] as const) {
+            const stub = { id: provider, complete: async () => ({ text: "" }) } as unknown as ModelProvider;
+            const gateway = createModelGateway({
+              providers: { [provider]: stub },
+              registry,
+              overrides,
+              routing: { standard: provider, reasoning: provider },
+              models: {},
+              choices: { current: () => null, record: () => { throw new Error("unused"); }, history: () => [] },
+              audit: { recordDecision: () => undefined, recordOutcome: () => undefined, listRecentForIdentity: () => [] },
+              tenantLimit: () => s.limits.current(s.registration.id),
+              fingerprinter: new Fingerprinter("k".repeat(32), 1),
+              maxRetries: 0,
+              timeouts: { standard: 1, reasoning: 1 },
+              logger: s.logger,
+            });
+            const turn = gateway.beginTurn({ kind: "tenant", identityId: s.admin.id, tenantId: s.registration.tenantId, membershipId: s.adminMembership.id });
+            expect(shown[provider], provider + " at " + stored).toMatchObject({ effective: turn.effectiveLimit("chat_reply") });
+          }
+        }
+      });
     });
 
     it("is only for a pharmacy context", async () => {
@@ -200,7 +301,12 @@ describe("tenant AI limit routes (spec 9.4)", () => {
 
       expect(res.status).toBe(200);
       expect(TenantAiLimitViewSchema.safeParse(res.body).success).toBe(true);
-      expect(res.body).toMatchObject({ current: "D0", canChange: true, history: [{ maxClass: "D0", byYou: true }] });
+      expect(res.body).toMatchObject({
+        current: "D0",
+        canChange: true,
+        history: [{ maxClass: "D0", byYou: true }],
+        providers: [{ id: "deepseek", effective: "D0" }, { id: "anthropic", effective: "D0" }],
+      });
       expect(s.sent).toContain("/api/oneon/me"); // the live snapshot, asked now
       expect(s.limits.current(s.registration.id)).toBe("D0");
       const row = s.limits.history(s.registration.id)[0]!;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decide } from "./decide.js";
+import { decide, lowestOfLayers } from "./decide.js";
 import { PROVIDER_REGISTRY } from "./providers.js";
 import type { ModelContext, PromptPart } from "./types.js";
 import { emailRecord, field, input, personal, record, row, tenant, userMessage } from "./__tests__/builders.js";
@@ -303,5 +303,19 @@ describe("decide — C4 by location (changed 2026-10-04, Gerry)", () => {
     const d = decide(input({ choiceLimit: "D1" }));
     expect(d).toMatchObject({ kind: "deny", reason: "required_part_withheld" });
     expect(d).not.toHaveProperty("secretIn");
+  });
+});
+
+describe("lowestOfLayers (boundary spec 6.2)", () => {
+  it("is the lowest of the provider, choice and purpose layers; without a purpose, the lower of the first two", () => {
+    expect(lowestOfLayers("D2", "D1", "D2")).toBe("D1");
+    expect(lowestOfLayers("D1", "D2", "D2")).toBe("D1");
+    expect(lowestOfLayers("D2", "D2", "D0")).toBe("D0");
+    expect(lowestOfLayers("D2", "D2")).toBe("D2");
+    expect(lowestOfLayers("D1", "D0")).toBe("D0");
+  });
+  it("is the limit decide() applies to a call", () => {
+    const decision = decide(input({ context: tenant, choiceLimit: "D0" }));
+    expect(decision.effectiveLimit).toBe(lowestOfLayers("D1", "D0", "D2"));
   });
 });

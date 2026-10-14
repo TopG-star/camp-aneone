@@ -10,10 +10,12 @@ import { ApiError, apiFetch } from "@/lib/api";
 import { useAiData, useContexts, useTenantAiLimit } from "@/lib/hooks";
 import { callLabel, classLabel, pendingDecisionText, purposeLabel, routingWarningText } from "@/lib/ai-data-ui";
 import {
+  NO_PROVIDER_CONFIGURED,
   TENANT_LIMIT_CLASSES,
   TENANT_LIMIT_LOAD_FAILED,
   changeFailureText,
   historyEntryText,
+  providerLimitText,
   tenantClassLabel,
   type TenantLimitClass,
 } from "@/lib/tenant-ai-limit-ui";
@@ -100,6 +102,21 @@ function TenantAiLimitSettings({ tenantName }: { tenantName: string }) {
               </div>
               <p className="text-sm text-on-surface dark:text-dark-on-surface">{tenantClassLabel(view.current)}</p>
               {view.history.length === 0 && <p className="text-label-sm meta-copy">No change has been made, so the default applies.</p>}
+            </div>
+
+            <div>
+              <p className="text-sm font-semibold text-on-surface dark:text-dark-on-surface">What each AI provider may receive here now</p>
+              {view.providers.length === 0 ? (
+                <p className="text-label-sm meta-copy">{NO_PROVIDER_CONFIGURED}</p>
+              ) : (
+                <ul className="mt-1 space-y-1">
+                  {view.providers.map((p) => (
+                    <li key={p.id} className="text-label-sm meta-copy">
+                      {providerLimitText(p)}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
 
             {notice && (

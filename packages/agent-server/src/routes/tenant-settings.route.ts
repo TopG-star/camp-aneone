@@ -1,10 +1,12 @@
 import { Router, type Request, type Response } from "express";
-import { TenantAiLimitWriteSchema, type TenantAiLimitView } from "@oneon/contracts";
+import { TenantAiLimitWriteSchema, type TenantAiLimitView, type TenantProviderLimitView } from "@oneon/contracts";
 import type { Logger } from "@oneon/domain";
 import {
   PROVIDER_IDS,
   PROVIDER_REGISTRY,
   classRank,
+  explainProviderLimit,
+  lowestOfLayers,
   providerLimit,
   type ModelRouting,
   type ProviderEntry,
@@ -56,11 +58,30 @@ export function createTenantSettingsRouter(deps: TenantSettingsRouteDeps): Route
     next();
   });
 
-  const view = (ctx: TenantContext, canChange: boolean): TenantAiLimitView => ({
-    current: deps.limits.current(ctx.registrationId),
-    history: deps.limits.history(ctx.registrationId).map((v) => ({ id: v.id, maxClass: v.maxClass, at: v.createdAt, byYou: v.setBy === ctx.identityId })),
-    canChange,
-  });
+  /**
+   * Spec 9.4 (amendment A3): for each configured provider, the most a call to it may carry in this pharmacy now. It is the gateway's own
+   * computation (explainProviderLimit is providerLimit with its reason, and lowestOfLayers is the rule decide() applies), with the
+   * pharmacy's stored limit as the choice layer, read from the same row the gateway reads. The purpose's own limit is left out: it is
+   * per task, and every purpose's limit is D2 today, so it lowers nothing a pharmacy can set.
+   */
+  const providerLimits = (current: TenantLimitClass): TenantProviderLimitView[] =>
+    PROVIDER_IDS.filter((id) => deps.configuredProviders.includes(id)).map((id) => {
+      const entry = registry[id];
+      const provider = explainProviderLimit(entry, "tenant", deps.overrides.get(id));
+      if (provider.limit === "suspended" || provider.limit === "unknown") return { id, label: entry.label, effective: null, limitedBy: provider.cap };
+      const effective = lowestOfLayers(provider.limit, current) as TenantLimitClass;
+      return { id, label: entry.label, effective, limitedBy: classRank(effective) < classRank(current) ? provider.cap : null };
+    });
+
+  const view = (ctx: TenantContext, canChange: boolean): TenantAiLimitView => {
+    const current = deps.limits.current(ctx.registrationId);
+    return {
+      current,
+      history: deps.limits.history(ctx.registrationId).map((v) => ({ id: v.id, maxClass: v.maxClass, at: v.createdAt, byYou: v.setBy === ctx.identityId })),
+      providers: providerLimits(current),
+      canChange,
+    };
+  };
 
   /**
    * The providers that allow a raise to `maxClass` (spec 9.4): configured, with a tenant limit that reaches the class. That limit is the

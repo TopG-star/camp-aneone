@@ -50,10 +50,26 @@ export const TenantAiLimitVersionViewSchema = z.object({
   byYou: z.boolean(),
 });
 
+/**
+ * Spec 9.4 (amendment A3): what a call to one configured provider may carry in this pharmacy now, by the gateway's own computation (the
+ * lowest of the provider's limit and the pharmacy's). `effective` is null when the platform has suspended the provider (its calls are
+ * refused). `limitedBy` names the layer that holds it below the pharmacy's limit, and is null when it is not below.
+ */
+export const TenantProviderLimitViewSchema = z.object({
+  id: ProviderIdSchema,
+  label: z.string(),
+  effective: TenantLimitClassSchema.nullable(),
+  limitedBy: z.enum(["not_cleared", "registry", "override", "suspended", "unknown"]).nullable(),
+});
+export type TenantProviderLimitView = z.infer<typeof TenantProviderLimitViewSchema>;
+
 export const TenantAiLimitViewSchema = z.object({
+  /** The stored limit: the pharmacy's setting. */
   current: TenantLimitClassSchema,
   /** Newest first. Empty while the pharmacy is on the default. */
   history: z.array(TenantAiLimitVersionViewSchema),
+  /** One entry per configured provider, in registry order. */
+  providers: z.array(TenantProviderLimitViewSchema),
   /** From the cached snapshot, only to decide whether to show the control. The server checks again, live, on every change. */
   canChange: z.boolean(),
 });

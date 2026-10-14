@@ -18,6 +18,26 @@ export const tenantClassLabel = (cls: string): string => CLASS_LABELS[cls] ?? cl
 
 export const TENANT_LIMIT_LOAD_FAILED = "Couldn't load the pharmacy's AI data limit.";
 
+type ProviderLimit = TenantAiLimitView["providers"][number];
+
+/** Why a provider gets less than the pharmacy's limit (spec 9.4): the layer the server names. */
+const LIMITED_BY: Record<NonNullable<ProviderLimit["limitedBy"]>, string> = {
+  not_cleared: "not reviewed with a DPA (Oneon has not fully reviewed this provider with a signed data processing agreement)",
+  registry: "the most this provider may receive for pharmacy data",
+  override: "lowered by the platform",
+  suspended: "suspended by the platform",
+  unknown: "not available",
+};
+
+export const NO_PROVIDER_CONFIGURED = "No AI provider is configured, so Oneon sends nothing to one from this pharmacy.";
+
+/** One configured provider's line (amendment A3): what a call to it may carry here now, and why when that is below the pharmacy's limit. */
+export function providerLimitText(p: ProviderLimit): string {
+  if (p.effective === null) return `${p.label}: nothing is sent · ${LIMITED_BY[p.limitedBy ?? "unknown"]}`;
+  if (p.limitedBy === null) return `${p.label}: ${p.effective} · ${tenantClassLabel(p.effective)}`;
+  return `${p.label}: ${p.effective} · held at ${p.effective}: ${LIMITED_BY[p.limitedBy]}`;
+}
+
 export function historyEntryText(entry: Pick<TenantAiLimitView["history"][number], "maxClass" | "at" | "byYou">): string {
   return `${tenantClassLabel(entry.maxClass)} · ${formatDate(entry.at)} · by ${entry.byYou ? "you" : "a colleague"}`;
 }
