@@ -72,6 +72,14 @@ export function backupDay(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+/** The UTC hour, `yyyy-mm-ddThhZ`, the name of an hourly backup folder under `<outDir>/hourly/`. */
+export function backupHour(date: Date): string {
+  return `${date.toISOString().slice(0, 13)}Z`;
+}
+
+/** Owner decision D6: hourly copies beyond the 48 most recent complete hourly folders are deleted (never a file's newest copy). */
+export const HOURLY_BACKUPS_KEPT = 48;
+
 /** The folder for the backups taken just before a migration run: `<outDir>/pre-migration/<yyyy-mm-ddThh-mm-ssZ>`. */
 export function preMigrationFolder(outDir: string, now: Date): string {
   return join(outDir, "pre-migration", now.toISOString().replace(/\.\d+Z$/, "Z").replace(/:/g, "-"));
@@ -114,14 +122,7 @@ export async function backupDatabase(
   }
 }
 
-/**
- * Backs up control, personal and every active or operator-suspended tenant (owner decision D5) into `<outDir>/<yyyy-mm-dd>/`. The files are written into
- * `<yyyy-mm-dd>.partial/` and that folder is renamed only when every file succeeded, so a day folder always means a complete day:
- * after a failure (or a crash) no day folder exists and the next run starts the day again. Every file is tried; any failure is
- * thrown at the end. A tenant the gate refuses to open with a typed refusal (e.g. tenant_schema_behind) is skipped, not failed:
- * it is logged at error, listed in `skipped.json` in the day folder, and does not hold the day back. Files are sealed for their final folder, not the partial one.
- */
-export async function backupAll(deps: {
+export interface BackupDeps {
   gate: ContextDbGate;
   control: ControlDb;
   outDir: string;
@@ -130,10 +131,32 @@ export async function backupAll(deps: {
   /** Private scratch for the plaintext copies (see backupScratchDir). */
   scratchDir: string;
   logger?: Logger;
-}): Promise<BackupAllResult> {
-  const finalDir = join(deps.outDir, backupDay(deps.now()));
+}
+
+/**
+ * Backs up control, personal and every active or operator-suspended tenant (owner decision D5) into `<outDir>/<yyyy-mm-dd>/`. The files are written into
+ * `<yyyy-mm-dd>.partial/` and that folder is renamed only when every file succeeded, so a day folder always means a complete day:
+ * after a failure (or a crash) no day folder exists and the next run starts the day again. Every file is tried; any failure is
+ * thrown at the end. A tenant the gate refuses to open with a typed refusal (e.g. tenant_schema_behind) is skipped, not failed:
+ * it is logged at error, listed in `skipped.json` in the day folder, and does not hold the day back. Files are sealed for their final folder, not the partial one.
+ */
+export function backupAll(deps: BackupDeps): Promise<BackupAllResult> {
+  return backupSet(deps, join(deps.outDir, backupDay(deps.now())), { personal: true });
+}
+
+/**
+ * Owner decisions D2 and D6: the hourly sealed copy, in addition to the daily snapshot. Control and every active or operator-suspended
+ * pharmacy (the personal file stays daily only) into `<outDir>/hourly/<yyyy-mm-ddThhZ>/`, by exactly the daily rules: written into
+ * `<yyyy-mm-ddThhZ>.partial/` and renamed when complete, a refused pharmacy listed in `skipped.json`, each file sealed for
+ * `<yyyy-mm-ddThhZ>/<name>.db.enc` (so restore-backup opens it unchanged). An hour is backed up once.
+ */
+export function backupHourly(deps: BackupDeps): Promise<BackupAllResult> {
+  return backupSet(deps, join(deps.outDir, "hourly", backupHour(deps.now())), { personal: false });
+}
+
+async function backupSet(deps: BackupDeps, finalDir: string, opts: { personal: boolean }): Promise<BackupAllResult> {
   const dir = `${finalDir}${PARTIAL_SUFFIX}`;
-  if (existsSync(finalDir)) throw new Error(`${finalDir} already exists; a day is backed up once`);
+  if (existsSync(finalDir)) throw new Error(`${finalDir} already exists; it is backed up once`);
   rmSync(dir, { recursive: true, force: true }); // a crashed run's leftovers
   const completed: BackupResult[] = [];
   const failed: Array<{ context: string; error: string }> = [];
@@ -142,7 +165,7 @@ export async function backupAll(deps: {
   const skipped: SkippedTenant[] = [];
   const fixed: Array<{ context: string; name: string; db: () => Database.Database }> = [
     { context: "control", name: "control", db: () => deps.control },
-    { context: "personal", name: "personal", db: () => rawDb(deps.gate.openPersonal()) },
+    ...(opts.personal ? [{ context: "personal", name: "personal", db: () => rawDb(deps.gate.openPersonal()) }] : []),
   ];
   for (const job of fixed) {
     try {
@@ -208,25 +231,39 @@ export interface NewestBackupCopy {
 }
 
 const DAY_FOLDER = /^\d{4}-\d{2}-\d{2}$/;
+const HOUR_FOLDER = /^\d{4}-\d{2}-\d{2}T\d{2}Z$/;
+
+const subfolders = (folder: string): string[] =>
+  existsSync(folder) ? readdirSync(folder, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name) : [];
 
 /**
- * For control, personal and every backed-up pharmacy (active or operator-suspended, owner decision D5), when its newest restorable copy was written: the latest modification time among its
- * sealed files in completed day folders (`<day>/`, never `<day>.partial/`) and in `pre-migration/<run>/`. Only reads; nothing is
- * opened or removed. A pharmacy the nightly run skips still has its pre-migration copy counted here.
+ * Every restorable sealed copy: the `.db.enc` files of complete day folders (`<day>/`), complete hourly folders
+ * (`hourly/<yyyy-mm-ddThhZ>/`) and pre-migration runs (`pre-migration/<run>/`); never a `.partial` folder or a `.part` file.
+ */
+function restorableCopies(outDir: string): Array<{ folder: string; name: string; at: number }> {
+  const copies: Array<{ folder: string; name: string; at: number }> = [];
+  const scan = (folder: string): void => {
+    for (const entry of readdirSync(folder, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith(EXTENSION)) copies.push({ folder, name: entry.name, at: statSync(join(folder, entry.name)).mtimeMs });
+    }
+  };
+  for (const day of subfolders(outDir).filter((name) => DAY_FOLDER.test(name))) scan(join(outDir, day));
+  for (const hour of subfolders(join(outDir, "hourly")).filter((name) => HOUR_FOLDER.test(name))) scan(join(outDir, "hourly", hour));
+  for (const run of subfolders(join(outDir, "pre-migration"))) scan(join(outDir, "pre-migration", run));
+  return copies;
+}
+
+/**
+ * For control, personal and every backed-up pharmacy (active or operator-suspended, owner decision D5), when its newest restorable copy
+ * was written: the latest modification time among its sealed files in complete day and hourly folders and in `pre-migration/<run>/`
+ * (see restorableCopies). Only reads; nothing is opened or removed. A pharmacy the nightly run skips still has its pre-migration copy
+ * counted here.
  */
 export function newestBackupCopies(deps: { outDir: string; registrations: Pick<TenantRegistrationRepository, "listBackedUp" | "activeSince"> }): NewestBackupCopy[] {
   const newest = new Map<string, number>();
-  const scan = (folder: string): void => {
-    for (const entry of readdirSync(folder, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith(EXTENSION)) continue;
-      const at = statSync(join(folder, entry.name)).mtimeMs;
-      if (at > (newest.get(entry.name) ?? -Infinity)) newest.set(entry.name, at);
-    }
-  };
-  const subfolders = (folder: string): string[] =>
-    existsSync(folder) ? readdirSync(folder, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name) : [];
-  for (const day of subfolders(deps.outDir).filter((name) => DAY_FOLDER.test(name))) scan(join(deps.outDir, day));
-  for (const run of subfolders(join(deps.outDir, "pre-migration"))) scan(join(deps.outDir, "pre-migration", run));
+  for (const { name, at } of restorableCopies(deps.outDir)) {
+    if (at > (newest.get(name) ?? -Infinity)) newest.set(name, at);
+  }
 
   const copy = (fileName: string): Date | null => {
     const at = newest.get(`${fileName}${EXTENSION}`);
@@ -242,6 +279,44 @@ export function newestBackupCopies(deps: { outDir: string; registrations: Pick<T
       activeSince: deps.registrations.activeSince(reg.id) ?? new Date(reg.enrolledAt),
     })),
   ];
+}
+
+/**
+ * Owner decision D6, run after each successful hourly backup. Hourly folders beyond the HOURLY_BACKUPS_KEPT most recent complete ones
+ * are deleted, with one exception: the newest copy of any file is never deleted. A file whose newest copy (across every daily, hourly
+ * and pre-migration copy) lies in such an old folder stays, with the folder and its `skipped.json`; for example a pharmacy skipped or
+ * refused since that hour. A daily folder, anything under `pre-migration/` and an unfinished `.partial` folder are never touched, and a
+ * `.partial` folder does not count toward the 48. Returns what was removed: each folder removed whole, and each file removed alone.
+ */
+export function pruneHourlyBackups(deps: { outDir: string }): string[] {
+  const hourly = join(deps.outDir, "hourly");
+  const complete = subfolders(hourly)
+    .filter((name) => HOUR_FOLDER.test(name))
+    .sort();
+  const old = new Set(complete.slice(0, Math.max(0, complete.length - HOURLY_BACKUPS_KEPT)).map((name) => join(hourly, name)));
+  if (old.size === 0) return [];
+
+  // The newest copy of each file name. On a tie a copy outside the old folders wins, so the one that stays is never one being removed.
+  const newest = new Map<string, { folder: string; at: number }>();
+  for (const copy of restorableCopies(deps.outDir)) {
+    const current = newest.get(copy.name);
+    if (!current || copy.at > current.at || (copy.at === current.at && old.has(current.folder) && !old.has(copy.folder))) newest.set(copy.name, copy);
+  }
+  const removed: string[] = [];
+  for (const folder of old) {
+    const files = readdirSync(folder).filter((name) => name.endsWith(EXTENSION));
+    const doomed = files.filter((name) => newest.get(name)?.folder !== folder);
+    if (doomed.length === files.length) {
+      rmSync(folder, { recursive: true, force: true });
+      removed.push(folder);
+      continue;
+    }
+    for (const name of doomed) {
+      rmSync(join(folder, name), { force: true });
+      removed.push(join(folder, name));
+    }
+  }
+  return removed;
 }
 
 /**

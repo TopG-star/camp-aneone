@@ -368,9 +368,13 @@ export interface RestoreCheck {
 }
 
 export interface BackupSchedulerDeps {
-  /** The folder backupAll writes `<yyyy-mm-dd>/` folders into. */
+  /** The folder backupAll writes `<yyyy-mm-dd>/` folders into, and backupHourly `hourly/<yyyy-mm-ddThhZ>/` folders. */
   outDir: string;
   backupAll: () => Promise<unknown>;
+  /** Owner decisions D2 and D6: when given, each tick also takes this hour's sealed copy if the hour has none, then runs pruneHourly. */
+  backupHourly?: () => Promise<unknown>;
+  /** The 48-copy retention (pruneHourlyBackups), run after each successful hourly copy only. Returns what it removed. */
+  pruneHourly?: () => string[];
   restoreTest: (file: string) => Promise<RestoreCheck>;
   /** When given, each tick ends by checking every context's newest copy against BACKUP_STALE_AFTER_HOURS. */
   newestCopies?: () => Array<{ context: "control" | "personal" | "tenant"; registrationId?: string; newestAt: Date | null; activeSince?: Date }>;
@@ -390,9 +394,10 @@ const DAY_FOLDER = /^\d{4}-\d{2}-\d{2}$/;
 const NON_TENANT_BACKUPS = new Set(["control.db.enc", "personal.db.enc"]);
 
 /**
- * Nightly encrypted backup (once per calendar day: today's folder existing means the day is done) and a monthly restore test
- * (one tenant from the latest backup, rotating). Same shape as the processing loop: a timer, no overlap, stop() awaits the tick
- * in flight, and nothing here ever throws. Backups are never deleted here; the operator prunes (B-retention adds deletion).
+ * Nightly encrypted backup (once per calendar day: today's folder existing means the day is done), an hourly sealed copy (once per
+ * hour, the same way), and a monthly restore test (one tenant from the latest daily backup, rotating). Same shape as the processing
+ * loop: a timer, no overlap, stop() awaits the tick in flight, and nothing here ever throws. Only the hourly retention deletes
+ * anything (owner decision D6, pruneHourlyBackups): daily folders and pre-migration copies are never deleted here.
  */
 export class BackupScheduler {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -466,6 +471,7 @@ export class BackupScheduler {
         logger.error("Nightly backup failed", { day: today, error: error instanceof Error ? error.message : String(error) });
       }
     }
+    if (this.deps.backupHourly) await this.runHourly(this.deps.backupHourly);
 
     const month = today.slice(0, 7);
     if (this.lastRestoreMonth === month) return;
@@ -484,6 +490,28 @@ export class BackupScheduler {
       }
     } catch (error) {
       logger.error("Monthly restore test crashed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  /** This hour's sealed copy when the hour has no folder yet; after a successful one, the hourly retention. */
+  private async runHourly(backupHourly: () => Promise<unknown>): Promise<void> {
+    const { outDir, logger } = this.deps;
+    const hour = `${this.now().toISOString().slice(0, 13)}Z`;
+    if (existsSync(join(outDir, "hourly", hour))) return;
+    try {
+      const result = await backupHourly();
+      const skipped = (result as { skipped?: unknown[] } | undefined)?.skipped ?? [];
+      if (skipped.length > 0) logger.warn("Hourly backup completed with tenants skipped", { hour, skipped: skipped.length });
+      else logger.debug("Hourly backup done", { hour });
+    } catch (error) {
+      logger.error("Hourly backup failed", { hour, error: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+    try {
+      const removed = this.deps.pruneHourly?.() ?? [];
+      if (removed.length > 0) logger.info("Old hourly backups pruned", { removed: removed.length });
+    } catch (error) {
+      logger.error("Hourly backup pruning failed", { error: error instanceof Error ? error.message : String(error) });
     }
   }
 

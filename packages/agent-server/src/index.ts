@@ -28,6 +28,8 @@ import {
   GmailStatementDocumentProvider,
   StructuredLogger,
   backupAll,
+  backupHourly,
+  pruneHourlyBackups,
   backupScratchDir,
   newestBackupCopies,
   restoreTestOwned,
@@ -348,6 +350,9 @@ if (backupKey) {
   backupScheduler = new BackupScheduler({
     outDir: env.BACKUP_DIR,
     backupAll: () => backupAll({ gate, control, outDir: env.BACKUP_DIR, keyB64: backupKey, now: () => new Date(), scratchDir, logger }),
+    // Owner decisions D2 and D6: an hourly sealed copy of control.db and every pharmacy file, the last 48 kept.
+    backupHourly: () => backupHourly({ gate, control, outDir: env.BACKUP_DIR, keyB64: backupKey, now: () => new Date(), scratchDir, logger }),
+    pruneHourly: () => pruneHourlyBackups({ outDir: env.BACKUP_DIR }),
     restoreTest: (file) => restoreTestOwned({ file, keyB64: backupKey, tmpDir: scratchDir, control }),
     newestCopies: () => newestBackupCopies({ outDir: env.BACKUP_DIR, registrations: container.tenantRegistrations }),
     logger,

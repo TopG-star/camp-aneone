@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Logger } from "@oneon/domain";
@@ -145,6 +145,79 @@ describe("BackupScheduler", () => {
     const { scheduler, log } = make(fakeBackup(), owned);
     await scheduler.tick();
     expect(log.error).toHaveBeenCalledWith("Monthly restore test failed", expect.objectContaining({ reason: "no registration owns x.db" }));
+  });
+
+  describe("hourly sealed copies (owner decisions D2 and D6)", () => {
+    /** A run that writes the hour's folder, as backupHourly does. */
+    const fakeHourly = () =>
+      vi.fn(async () => {
+        const dir = join(outDir, "hourly", `${now.toISOString().slice(0, 13)}Z`);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "control.db.enc"), "x");
+      });
+    const makeHourly = (backupHourly: () => Promise<unknown>, pruneHourly = vi.fn((): string[] => []), log = logger()) => ({
+      scheduler: new BackupScheduler({ outDir, backupAll: fakeBackup(), restoreTest: okRestore(), backupHourly, pruneHourly, logger: log, now: () => now }),
+      pruneHourly,
+      log,
+    });
+
+    it("takes one hourly copy per hour, beside the daily snapshot, and prunes after each successful one", async () => {
+      const backupHourly = fakeHourly();
+      const { scheduler, pruneHourly } = makeHourly(backupHourly);
+      await scheduler.tick();
+      now = new Date("2026-10-10T03:59:00.000Z");
+      await scheduler.tick();
+      expect(backupHourly).toHaveBeenCalledTimes(1);
+      expect(pruneHourly).toHaveBeenCalledTimes(1);
+      now = new Date("2026-10-10T04:00:00.000Z");
+      await scheduler.tick();
+      expect(backupHourly).toHaveBeenCalledTimes(2);
+      expect(pruneHourly).toHaveBeenCalledTimes(2);
+      expect(existsSync(join(outDir, "2026-10-10"))).toBe(true); // the daily snapshot is unchanged
+    });
+
+    it("treats an existing folder for this hour as done, even across a restart", async () => {
+      mkdirSync(join(outDir, "hourly", "2026-10-10T03Z"), { recursive: true });
+      const backupHourly = fakeHourly();
+      await makeHourly(backupHourly).scheduler.tick();
+      expect(backupHourly).not.toHaveBeenCalled();
+    });
+
+    it("logs a failed hourly copy at error level, prunes nothing, and tries again on the next tick", async () => {
+      const backupHourly = vi.fn().mockRejectedValueOnce(new Error("disk full")).mockImplementation(fakeHourly());
+      const { scheduler, pruneHourly, log } = makeHourly(backupHourly);
+      await expect(scheduler.tick()).resolves.toBeUndefined();
+      expect(log.error).toHaveBeenCalledWith("Hourly backup failed", { hour: "2026-10-10T03Z", error: "disk full" });
+      expect(pruneHourly).not.toHaveBeenCalled();
+      await scheduler.tick();
+      expect(backupHourly).toHaveBeenCalledTimes(2);
+      expect(pruneHourly).toHaveBeenCalledTimes(1);
+    });
+
+    it("logs what the pruning removed, and a pruning that throws without stopping the schedule", async () => {
+      const removed = vi.fn((): string[] => ["/b/hourly/2026-10-08T01Z"]);
+      const first = makeHourly(fakeHourly(), removed);
+      await first.scheduler.tick();
+      expect(first.log.info).toHaveBeenCalledWith("Old hourly backups pruned", { removed: 1 });
+
+      now = new Date("2026-10-10T05:00:00.000Z");
+      const throwing = vi.fn((): string[] => {
+        throw new Error("EACCES");
+      });
+      const second = makeHourly(fakeHourly(), throwing);
+      await expect(second.scheduler.tick()).resolves.toBeUndefined();
+      expect(second.log.error).toHaveBeenCalledWith("Hourly backup pruning failed", { error: "EACCES" });
+    });
+
+    it("never restore-tests from an hourly folder: the monthly test keeps using daily folders", async () => {
+      mkdirSync(join(outDir, "hourly", "2026-10-10T02Z"), { recursive: true });
+      writeFileSync(join(outDir, "hourly", "2026-10-10T02Z", "tenant-h.db.enc"), "x");
+      const backupAll = fakeBackup(["control", "personal"]);
+      const restoreTest = okRestore();
+      const scheduler = new BackupScheduler({ outDir, backupAll, restoreTest, backupHourly: fakeHourly(), pruneHourly: () => [], logger: logger(), now: () => now });
+      await scheduler.tick();
+      expect(restoreTest).not.toHaveBeenCalled();
+    });
   });
 
   it("stop() waits for the tick in flight", async () => {

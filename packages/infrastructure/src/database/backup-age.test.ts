@@ -54,6 +54,17 @@ describe("newestBackupCopies", () => {
     expect(ofContext(copies, "tenant", "reg-2").newestAt).toEqual(new Date("2026-10-05T12:00:00Z"));
   });
 
+  it("counts a copy in a complete hourly folder, never one in an unfinished hourly folder", () => {
+    const { outDir, put, ofContext } = setup();
+    put("2026-10-09", "aaaa.db.enc", "2026-10-09T01:00:00Z");
+    put("hourly/2026-10-09T05Z", "aaaa.db.enc", "2026-10-09T05:00:10Z");
+    put("hourly/2026-10-09T06Z.partial", "aaaa.db.enc", "2026-10-09T06:00:10Z");
+    put("hourly/2026-10-09T05Z", "control.db.enc", "2026-10-09T05:00:00Z");
+    const copies = newestBackupCopies({ outDir, registrations });
+    expect(ofContext(copies, "tenant", "reg-1").newestAt).toEqual(new Date("2026-10-09T05:00:10Z"));
+    expect(ofContext(copies, "control").newestAt).toEqual(new Date("2026-10-09T05:00:00Z"));
+  });
+
   it("takes the newest across day folders and pre-migration folders", () => {
     const { outDir, put, ofContext } = setup();
     put("2026-10-01", "aaaa.db.enc", "2026-10-01T01:00:00Z");

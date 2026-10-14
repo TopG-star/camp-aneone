@@ -104,6 +104,24 @@ describe("restoreBackup", () => {
     expect(readFileSync(out).equals(database)).toBe(true);
   });
 
+  it("decrypts a copy from an hourly folder, and one fetched elsewhere with --as <yyyy-mm-ddThhZ>/<name>", () => {
+    const { dir, keyB64 } = setup();
+    const folder = join(dir, "backups", "hourly", "2026-10-10T03Z");
+    mkdirSync(folder, { recursive: true });
+    const database = randomBytes(1000);
+    const file = join(folder, "control.db.enc");
+    writeFileSync(file, sealBuffer(database, keyB64, "2026-10-10T03Z/control.db.enc"));
+    const out = join(dir, "control.db");
+    expect(restoreBackup([file, "--out", out], keyB64)).toBe(out);
+    expect(readFileSync(out).equals(database)).toBe(true);
+
+    const moved = join(dir, "fetched-control.enc");
+    copyFileSync(file, moved);
+    const out2 = join(dir, "control-2.db");
+    expect(restoreBackup([moved, "--out", out2, "--as", "2026-10-10T03Z/control.db.enc"], keyB64)).toBe(out2);
+    expect(readFileSync(out2).equals(database)).toBe(true);
+  });
+
   it("explains its usage when no file is given", () => {
     expect(() => restoreBackup([], "k")).toThrow(/Usage/);
   });

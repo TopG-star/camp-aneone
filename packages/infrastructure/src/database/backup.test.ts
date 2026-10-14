@@ -7,7 +7,17 @@ import { createDatabase } from "./connection.js";
 import { ContextDbGate, TenantRefusedError, rawDb } from "./context-db-gate.js";
 import { openControlDb } from "./control/open-control-db.js";
 import { sealBuffer } from "../crypto/envelope.js";
-import { backupAll, backupDatabase, backupScratchDir, decryptBackup, newestBackupCopies, restoreTest, restoreTestOwned, sweepBackupLeftovers } from "./backup.js";
+import {
+  backupAll,
+  backupDatabase,
+  backupHourly,
+  backupScratchDir,
+  decryptBackup,
+  newestBackupCopies,
+  restoreTest,
+  restoreTestOwned,
+  sweepBackupLeftovers,
+} from "./backup.js";
 import { TenantRegistrationRepository } from "./control/tenant-registration-repository.js";
 
 const NOW = "2026-10-08T00:00:00.000Z";
@@ -225,6 +235,60 @@ describe("backups", () => {
       await backupAll(deps);
       const copies = newestBackupCopies({ outDir: deps.outDir, registrations: new TenantRegistrationRepository(control) });
       expect(copies.filter((c) => c.context === "tenant").map((c) => [c.registrationId, c.newestAt !== null])).toEqual([["reg-1", true]]);
+    });
+  });
+
+  describe("hourly sealed copies (owner decisions D2 and D6)", () => {
+    const HOUR = join("hourly", "2026-10-10T03Z");
+
+    it("copies control and every active or suspended pharmacy, never personal, into hourly/<yyyy-mm-ddThhZ>/, each restorable where it lies", async () => {
+      const { deps, control, gate, regs, tmpDir } = setup(3);
+      control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = 'reg-2'").run();
+      control.prepare("UPDATE tenant_registrations SET status = 'removed' WHERE id = 'reg-3'").run();
+      const requestLease = vi.spyOn(gate, "lease");
+
+      const results = await backupHourly(deps);
+
+      expect(results.map((r) => r.context)).toEqual(["control", "t-1", "t-2"]);
+      expect(readdirSync(join(deps.outDir, HOUR)).sort()).toEqual(
+        ["control.db.enc", ...regs.slice(0, 2).map((r) => `${r.fileName.replace(/\.db$/, "")}.db.enc`)].sort(),
+      );
+      expect(existsSync(join(deps.outDir, "2026-10-10"))).toBe(false); // the daily snapshot is a separate run
+      expect(requestLease).not.toHaveBeenCalled();
+      // Sealed for <yyyy-mm-ddThhZ>/<name>.db.enc, so the restore tooling opens it unchanged.
+      for (const r of results) expect((await restoreTest({ file: r.file, keyB64: deps.keyB64, tmpDir })).ok).toBe(true);
+      expect(() => decryptBackup(results[1]!.file, deps.keyB64, `2026-10-10/${basename(results[1]!.file)}`)).toThrow();
+    });
+
+    it("writes into <hour>.partial/ and renames it only when every file succeeded; a failed hour stays partial", async () => {
+      const { deps, gate } = setup();
+      const { wrapped, broken } = flakyGate(gate, "reg-1", new Error("disk error"));
+      await expect(backupHourly({ ...deps, gate: wrapped })).rejects.toThrow(/t-1/);
+      expect(existsSync(join(deps.outDir, HOUR))).toBe(false);
+      expect(existsSync(join(deps.outDir, `${HOUR}.partial`))).toBe(true);
+
+      broken.on = false;
+      await backupHourly({ ...deps, gate: wrapped });
+      expect(existsSync(join(deps.outDir, HOUR))).toBe(true);
+      expect(existsSync(join(deps.outDir, `${HOUR}.partial`))).toBe(false);
+    });
+
+    it("skips a pharmacy the gate refuses, listing it in skipped.json, and refuses to run an hour twice", async () => {
+      const { deps, gate } = setup();
+      const { wrapped } = flakyGate(gate, "reg-1", new TenantRefusedError("tenant_schema_behind"));
+      const results = await backupHourly({ ...deps, gate: wrapped });
+      expect(results.skipped).toEqual([{ registrationId: "reg-1", code: "tenant_schema_behind" }]);
+      expect(JSON.parse(readFileSync(join(deps.outDir, HOUR, "skipped.json"), "utf8"))).toEqual([{ registrationId: "reg-1", code: "tenant_schema_behind" }]);
+      await expect(backupHourly(deps)).rejects.toThrow(/already exists/);
+    });
+
+    it("counts toward the age of each file's newest copy", async () => {
+      const { deps, control } = setup(1);
+      await backupHourly(deps);
+      const copies = newestBackupCopies({ outDir: deps.outDir, registrations: new TenantRegistrationRepository(control) });
+      expect(copies.find((c) => c.context === "control")!.newestAt).not.toBeNull();
+      expect(copies.find((c) => c.context === "tenant")!.newestAt).not.toBeNull();
+      expect(copies.find((c) => c.context === "personal")!.newestAt).toBeNull();
     });
   });
 
