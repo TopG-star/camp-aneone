@@ -75,6 +75,15 @@ describe("SqliteModelAuditRepository", () => {
     expect(() => db.prepare("UPDATE model_call_outcomes SET attempts = 2").run()).toThrow("model_call_outcomes is append-only");
     expect(() => db.prepare("DELETE FROM model_call_outcomes").run()).toThrow("model_call_outcomes is append-only");
   });
+  it("refuses to read an outcome that carries another context's tenant, even under a decision of its own (spec 8.4)", () => {
+    const repo = new SqliteModelAuditRepository(asPersonal(db));
+    repo.recordDecision(decision("c1"));
+    db.prepare(
+      `INSERT INTO model_call_outcomes (call_id, created_at, status, attempts, latency_ms, checks_json, key_version, tenant_id)
+       VALUES ('c1', '2026-10-03T10:00:05.000Z', 'answered', 1, 1, '{}', 1, 'other-tenant')`,
+    ).run();
+    expect(() => repo.listRecentForIdentity("u1", 10)).toThrow("tenant_mismatch");
+  });
 });
 
 describe("SqliteAiDataChoiceRepository", () => {

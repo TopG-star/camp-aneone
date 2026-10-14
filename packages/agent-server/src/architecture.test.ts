@@ -19,6 +19,90 @@ const IMPORT = /(?:import|export)\s[^;]*?from\s+["']([^"']+)["']/g;
 
 type Source = { path: string; text: string };
 
+/**
+ * The tables the tenant-file migrations leave, each with the text that defines its columns. Statements are applied in file order:
+ * CREATE TABLE, ALTER TABLE ... RENAME TO, ALTER TABLE ... ADD COLUMN and DROP TABLE. Comments are ignored.
+ */
+function migratedTables(migrations: Array<{ name: string; sql: string }>): Map<string, string> {
+  const tables = new Map<string, string>();
+  const statement =
+    /CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["`]?(\w+)["`]?\s*(?:USING\s+\w+\s*)?\(([\s\S]*?)\)\s*;|ALTER\s+TABLE\s+["`]?(\w+)["`]?\s+RENAME\s+TO\s+["`]?(\w+)["`]?|ALTER\s+TABLE\s+["`]?(\w+)["`]?\s+ADD\s+(?:COLUMN\s+)?["`]?(\w+)["`]?|DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?["`]?(\w+)["`]?/gi;
+  for (const { sql } of [...migrations].sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const m of sql.replace(/--[^\n]*/g, "").matchAll(statement)) {
+      const [, created, body, from, to, altered, column, dropped] = m;
+      if (created) tables.set(created, tables.get(created) ?? body!);
+      else if (from && to) {
+        tables.set(to, tables.get(from) ?? "");
+        tables.delete(from);
+      } else if (altered && column) tables.set(altered, `${tables.get(altered) ?? ""},\n${column}`);
+      else if (dropped) tables.delete(dropped);
+    }
+  }
+  return tables;
+}
+
+type TenantTable = { column: "tenant_id" | "owner_id"; repository: string; why: string };
+
+/** What is wrong with the migrated tables against the two placement lists (spec 8.4). Empty means nothing. */
+function placementOffenders(tables: Map<string, string>, tenantData: Record<string, TenantTable>, exempt: Record<string, string>): string[] {
+  const offenders: string[] = [];
+  for (const name of tables.keys()) {
+    const listed = [name in tenantData, name in exempt].filter(Boolean).length;
+    if (listed === 0) offenders.push(`${name}: on neither list (spec 8.4: add it to the tenant-data tables or the exempt tables)`);
+    if (listed === 2) offenders.push(`${name}: on both lists`);
+  }
+  for (const name of [...Object.keys(tenantData), ...Object.keys(exempt)]) {
+    if (!tables.has(name)) offenders.push(`${name}: listed, but no migration leaves this table`);
+  }
+  for (const [name, t] of Object.entries(tenantData)) {
+    const body = tables.get(name);
+    if (body !== undefined && !new RegExp(String.raw`(^|[\s,(])${t.column}\b`).test(body)) offenders.push(`${name}: a tenant-data table without ${t.column}`);
+  }
+  return offenders;
+}
+
+/**
+ * Spec 8.4 (amendment A1). The tables a tenant file writes: each carries its tenant on every row, and the repository that writes it
+ * checks that tenant against the handle (`assertRowTenant` for a `tenant_id` table; for the action config tables, which carry the
+ * tenant id as `owner_id` under `scope = 'tenant'`, a guard at the top of every method that throws TenantMismatchError, B-14-1).
+ */
+const TENANT_DATA_TABLES: Record<string, TenantTable> = {
+  conversations: { column: "tenant_id", repository: "sqlite-conversation.repository.ts", why: "a tenant conversation's messages" },
+  action_instances: { column: "tenant_id", repository: "sqlite-action-instance.repository.ts", why: "actions proposed in a pharmacy" },
+  action_events: { column: "tenant_id", repository: "sqlite-action-instance.repository.ts", why: "each pharmacy action's history" },
+  model_call_decisions: { column: "tenant_id", repository: "sqlite-model-audit.repository.ts", why: "the model-call audit of a tenant call (spec 9.5)" },
+  model_call_outcomes: { column: "tenant_id", repository: "sqlite-model-audit.repository.ts", why: "the outcome of a tenant model call" },
+  action_definition_configs: { column: "owner_id", repository: "sqlite-action-config.repository.ts", why: "a pharmacy's action settings, owned by its tenant id" },
+  action_definition_config_history: { column: "owner_id", repository: "sqlite-action-config.repository.ts", why: "the history of a pharmacy's action settings" },
+};
+
+/** Spec 8.4 (amendment A1). Tables a tenant file never fills with tenant data, each with the reason. */
+const TENANT_EXEMPT_TABLES: Record<string, string> = {
+  // Bookkeeping: present in every file, not tenant content.
+  schema_migrations: "bookkeeping: the migrations applied to this file",
+  context_meta: "bookkeeping: the file's own kind and tenant, checked by the gate when it opens the file",
+  users: "bookkeeping: identity anchor rows (an identity id and a placeholder address) that let the file's foreign keys hold",
+  // Personal-only: their repositories are built on the personal file alone (the container), so a tenant file leaves them empty.
+  inbound_items: "personal-only: Gmail intake",
+  classifications: "personal-only: Gmail classification",
+  classification_feedback: "personal-only: Gmail classification feedback",
+  deadlines: "personal-only: deadlines from a person's mail",
+  notifications: "personal-only: a person's notifications",
+  preferences: "personal-only: a person's preferences",
+  push_subscriptions: "personal-only: a person's browser push subscriptions",
+  oauth_tokens: "personal-only: a person's Google tokens",
+  user_profiles: "personal-only: a person's profile",
+  bank_statements: "personal-only: finance",
+  bank_statement_metadata: "personal-only: finance",
+  bank_statement_transactions: "personal-only: finance",
+  bank_statement_parse_runs: "personal-only: finance",
+  personal_memory_notes: "personal-only: personal memory",
+  personal_memory_pins: "personal-only: personal memory",
+  action_log_legacy: "personal-only: legacy actions (B-14-2; the legacy repository refuses a tenant handle)",
+  action_legacy_imports: "personal-only: legacy action imports (B-14-2)",
+  ai_data_choices: "personal-only: a person's AI data choices; a pharmacy's limit is tenant_ai_limit_versions in control.db",
+};
+
 // Walking and reading every source file is slow under a loaded full suite, so it happens once, with generous timeouts.
 const TIMEOUT_MS = 60_000;
 
@@ -241,6 +325,58 @@ describe("architecture", { timeout: TIMEOUT_MS }, () => {
       .filter((f) => reads.test(withoutExempt(f)))
       .map((f) => f.path);
     expect(offenders).toEqual([]);
+  });
+
+  describe("table placement in tenant files (spec 8.4, amendment A1)", () => {
+    const MIGRATIONS = join(ROOT, "infrastructure", "src", "database", "migrations");
+    const migrations = () => readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql")).map((name) => ({ name, sql: readFileSync(join(MIGRATIONS, name), "utf8") }));
+
+    it("every table the tenant-file migrations leave is a tenant-data table or an exempt one, and every tenant-data table has its tenant column", () => {
+      expect(placementOffenders(migratedTables(migrations()), TENANT_DATA_TABLES, TENANT_EXEMPT_TABLES)).toEqual([]);
+    });
+
+    it("every exemption and every tenant-data table names its reason", () => {
+      for (const [name, why] of Object.entries(TENANT_EXEMPT_TABLES)) expect(why.trim(), name).not.toBe("");
+      for (const [name, t] of Object.entries(TENANT_DATA_TABLES)) expect(t.why.trim(), name).not.toBe("");
+    });
+
+    it("the repository that writes each tenant-data table asserts the tenant against the handle", () => {
+      const offenders: string[] = [];
+      for (const [name, t] of Object.entries(TENANT_DATA_TABLES)) {
+        const text = sources.find((f) => f.path === `infrastructure/src/database/repositories/${t.repository}`)?.text ?? "";
+        if (!new RegExp(String.raw`INSERT INTO ${name}\s*\(`).test(text)) offenders.push(`${name}: ${t.repository} does not write it`);
+        const asserted =
+          t.column === "tenant_id"
+            ? new RegExp(String.raw`assertRowTenant\(this\.context,[^;]*"${name}"\)`).test(text)
+            : // Every public method of the config repository starts with the guard.
+              /new TenantMismatchError\(/.test(text) && [...text.matchAll(/^ {2}(?:get|list|save|history)\([^)]*\)[^{]*\{\s*\n\s*this\.guard\(/gm)].length === 4;
+        if (!asserted) offenders.push(`${name}: ${t.repository} does not assert the tenant`);
+      }
+      expect(offenders).toEqual([]);
+    });
+
+    it("the placement check catches an unlisted table, a tenant-data table without its column, a renamed or dropped table, and a stale entry", () => {
+      const tables = migratedTables([
+        { name: "002.sql", sql: "ALTER TABLE b_old RENAME TO b; DROP TABLE gone; ALTER TABLE late ADD COLUMN tenant_id TEXT;" },
+        {
+          name: "001.sql",
+          sql: "CREATE TABLE IF NOT EXISTS a (id TEXT, tenant_id TEXT);\nCREATE TABLE b_old (id TEXT);\nCREATE TABLE gone (id TEXT);\nCREATE TABLE late (id TEXT);\n-- CREATE TABLE commented (id TEXT);\nCREATE TABLE stray (id TEXT, CHECK (id IN ('x')));",
+        },
+      ]);
+      expect([...tables.keys()].sort()).toEqual(["a", "b", "late", "stray"]);
+
+      const data = (column: "tenant_id" | "owner_id"): TenantTable => ({ column, repository: "r.ts", why: "w" });
+      expect(placementOffenders(tables, { a: data("tenant_id"), b: data("tenant_id"), late: data("tenant_id") }, { gone: "w" })).toEqual([
+        "stray: on neither list (spec 8.4: add it to the tenant-data tables or the exempt tables)",
+        "gone: listed, but no migration leaves this table",
+        "b: a tenant-data table without tenant_id",
+      ]);
+      expect(placementOffenders(tables, { a: data("owner_id"), b: data("tenant_id"), late: data("tenant_id") }, { b: "w", stray: "w" })).toEqual([
+        "b: on both lists",
+        "a: a tenant-data table without owner_id",
+        "b: a tenant-data table without tenant_id",
+      ]);
+    });
   });
 });
 

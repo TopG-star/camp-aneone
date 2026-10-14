@@ -40,6 +40,7 @@ type Row = {
   checks_json: string;
   output_fingerprint: string | null;
   o_key_version: number;
+  o_tenant_id: string | null;
 };
 
 function mapDecision(r: Row): ModelDecisionRecord {
@@ -131,13 +132,14 @@ export class SqliteModelAuditRepository implements ModelAuditRepository {
     const rows = this.db
       .prepare(
         `SELECT d.*, o.created_at AS o_created_at, o.status, o.block_reason, o.attempts, o.latency_ms, o.input_tokens, o.output_tokens,
-                o.checks_json, o.output_fingerprint, o.key_version AS o_key_version
+                o.checks_json, o.output_fingerprint, o.key_version AS o_key_version, o.tenant_id AS o_tenant_id
          FROM model_call_decisions d LEFT JOIN model_call_outcomes o ON o.call_id = d.call_id
          WHERE d.identity_id = ? ORDER BY d.created_at DESC, d.rowid DESC LIMIT ?`,
       )
       .all(identityId, limit) as Row[];
     return rows.map((r) => {
       assertRowTenant(this.context, r.tenant_id, "model_call_decisions");
+      if (r.status !== null) assertRowTenant(this.context, r.o_tenant_id, "model_call_outcomes");
       return { decision: mapDecision(r), outcome: mapOutcome(r) };
     });
   }
