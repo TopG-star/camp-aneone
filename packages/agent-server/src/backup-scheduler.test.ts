@@ -335,7 +335,7 @@ describe("BackupScheduler age alerts", () => {
   });
 
   it("a skipped pharmacy whose only copy is a pre-migration backup: quiet while that copy is fresh, stale once it ages", async () => {
-    const registrations = { listActive: () => [{ id: "reg-skipped", fileName: "skipped.db" }], activeSince: () => hoursAgo(500) } as never;
+    const registrations = { listBackedUp: () => [{ id: "reg-skipped", fileName: "skipped.db" }], activeSince: () => hoursAgo(500) } as never;
     const stamp = (folder: string, name: string, at: Date) => {
       mkdirSync(join(outDir, folder), { recursive: true });
       const file = join(outDir, folder, name);

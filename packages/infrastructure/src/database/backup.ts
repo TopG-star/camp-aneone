@@ -115,7 +115,7 @@ export async function backupDatabase(
 }
 
 /**
- * Backs up control, personal and every active tenant into `<outDir>/<yyyy-mm-dd>/`. The files are written into
+ * Backs up control, personal and every active or operator-suspended tenant (owner decision D5) into `<outDir>/<yyyy-mm-dd>/`. The files are written into
  * `<yyyy-mm-dd>.partial/` and that folder is renamed only when every file succeeded, so a day folder always means a complete day:
  * after a failure (or a crash) no day folder exists and the next run starts the day again. Every file is tried; any failure is
  * thrown at the end. A tenant the gate refuses to open with a typed refusal (e.g. tenant_schema_behind) is skipped, not failed:
@@ -155,11 +155,17 @@ export async function backupAll(deps: {
   }
 
   // Tenants go through the shared runner (one leased file at a time). The budget is cooperative and a backup cannot be preempted:
-  // an overrun is logged, never aborted, because half a backup is worthless.
+  // an overrun is logged, never aborted, because half a backup is worthless. Suspended pharmacies are backed up too, through the
+  // gate's maintenance lease (owner decision D5).
   const registrations = new TenantRegistrationRepository(deps.control);
-  const byId = new Map(registrations.listActive().map((r) => [r.id, r]));
+  const byId = new Map(registrations.listBackedUp().map((r) => [r.id, r]));
   const visit = await forEachTenant(
-    { gate: deps.gate, registrations, logger: deps.logger },
+    {
+      gate: deps.gate,
+      registrations,
+      maintenance: { list: () => registrations.listBackedUp(), lease: (id) => deps.gate.leaseForMaintenance(id) },
+      logger: deps.logger,
+    },
     async (db, _deadline, reg) => {
       completed.push({
         file: await backupDatabase(rawDb(db), { dir, name: reg.fileName.replace(/\.db$/, ""), keyB64: deps.keyB64, scratchDir: deps.scratchDir, sealAsDir: finalDir }),
@@ -204,11 +210,11 @@ export interface NewestBackupCopy {
 const DAY_FOLDER = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
- * For control, personal and every active pharmacy, when its newest restorable copy was written: the latest modification time among its
+ * For control, personal and every backed-up pharmacy (active or operator-suspended, owner decision D5), when its newest restorable copy was written: the latest modification time among its
  * sealed files in completed day folders (`<day>/`, never `<day>.partial/`) and in `pre-migration/<run>/`. Only reads; nothing is
  * opened or removed. A pharmacy the nightly run skips still has its pre-migration copy counted here.
  */
-export function newestBackupCopies(deps: { outDir: string; registrations: Pick<TenantRegistrationRepository, "listActive" | "activeSince"> }): NewestBackupCopy[] {
+export function newestBackupCopies(deps: { outDir: string; registrations: Pick<TenantRegistrationRepository, "listBackedUp" | "activeSince"> }): NewestBackupCopy[] {
   const newest = new Map<string, number>();
   const scan = (folder: string): void => {
     for (const entry of readdirSync(folder, { withFileTypes: true })) {
@@ -229,7 +235,7 @@ export function newestBackupCopies(deps: { outDir: string; registrations: Pick<T
   return [
     { context: "control", newestAt: copy("control") },
     { context: "personal", newestAt: copy("personal") },
-    ...deps.registrations.listActive().map((reg) => ({
+    ...deps.registrations.listBackedUp().map((reg) => ({
       context: "tenant" as const,
       registrationId: reg.id,
       newestAt: copy(reg.fileName.replace(/\.db$/, "")),

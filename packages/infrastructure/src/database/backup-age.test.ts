@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { newestBackupCopies } from "./backup.js";
 
 const registrations = {
-  listActive: () => [
+  listBackedUp: () => [
     { id: "reg-1", fileName: "aaaa.db" },
     { id: "reg-2", fileName: "bbbb.db" },
   ],

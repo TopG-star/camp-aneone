@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ContextDbGate, TenantRefusedError, rawDb } from "./context-db-gate.js";
+import { createDatabase, latestMigrationVersion } from "./connection.js";
 import { openControlDb } from "./control/open-control-db.js";
 
 const NOW = "2026-10-08T00:00:00.000Z";
@@ -35,8 +36,20 @@ describe("ContextDbGate leases", () => {
       gate.createTenantFile(`reg-${n}`, `t-${n}`);
       return `reg-${n}`;
     };
-    return { gate, control, register };
+    const setStatus = (id: string, status: string) => control.prepare("UPDATE tenant_registrations SET status = ? WHERE id = ?").run(status, id);
+    const pathOf = (id: string) =>
+      join(dir, "tenants", (control.prepare("SELECT file_name FROM tenant_registrations WHERE id = ?").get(id) as { file_name: string }).file_name);
+    return { gate, control, register, setStatus, pathOf };
   }
+
+  const refusal = (fn: () => unknown): string | null => {
+    try {
+      fn();
+    } catch (error) {
+      return error instanceof TenantRefusedError ? error.code : String(error);
+    }
+    return null;
+  };
 
   it("never evicts a leased entry; the cache stays over its size while every entry is leased", () => {
     const { gate, register } = setup(1);
@@ -213,6 +226,136 @@ describe("ContextDbGate leases", () => {
         }),
       ).rejects.toThrow("async boom");
       expect(rawDb(captured!).open).toBe(false);
+    });
+  });
+
+  describe("leaseForMaintenance (owner decision D5: backups and Resume's migration only)", () => {
+    it("opens an active or an operator-suspended pharmacy; lease() still refuses the suspended one", () => {
+      const { gate, register, setStatus } = setup(4);
+      const active = register();
+      const suspended = register();
+      setStatus(suspended, "suspended_by_operator");
+
+      const a = gate.leaseForMaintenance(active);
+      const s = gate.leaseForMaintenance(suspended);
+
+      expect(a.db.tenantId).toBe("t-1");
+      expect(s.db.tenantId).toBe("t-2");
+      expect(refusal(() => gate.lease(suspended))).toBe("tenant_unavailable");
+      a.release();
+      s.release();
+    });
+
+    it("refuses a removed or tenant-disabled pharmacy, and an unknown one", () => {
+      const { gate, register, setStatus } = setup(4);
+      const removed = register();
+      const disabled = register();
+      setStatus(removed, "removed");
+      setStatus(disabled, "disabled_by_tenant");
+      expect(refusal(() => gate.leaseForMaintenance(removed))).toBe("tenant_unavailable");
+      expect(refusal(() => gate.leaseForMaintenance(disabled))).toBe("tenant_unavailable");
+      expect(refusal(() => gate.leaseForMaintenance("nope"))).toBe("tenant_unavailable");
+    });
+
+    it("follows lease()'s rules: never evicted while held, released once, a detach closes it at the last release", () => {
+      const { gate, register, setStatus } = setup(1);
+      const a = register();
+      setStatus(a, "suspended_by_operator");
+      const one = gate.leaseForMaintenance(a);
+      const two = gate.leaseForMaintenance(a);
+      expect(two.db).toBe(one.db);
+      gate.withTenant(register(), () => undefined); // LRU pressure: the held entry stays open
+      expect(rawDb(one.db).open).toBe(true);
+      gate.detach(a);
+      one.release();
+      one.release(); // idempotent
+      expect(rawDb(two.db).open).toBe(true);
+      two.release();
+      expect(rawDb(two.db).open).toBe(false);
+    });
+
+    it("a suspended pharmacy's file is not kept open: it closes when its last maintenance lease ends, and lease() never gets it", () => {
+      const { gate, register, setStatus } = setup(4);
+      const a = register();
+      setStatus(a, "suspended_by_operator");
+      const one = gate.leaseForMaintenance(a);
+      expect(rawDb(one.db).open).toBe(true);
+      one.release();
+      expect(rawDb(one.db).open).toBe(false); // with no lease() attempt in between
+      expect(refusal(() => gate.lease(a))).toBe("tenant_unavailable");
+      const again = gate.leaseForMaintenance(a);
+      expect(rawDb(again.db).open).toBe(true);
+      again.release();
+    });
+
+    it("an active pharmacy's maintenance lease uses the cache like lease()", () => {
+      const { gate, register } = setup(4);
+      const a = register();
+      const m = gate.leaseForMaintenance(a);
+      const l = gate.lease(a);
+      expect(l.db).toBe(m.db);
+      m.release();
+      l.release();
+      expect(rawDb(m.db).open).toBe(true); // cached, as after any lease
+    });
+
+    it("a backup that arrives while the migration holds a file that is behind is refused, not handed the unmigrated file", () => {
+      const { gate, register, setStatus, pathOf } = setup(4);
+      const a = register();
+      setStatus(a, "suspended_by_operator");
+      const conn = createDatabase(pathOf(a));
+      conn.prepare("DELETE FROM schema_migrations WHERE version = ?").run(latestMigrationVersion());
+      conn.close();
+      const migration = gate.leaseForMaintenance(a, { allowSchemaBehind: true });
+      expect(refusal(() => gate.leaseForMaintenance(a))).toBe("tenant_schema_behind");
+      // Once migrated on that connection, the same handle is shared.
+      rawDb(migration.db).prepare("INSERT INTO schema_migrations (version, name) VALUES (?, 'again')").run(latestMigrationVersion());
+      const backup = gate.leaseForMaintenance(a);
+      expect(backup.db).toBe(migration.db);
+      migration.release();
+      expect(rawDb(backup.db).open).toBe(true);
+      backup.release();
+      expect(rawDb(backup.db).open).toBe(false);
+    });
+
+    it("refuses a missing file, a file of another tenant and a schema that is behind, like lease()", () => {
+      const { gate, register, setStatus, pathOf } = setup(4);
+      const behind = register();
+      setStatus(behind, "suspended_by_operator");
+      const conn = createDatabase(pathOf(behind));
+      conn.prepare("DELETE FROM schema_migrations WHERE version = ?").run(latestMigrationVersion());
+      conn.close();
+      expect(refusal(() => gate.leaseForMaintenance(behind))).toBe("tenant_schema_behind");
+
+      const missing = register();
+      rmSync(pathOf(missing));
+      expect(refusal(() => gate.leaseForMaintenance(missing))).toBe("tenant_file_missing");
+    });
+
+    it("with allowSchemaBehind opens a file that is behind for migration, without caching it: it closes at the release", () => {
+      const { gate, register, setStatus, pathOf } = setup(4);
+      const a = register();
+      setStatus(a, "suspended_by_operator");
+      const conn = createDatabase(pathOf(a));
+      conn.prepare("DELETE FROM schema_migrations WHERE version = ?").run(latestMigrationVersion());
+      conn.close();
+
+      const lease = gate.leaseForMaintenance(a, { allowSchemaBehind: true });
+      expect(lease.db.tenantId).toBe("t-1");
+      lease.release();
+      expect(rawDb(lease.db).open).toBe(false);
+      // Nothing behind was cached: an active registration's next lease checks the file again.
+      setStatus(a, "active");
+      expect(refusal(() => gate.lease(a))).toBe("tenant_schema_behind");
+    });
+
+    it("with allowSchemaBehind still refuses a file that names another tenant", () => {
+      const { gate, control, register } = setup(4);
+      const a = register();
+      const b = register();
+      gate.close();
+      control.prepare("UPDATE tenant_registrations SET file_name = (SELECT file_name FROM tenant_registrations WHERE id = ?) WHERE id = ?").run(a, b);
+      expect(refusal(() => gate.leaseForMaintenance(b, { allowSchemaBehind: true }))).toBe("tenant_unavailable");
     });
   });
 

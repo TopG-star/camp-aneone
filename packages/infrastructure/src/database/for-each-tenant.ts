@@ -8,6 +8,11 @@ export interface ForEachTenantDeps {
   /** The gate (or anything that leases a tenant file by registration id). */
   gate: { lease(registrationId: string): TenantLease };
   registrations: { listActive(): TenantRegistration[] };
+  /**
+   * Backups only: visit these registrations (active and suspended ones) instead of the active ones, each opened with this lease (the
+   * gate's maintenance lease), never a request path's.
+   */
+  maintenance?: { list(): TenantRegistration[]; lease(registrationId: string): TenantLease };
   logger?: Logger;
   now?: () => number;
 }
@@ -24,7 +29,7 @@ export interface ForEachTenantResult {
 }
 
 /**
- * Runs `fn` for every active tenant, in order, with one file leased at a time (released in `finally`). The budget is cooperative:
+ * Runs `fn` for every active tenant (or, with `maintenance`, every tenant it lists), in order, with one file leased at a time (released in `finally`). The budget is cooperative:
  * `fn` gets `deadline = now + budgetMs` and is never aborted; an overrun is logged at warn. A tenant that throws is recorded and the
  * loop goes on; a tenant the gate refuses is recorded as refused, not failed.
  */
@@ -36,10 +41,12 @@ export async function forEachTenant(
   const now = deps.now ?? Date.now;
   const budgetMs = opts.budgetMs ?? DEFAULT_JOB_BUDGET_MS;
   const result: ForEachTenantResult = { visited: [], failed: [], errors: {}, refused: [] };
-  for (const registration of deps.registrations.listActive()) {
+  const list = deps.maintenance ? deps.maintenance.list() : deps.registrations.listActive();
+  const open = deps.maintenance ? (id: string) => deps.maintenance!.lease(id) : (id: string) => deps.gate.lease(id);
+  for (const registration of list) {
     let lease: TenantLease;
     try {
-      lease = deps.gate.lease(registration.id);
+      lease = open(registration.id);
     } catch (error) {
       if (error instanceof TenantRefusedError) {
         result.refused.push({ registrationId: registration.id, code: error.code });

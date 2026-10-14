@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -7,7 +7,8 @@ import { createDatabase } from "./connection.js";
 import { ContextDbGate, TenantRefusedError, rawDb } from "./context-db-gate.js";
 import { openControlDb } from "./control/open-control-db.js";
 import { sealBuffer } from "../crypto/envelope.js";
-import { backupAll, backupDatabase, backupScratchDir, decryptBackup, restoreTest, restoreTestOwned, sweepBackupLeftovers } from "./backup.js";
+import { backupAll, backupDatabase, backupScratchDir, decryptBackup, newestBackupCopies, restoreTest, restoreTestOwned, sweepBackupLeftovers } from "./backup.js";
+import { TenantRegistrationRepository } from "./control/tenant-registration-repository.js";
 
 const NOW = "2026-10-08T00:00:00.000Z";
 const TODAY = new Date("2026-10-10T03:00:00.000Z");
@@ -179,9 +180,9 @@ describe("backups", () => {
     const broken = { on: true };
     const wrapped = {
       openPersonal: () => gate.openPersonal(),
-      lease: (id: string) => {
+      leaseForMaintenance: (id: string) => {
         if (broken.on && id === registrationId) throw error;
-        return gate.lease(id);
+        return gate.leaseForMaintenance(id);
       },
     } as unknown as ContextDbGate;
     return { wrapped, broken };
@@ -196,6 +197,35 @@ describe("backups", () => {
     expect(existsSync(join(deps.outDir, "2026-10-10.partial", `${regs[1]!.fileName.replace(/\.db$/, "")}.db.enc`))).toBe(true);
     expect(existsSync(join(deps.outDir, "2026-10-10"))).toBe(false);
     expect(errors.length).toBe(1);
+  });
+
+  describe("suspended pharmacies stay backed up (owner decision D5)", () => {
+    it("backs up an operator-suspended pharmacy through the maintenance lease, never a removed or tenant-disabled one", async () => {
+      const { deps, control, gate, regs } = setup(4);
+      const setStatus = (id: string, status: string) => control.prepare("UPDATE tenant_registrations SET status = ? WHERE id = ?").run(status, id);
+      setStatus("reg-2", "suspended_by_operator");
+      setStatus("reg-3", "removed");
+      setStatus("reg-4", "disabled_by_tenant");
+      const requestLease = vi.spyOn(gate, "lease");
+
+      const results = await backupAll(deps);
+
+      expect(results.map((r) => r.context)).toEqual(["control", "personal", "t-1", "t-2"]);
+      expect(results.skipped).toEqual([]);
+      expect(requestLease).not.toHaveBeenCalled();
+      expect(existsSync(join(deps.outDir, "2026-10-10", `${regs[1]!.fileName.replace(/\.db$/, "")}.db.enc`))).toBe(true);
+      // The suspended pharmacy is still refused to requests.
+      expect(() => gate.lease("reg-2")).toThrow(TenantRefusedError);
+    });
+
+    it("counts a suspended pharmacy in the backup age check, and not a removed one", async () => {
+      const { deps, control } = setup(2);
+      control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = 'reg-1'").run();
+      control.prepare("UPDATE tenant_registrations SET status = 'removed' WHERE id = 'reg-2'").run();
+      await backupAll(deps);
+      const copies = newestBackupCopies({ outDir: deps.outDir, registrations: new TenantRegistrationRepository(control) });
+      expect(copies.filter((c) => c.context === "tenant").map((c) => [c.registrationId, c.newestAt !== null])).toEqual([["reg-1", true]]);
+    });
   });
 
   describe("a day is only complete when every file is in it", () => {

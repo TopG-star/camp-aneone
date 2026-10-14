@@ -178,6 +178,19 @@ describe("architecture", { timeout: TIMEOUT_MS }, () => {
     expect(offenders).toEqual([]);
   });
 
+  it("only backups and the pharmacy-file migration name the gate's maintenance lease; request code never does (owner decision D5)", () => {
+    // The maintenance lease opens a suspended pharmacy's file. Routes and middleware reach a migration only through an injected
+    // function (Resume, re-enrolment), never the lease itself.
+    const allowed = new Set([
+      "infrastructure/src/database/context-db-gate.ts",
+      "infrastructure/src/database/backup.ts",
+      "infrastructure/src/database/migrate-all.ts",
+    ]);
+    const callers = sources.filter((f) => !isTest(f.path) && /\bleaseForMaintenance\b/.test(f.text)).map((f) => f.path);
+    expect(callers.filter((p) => !allowed.has(p))).toEqual([]);
+    expect(callers).toContain("infrastructure/src/database/backup.ts");
+  });
+
   it("repositories accept handles, not paths", () => {
     const offenders = sources
       .filter((f) => /^infrastructure\/src\/database\/repositories\//.test(f.path) && !isTest(f.path))

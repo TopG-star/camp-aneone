@@ -216,6 +216,14 @@ export class TenantRegistrationRepository {
     return rows.map(toRegistration);
   }
 
+  /** The registrations whose files are kept backed up: active and operator-suspended ones (owner decision D5), oldest first. */
+  listBackedUp(): TenantRegistration[] {
+    const rows = this.db
+      .prepare("SELECT * FROM tenant_registrations WHERE status IN ('active', 'suspended_by_operator') ORDER BY enrolled_at, id")
+      .all() as RegistrationRow[];
+    return rows.map(toRegistration);
+  }
+
   /** Every registration whatever its status (the operator's view), oldest first. */
   listAll(): TenantRegistration[] {
     const rows = this.db.prepare("SELECT * FROM tenant_registrations ORDER BY enrolled_at, id").all() as RegistrationRow[];

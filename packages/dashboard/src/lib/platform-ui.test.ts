@@ -22,7 +22,7 @@ describe("platform console wording", () => {
 
   it("asks before suspending, saying what stops and what does not", () => {
     expect(suspendConfirmation("Acme Pharmacy")).toBe(
-      "Suspend Acme Pharmacy? Oneon stops serving it at once: its staff can't open it in Oneon, and nightly jobs and backups skip it. Nothing changes in ImpressoRx, and you can resume it later.",
+      "Suspend Acme Pharmacy? Oneon stops serving it at once: its staff can't open it in Oneon, and nightly jobs skip it. Its file is still backed up. Nothing changes in ImpressoRx, and you can resume it later.",
     );
     expect(resumeConfirmation("Acme Pharmacy")).toBe("Resume Acme Pharmacy? Oneon serves it again straight away.");
   });

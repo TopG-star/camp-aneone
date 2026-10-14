@@ -28,7 +28,7 @@ export function registrationAction(status: RegistrationStatus): "suspend" | "res
 }
 
 export function suspendConfirmation(name: string): string {
-  return `Suspend ${name}? Oneon stops serving it at once: its staff can't open it in Oneon, and nightly jobs and backups skip it. Nothing changes in ImpressoRx, and you can resume it later.`;
+  return `Suspend ${name}? Oneon stops serving it at once: its staff can't open it in Oneon, and nightly jobs skip it. Its file is still backed up. Nothing changes in ImpressoRx, and you can resume it later.`;
 }
 
 export function resumeConfirmation(name: string): string {

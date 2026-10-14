@@ -33,7 +33,7 @@ export function ensureIdentityAnchor(db: ContextDb, identityId: string): void {
 
 type Registration = { tenant_id: string; file_name: string; status: string };
 
-type Entry = { db: TenantDb; conn: Database.Database; leases: number; closed: boolean };
+type Entry = { db: TenantDb; conn: Database.Database; leases: number; closed: boolean; maintenanceOf?: string };
 
 /** A handle held for the length of a job: never closed or evicted by the cache while held. */
 export interface TenantLease {
@@ -48,6 +48,8 @@ export class ContextDbGate {
   private readonly cache = new Map<string, Entry>();
   /** Entries out of the cache (a suspension) whose connection stays open until the last lease ends. */
   private readonly detached = new Set<Entry>();
+  /** The uncached handle maintenance leases share, per registration (a suspended pharmacy, or a file that is behind); also in `detached`. */
+  private readonly maintenance = new Map<string, Entry>();
   private readonly cacheSize: number;
 
   constructor(private readonly deps: { control: ControlDb; personalPath: string; tenantDir: string; cacheSize?: number }) {
@@ -83,23 +85,25 @@ export class ContextDbGate {
     }
 
     if (reg.status !== "active") throw new TenantRefusedError("tenant_unavailable");
-    const path = this.tenantPath(reg.file_name);
-    // Opening a missing SQLite path would create it; the gate never creates a file on open.
-    if (!existsSync(path)) throw new TenantRefusedError("tenant_file_missing");
-
-    let conn: Database.Database;
+    const conn = this.openFile(reg);
     try {
-      conn = createDatabase(path);
-    } catch {
-      throw new TenantRefusedError("tenant_unavailable");
-    }
-    try {
-      this.verifyFile(conn, reg.tenant_id);
+      this.verifyFile(conn, reg.tenant_id, false);
     } catch (error) {
       conn.close();
       throw error;
     }
     return this.remember(registrationId, reg.tenant_id, conn);
+  }
+
+  private openFile(reg: Registration): Database.Database {
+    const path = this.tenantPath(reg.file_name);
+    // Opening a missing SQLite path would create it; the gate never creates a file on open.
+    if (!existsSync(path)) throw new TenantRefusedError("tenant_file_missing");
+    try {
+      return createDatabase(path);
+    } catch {
+      throw new TenantRefusedError("tenant_unavailable");
+    }
   }
 
   /**
@@ -108,12 +112,79 @@ export class ContextDbGate {
    * are refused at once but the file closes at the last release.
    */
   lease(registrationId: string): TenantLease {
-    const db = this.openCached(registrationId);
-    const entry = this.cache.get(registrationId)!;
+    this.openCached(registrationId);
+    return this.hold(this.cache.get(registrationId)!);
+  }
+
+  /**
+   * Owner decision D5: a lease for the nightly and hourly backups and for Resume's migration only, never for a request path (the
+   * architecture test holds every caller to backup.ts and migrate-all.ts). It also opens a `suspended_by_operator` pharmacy, so a
+   * suspended pharmacy stays backed up and can be migrated before it is served again; `removed` and `disabled_by_tenant` are refused
+   * like any other status. The same leasing rules as `lease()`: held until `release()`, never closed meanwhile, and a detach closes it
+   * at the last release, as does `close()` at once.
+   *
+   * An active pharmacy's handle comes from, and stays in, the cache, as with `lease()`. A suspended pharmacy's handle, and a handle on a
+   * file that is behind, is kept out of the cache: maintenance leases of that pharmacy share it, it closes at their last release (so a
+   * suspended file is not left open), and `lease()` never sees it.
+   *
+   * `allowSchemaBehind` (the migration only): a file whose schema is behind opens too, still checked to be this tenant's. Any other
+   * maintenance lease on that handle is refused `tenant_schema_behind` until the file has been migrated on it.
+   */
+  leaseForMaintenance(registrationId: string, opts: { allowSchemaBehind?: boolean } = {}): TenantLease {
+    const reg = this.registration(registrationId);
+    if (reg.status !== "active" && reg.status !== "suspended_by_operator") throw new TenantRefusedError("tenant_unavailable");
+    const allowBehind = opts.allowSchemaBehind === true;
+    const cached = this.cache.get(registrationId);
+    if (cached && reg.tenant_id !== cached.db.tenantId) {
+      this.evict(registrationId);
+      throw new TenantRefusedError("tenant_unavailable");
+    }
+    if (cached && reg.status === "active") {
+      this.cache.delete(registrationId);
+      this.cache.set(registrationId, cached);
+      return this.hold(cached);
+    }
+    if (cached) {
+      // A suspended pharmacy's handle still in the cache leaves it now, so that it closes at the last release.
+      this.cache.delete(registrationId);
+      this.keepForMaintenance(registrationId, cached);
+    }
+
+    const shared = this.maintenance.get(registrationId);
+    if (shared) {
+      if (shared.db.tenantId !== reg.tenant_id) throw new TenantRefusedError("tenant_unavailable");
+      this.verifyFile(shared.conn, reg.tenant_id, allowBehind);
+      return this.hold(shared);
+    }
+    const conn = this.openFile(reg);
+    let schema: "current" | "behind";
+    try {
+      schema = this.verifyFile(conn, reg.tenant_id, allowBehind);
+    } catch (error) {
+      conn.close();
+      throw error;
+    }
+    if (schema === "current" && reg.status === "active") {
+      this.remember(registrationId, reg.tenant_id, conn);
+      return this.hold(this.cache.get(registrationId)!);
+    }
+    const entry: Entry = { db: { kind: "tenant", tenantId: reg.tenant_id, raw: conn, __brand: "TenantDb" }, conn, leases: 0, closed: false };
+    this.keepForMaintenance(registrationId, entry);
+    return this.hold(entry);
+  }
+
+  /** An uncached entry: `detached` closes it at the last release (and close() at once); `maintenance` lets the next maintenance lease share it. */
+  private keepForMaintenance(registrationId: string, entry: Entry): void {
+    entry.maintenanceOf = registrationId;
+    this.detached.add(entry);
+    this.maintenance.set(registrationId, entry);
+  }
+
+  private hold(entry: Entry): TenantLease {
     entry.leases += 1;
     let released = false;
     return {
-      db,
+      db: entry.db,
       release: () => {
         if (released) return;
         released = true;
@@ -183,7 +254,8 @@ export class ContextDbGate {
     return tenantFilePath(this.deps.tenantDir, fileName);
   }
 
-  private verifyFile(conn: Database.Database, tenantId: string): void {
+  /** Refuses a file that is not this tenant's, or newer than this release; a file that is behind is refused unless `allowBehind`. */
+  private verifyFile(conn: Database.Database, tenantId: string, allowBehind: boolean): "current" | "behind" {
     const has = (table: string) =>
       conn.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) !== undefined;
     const version = has("schema_migrations")
@@ -194,12 +266,19 @@ export class ContextDbGate {
       : [];
     const latest = latestMigrationVersion();
 
-    // A file from before context_meta existed cannot name its tenant yet; it is behind, not foreign.
-    if (meta.length === 0 && version < latest) throw new TenantRefusedError("tenant_schema_behind");
+    // A file from before context_meta existed cannot name its tenant yet; it is behind, not foreign. (Its migration checks it.)
+    if (meta.length === 0 && version < latest) {
+      if (allowBehind) return "behind";
+      throw new TenantRefusedError("tenant_schema_behind");
+    }
     const identityOk = meta.length === 1 && meta[0]!.kind === "tenant" && meta[0]!.tenant_id === tenantId;
     if (!identityOk) throw new TenantRefusedError("tenant_unavailable");
-    if (version < latest) throw new TenantRefusedError("tenant_schema_behind");
     if (version > latest) throw new TenantRefusedError("tenant_unavailable");
+    if (version < latest) {
+      if (allowBehind) return "behind";
+      throw new TenantRefusedError("tenant_schema_behind");
+    }
+    return "current";
   }
 
   private remember(registrationId: string, tenantId: string, conn: Database.Database): TenantDb {
@@ -230,6 +309,7 @@ export class ContextDbGate {
 
   private closeEntry(entry: Entry): void {
     this.detached.delete(entry);
+    if (entry.maintenanceOf !== undefined && this.maintenance.get(entry.maintenanceOf) === entry) this.maintenance.delete(entry.maintenanceOf);
     if (entry.closed) return;
     entry.closed = true;
     entry.conn.close();

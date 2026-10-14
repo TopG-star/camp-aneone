@@ -162,6 +162,18 @@ describe("tenant registration and operator repositories", () => {
     expect(control.prepare("SELECT COUNT(*) AS n FROM tenant_registration_events").get()).toEqual({ n: 1 });
   });
 
+  it("listBackedUp holds active and operator-suspended registrations, never removed or tenant-disabled ones", () => {
+    const { repo, identityId } = setup();
+    const [, s, r, d] = ["a", "s", "r", "d"].map((slug) => repo.create(input(identityId, slug)));
+    repo.setStatus(s!.id, "suspended_by_operator", identityId, "test");
+    repo.setStatus(r!.id, "removed", identityId, "test");
+    repo.setStatus(d!.id, "disabled_by_tenant", identityId, "test");
+    expect(repo.listBackedUp().map((x) => [x.tenantSlug, x.status]).sort()).toEqual([
+      ["a", "active"],
+      ["s", "suspended_by_operator"],
+    ]);
+  });
+
   it("setStatus records an event and listActive drops the registration", () => {
     const { control, repo, identityId } = setup();
     const reg = repo.create(input(identityId));
