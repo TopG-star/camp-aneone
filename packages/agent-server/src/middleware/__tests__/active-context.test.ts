@@ -163,7 +163,7 @@ describe("the request's tenant handle is leased for the length of the request", 
     expect(next).toHaveBeenCalled();
 
     // Another request opens another pharmacy, and the eviction grace runs out while this request is still in its turn.
-    gate.openTenant("reg-2");
+    gate.withTenant("reg-2", () => undefined);
     vi.advanceTimersByTime(10 * 60_000);
     expect(rawDb(req.contextDb!).prepare("SELECT tenant_id FROM context_meta").get()).toEqual({ tenant_id: "t-reg-1" });
     expect(releases).not.toHaveBeenCalled();

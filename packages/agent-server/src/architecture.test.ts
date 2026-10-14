@@ -169,6 +169,15 @@ describe("architecture", { timeout: TIMEOUT_MS }, () => {
     expect(offenders).toEqual([]);
   });
 
+  it("the gate hands out a tenant handle only through a lease, and holds no timers", () => {
+    const gate = sources.find((f) => f.path === "infrastructure/src/database/context-db-gate.ts")!.text;
+    // A public method returning a TenantDb would be an unleased path; `private` ones (the cache) are fine.
+    expect(gate.match(/^ {2}(?!private\b)(?:async\s+)?\w+(?:<[^>]*>)?\([^)]*\)\s*:\s*TenantDb\b/gm) ?? []).toEqual([]);
+    expect(gate).not.toMatch(/setTimeout|setInterval/);
+    const offenders = sources.filter((f) => !isTest(f.path) && /\bopenTenant\b/.test(f.text)).map((f) => f.path);
+    expect(offenders).toEqual([]);
+  });
+
   it("repositories accept handles, not paths", () => {
     const offenders = sources
       .filter((f) => /^infrastructure\/src\/database\/repositories\//.test(f.path) && !isTest(f.path))

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { ContextDbGate, EVICTION_GRACE_MS, TenantRefusedError, rawDb } from "./context-db-gate.js";
+import { ContextDbGate, TenantRefusedError, rawDb } from "./context-db-gate.js";
 import { openControlDb } from "./control/open-control-db.js";
 
 const NOW = "2026-10-08T00:00:00.000Z";
@@ -38,38 +38,61 @@ describe("ContextDbGate leases", () => {
     return { gate, control, register };
   }
 
-  it("never evicts a leased entry; the cache may exceed its size while leased", () => {
-    vi.useFakeTimers();
+  it("never evicts a leased entry; the cache stays over its size while every entry is leased", () => {
     const { gate, register } = setup(1);
     const a = register();
-    const lease = gate.lease(a);
-    register();
-    register();
-    vi.advanceTimersByTime(EVICTION_GRACE_MS * 2);
-    expect(rawDb(lease.db).open).toBe(true);
-    expect(gate.openTenant(a)).toBe(lease.db);
+    const b = register();
+    const c = register();
+    const leases = [gate.lease(a), gate.lease(b), gate.lease(c)];
+    for (const lease of leases) expect(rawDb(lease.db).open).toBe(true);
+    expect(gate.lease(a).db).toBe(leases[0]!.db);
   });
 
-  it("closes an unleased handle the LRU evicted only after the grace period", () => {
+  it("closes an unleased entry the LRU evicts at once, with no timer", () => {
     vi.useFakeTimers();
     const { gate, register } = setup(1);
-    const first = gate.openTenant(register());
-    register();
-    expect(rawDb(first).open).toBe(true);
-    vi.advanceTimersByTime(EVICTION_GRACE_MS - 1);
-    expect(rawDb(first).open).toBe(true);
-    vi.advanceTimersByTime(1);
+    const first = gate.withTenant(register(), (db) => db);
+    expect(rawDb(first).open).toBe(true); // unleased but still cached
+    gate.withTenant(register(), () => undefined);
     expect(rawDb(first).open).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("a suspension refuses new opens at once but defers the close of a leased handle to the last release", () => {
+  it("LRU churn never closes a handle a lease still holds, and starts no timer", () => {
+    vi.useFakeTimers();
+    const { gate, register } = setup(1);
+    const lease = gate.lease(register());
+    gate.withTenant(register(), () => undefined);
+    gate.withTenant(register(), () => undefined);
+    expect(rawDb(lease.db).open).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    lease.release();
+    expect(rawDb(lease.db).open).toBe(true); // back at its size of 1: still cached
+  });
+
+  it("an over-size cache is trimmed as leases end, least recently used first", () => {
+    const { gate, register } = setup(1);
+    const a = gate.lease(register());
+    const b = gate.lease(register());
+    const c = gate.lease(register());
+    a.release();
+    expect(rawDb(a.db).open).toBe(false);
+    expect(rawDb(b.db).open).toBe(true);
+    b.release();
+    expect(rawDb(b.db).open).toBe(false);
+    expect(rawDb(c.db).open).toBe(true); // the cache is back to its size of 1
+    c.release();
+    expect(rawDb(c.db).open).toBe(true);
+  });
+
+  it("a suspension refuses new leases at once and closes a leased handle on the last release", () => {
     const { gate, control, register } = setup(4);
     const a = register();
     const one = gate.lease(a);
     const two = gate.lease(a);
     control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = ?").run(a);
-    expect(() => gate.openTenant(a)).toThrow(TenantRefusedError);
     expect(() => gate.lease(a)).toThrow(TenantRefusedError);
+    expect(() => gate.withTenant(a, () => undefined)).toThrow(TenantRefusedError);
     expect(rawDb(one.db).open).toBe(true);
     one.release();
     one.release(); // idempotent: must not release the second lease
@@ -81,22 +104,99 @@ describe("ContextDbGate leases", () => {
   it("a suspension closes an unleased handle at once", () => {
     const { gate, control, register } = setup(4);
     const a = register();
-    const db = gate.openTenant(a);
+    const db = gate.withTenant(a, (d) => d);
     control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = ?").run(a);
-    expect(() => gate.openTenant(a)).toThrow(TenantRefusedError);
+    expect(() => gate.lease(a)).toThrow(TenantRefusedError);
     expect(rawDb(db).open).toBe(false);
   });
 
-  it("close() closes everything at once: leased, cached and awaiting grace", () => {
-    vi.useFakeTimers();
-    const { gate, register } = setup(1);
-    const graced = gate.openTenant(register());
+  it("close() closes everything at once: leased, cached and suspended-while-leased", () => {
+    const { gate, control, register } = setup(1);
+    const cached = gate.withTenant(register(), (d) => d);
     const b = register();
     const leased = gate.lease(b);
-    register(); // pushes `graced` out of the cache, keeps leased b
+    const c = register();
+    const suspended = gate.lease(c);
+    control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = ?").run(c);
+    expect(() => gate.lease(c)).toThrow(TenantRefusedError);
     gate.close();
-    expect(rawDb(graced).open).toBe(false);
+    expect(rawDb(cached).open).toBe(false);
     expect(rawDb(leased.db).open).toBe(false);
+    expect(rawDb(suspended.db).open).toBe(false);
     leased.release(); // after close: harmless
+  });
+
+  describe("withTenant", () => {
+    it("holds the lease while a sync function runs and releases it after", () => {
+      const { gate, control, register } = setup(4);
+      const a = register();
+      let inside = false;
+      const result = gate.withTenant(a, (db) => {
+        // Suspend mid-use: the handle must survive until the function returns.
+        control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = ?").run(a);
+        expect(() => gate.lease(a)).toThrow(TenantRefusedError);
+        inside = rawDb(db).open;
+        return db;
+      });
+      expect(inside).toBe(true);
+      expect(rawDb(result).open).toBe(false);
+    });
+
+    it("releases when a sync function throws", () => {
+      const { gate, control, register } = setup(4);
+      const a = register();
+      let captured: ReturnType<typeof gate.lease>["db"] | undefined;
+      expect(() =>
+        gate.withTenant(a, (db) => {
+          captured = db;
+          control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = ?").run(a);
+          expect(() => gate.lease(a)).toThrow(TenantRefusedError); // the refusal detaches the entry: it now closes only on release
+          throw new Error("boom");
+        }),
+      ).toThrow("boom");
+      expect(rawDb(captured!).open).toBe(false);
+    });
+
+    it("holds the lease across an async function and releases on resolve", async () => {
+      const { gate, control, register } = setup(4);
+      const a = register();
+      let openDuring = false;
+      const db = await gate.withTenant(a, async (handle) => {
+        control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = ?").run(a);
+        expect(() => gate.lease(a)).toThrow(TenantRefusedError);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        openDuring = rawDb(handle).open;
+        return handle;
+      });
+      expect(openDuring).toBe(true);
+      expect(rawDb(db).open).toBe(false);
+    });
+
+    it("releases when an async function rejects, and passes the rejection on", async () => {
+      const { gate, control, register } = setup(4);
+      const a = register();
+      let captured: ReturnType<typeof gate.lease>["db"] | undefined;
+      await expect(
+        gate.withTenant(a, async (db) => {
+          captured = db;
+          control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = ?").run(a);
+          expect(() => gate.lease(a)).toThrow(TenantRefusedError); // the refusal detaches the entry: it now closes only on release
+          throw new Error("async boom");
+        }),
+      ).rejects.toThrow("async boom");
+      expect(rawDb(captured!).open).toBe(false);
+    });
+  });
+
+  it("createTenantFile leaves no open handle behind and returns none", () => {
+    const { gate, control } = setup(4);
+    control
+      .prepare(
+        "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES ('fresh', 't-fresh', 's-fresh', 'P', 'https://x.example', ?, 'active', 'op', ?)",
+      )
+      .run(`${randomUUID()}.db`, NOW);
+    expect(gate.createTenantFile("fresh", "t-fresh")).toBeUndefined();
+    const db = gate.withTenant("fresh", (d) => d);
+    expect(db.tenantId).toBe("t-fresh"); // the file is real and opens through a lease
   });
 });

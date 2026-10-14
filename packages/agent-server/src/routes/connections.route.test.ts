@@ -44,7 +44,7 @@ describe("Settings → Connections routes", () => {
     const control = openControlDb(join(dir, "control.db"));
     const gate = new ContextDbGate({ control, personalPath: join(dir, "personal.db"), tenantDir: join(dir, "tenants") });
     closers.push(() => control.close(), () => gate.close());
-    const identities = new SqliteIdentityRepository(control, (id) => gate.openTenant(id));
+    const identities = new SqliteIdentityRepository(control, (id, fn) => gate.withTenant(id, fn));
     const memberships = new MembershipRepository(control);
     const registrations = new TenantRegistrationRepository(control);
 
@@ -98,10 +98,10 @@ describe("Settings → Connections routes", () => {
         },
       } as never;
     };
-    const openTenant = (id: string) => (trail.push(`open ${id}`), gate.openTenant(id));
+    const withTenant: typeof gate.withTenant = (id, fn) => (trail.push(`open ${id}`), gate.withTenant(id, fn));
     let counter = 0;
     const failAction = (reg: { id: string }, userId: string, code: string, over: { type?: string; status?: "failed" | "completed"; retryOf?: string } = {}) => {
-      const db = gate.openTenant(reg.id);
+      const db = gate.lease(reg.id).db;
       ensureIdentityAnchor(db, userId);
       const repo = contextRepos(db).actionInstances;
       const id = `action-${++counter}`;
@@ -141,7 +141,7 @@ describe("Settings → Connections routes", () => {
       }
       next();
     });
-    app.use("/api/connections", requireUser, createConnectionsRouter({ client, memberships, registrations, openTenant, actionsFor, logger }));
+    app.use("/api/connections", requireUser, createConnectionsRouter({ client, memberships, registrations, withTenant, actionsFor, logger }));
     const asSession = (identityId: string | undefined, handoff?: { sessionId: string; membershipId: string }) => void (session = { identityId, ...handoff });
 
     asSession(person.id);
@@ -437,7 +437,7 @@ describe("Settings → Connections routes", () => {
           client: null,
           memberships: new MembershipRepository(s.control),
           registrations: new TenantRegistrationRepository(s.control),
-          openTenant: (id) => s.gate.openTenant(id),
+          withTenant: (id, fn) => s.gate.withTenant(id, fn),
           actionsFor: () => ({ registry: { has: () => false, get: () => ({}) }, instanceRepo: { list: () => [] } }) as never,
           logger: s.logger,
         }),

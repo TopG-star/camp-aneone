@@ -40,7 +40,7 @@ describe("identity linking routes", () => {
     closers.push(() => control.close(), () => gate.close());
     let now = Date.parse(NOW);
     const clock = () => new Date(now);
-    const identities = new SqliteIdentityRepository(control, (id) => gate.openTenant(id));
+    const identities = new SqliteIdentityRepository(control, (id, fn) => gate.withTenant(id, fn));
     const intents = new LinkIntentRepository(control, clock);
     const personal = gate.openPersonal();
 
@@ -76,8 +76,8 @@ describe("identity linking routes", () => {
          VALUES (?, ?, ?, ?, 'attended', '[]', 'c', 'w', 1, 'active', 's1', ?, '2099-01-01T00:00:00.000Z')`,
       )
       .run(grantId, staff.id, membershipA, a.id, NOW);
-    ensureIdentityAnchor(gate.openTenant(a.id), staff.id);
-    rawDb(gate.openTenant(a.id))
+    ensureIdentityAnchor(gate.lease(a.id).db, staff.id);
+    rawDb(gate.lease(a.id).db)
       .prepare("INSERT INTO conversations (id, role, content, conversation_id, user_id, tenant_id) VALUES ('c1', 'user', 'hi', 'conv', ?, ?)")
       .run(staff.id, a.tenantId);
 
@@ -130,8 +130,8 @@ describe("identity linking routes", () => {
     };
     const intentUsed = (id: string) => (control.prepare("SELECT used_at FROM link_intents WHERE id = ?").get(id) as { used_at: string | null }).used_at !== null;
     // A file the merge can open but not update (the registration itself is fine).
-    const breakFile = (reg: { id: string }) => rawDb(gate.openTenant(reg.id)).exec("ALTER TABLE conversations RENAME TO conversations_broken");
-    const repairFile = (reg: { id: string }) => rawDb(gate.openTenant(reg.id)).exec("ALTER TABLE conversations_broken RENAME TO conversations");
+    const breakFile = (reg: { id: string }) => rawDb(gate.lease(reg.id).db).exec("ALTER TABLE conversations RENAME TO conversations_broken");
+    const repairFile = (reg: { id: string }) => rawDb(gate.lease(reg.id).db).exec("ALTER TABLE conversations_broken RENAME TO conversations");
     const state = () => ({
       identities: control.prepare("SELECT id, status, merged_into FROM identities ORDER BY id").all(),
       logins: control.prepare("SELECT id, identity_id FROM login_identities ORDER BY id").all(),
@@ -139,7 +139,7 @@ describe("identity linking routes", () => {
       grants: control.prepare("SELECT id, status FROM delegation_grants ORDER BY id").all(),
       events: control.prepare("SELECT id FROM identity_link_events ORDER BY id").all(),
     });
-    const conversationOwner = () => rawDb(gate.openTenant(a.id)).prepare("SELECT user_id FROM conversations WHERE id = 'c1'").get();
+    const conversationOwner = () => rawDb(gate.lease(a.id).db).prepare("SELECT user_id FROM conversations WHERE id = 'c1'").get();
 
     return {
       app, control, gate, identities, intents, personal, gerry, staff, a, b, membershipA, grantId, logger, ensurePersonalUser,

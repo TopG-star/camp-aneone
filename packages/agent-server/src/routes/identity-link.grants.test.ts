@@ -43,7 +43,7 @@ describe("linking revokes grants everywhere", () => {
     const control = openControlDb(join(dir, "control.db"));
     const gate = new ContextDbGate({ control, personalPath: join(dir, "personal.db"), tenantDir: join(dir, "tenants") });
     closers.push(() => control.close(), () => gate.close());
-    const identities = new SqliteIdentityRepository(control, (id) => gate.openTenant(id));
+    const identities = new SqliteIdentityRepository(control, (id, fn) => gate.withTenant(id, fn));
     const memberships = new MembershipRepository(control);
     const registrations = new TenantRegistrationRepository(control);
     const google = identities.createWithLogin({ kind: "google", subject: "g-sub", email: "g@x.com" });
@@ -74,7 +74,7 @@ describe("linking revokes grants everywhere", () => {
     app.use(
       "/api/auth/handoff",
       createTokenAuthMiddleware(TOKEN),
-      createHandoffRouter({ registrations, enrolment, identities, memberships, jti: new UsedHandoffJti(control), openTenant: (id) => gate.openTenant(id), client, logger }),
+      createHandoffRouter({ registrations, enrolment, identities, memberships, jti: new UsedHandoffJti(control), withTenant: (id, fn) => gate.withTenant(id, fn), client, logger }),
     );
     const deps = {
       identities,

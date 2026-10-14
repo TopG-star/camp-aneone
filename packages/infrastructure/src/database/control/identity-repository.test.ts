@@ -169,9 +169,9 @@ describe("linking identities", () => {
     const gate = new ContextDbGate({ control, personalPath: join(dir, "personal.db"), tenantDir: join(dir, "tenants") });
     closers.push(() => control.close(), () => gate.close());
     const opened: string[] = [];
-    const repo = new SqliteIdentityRepository(control, (registrationId) => {
+    const repo = new SqliteIdentityRepository(control, (registrationId, fn) => {
       opened.push(registrationId);
-      return gate.openTenant(registrationId);
+      return gate.withTenant(registrationId, fn);
     });
 
     const google = repo.createWithLogin({ kind: "google", subject: "g-sub", email: "gerry@x.com" });
@@ -222,16 +222,16 @@ describe("linking identities", () => {
     const colleagueGrantA = grant(colleague.id, colleagueMembershipA, a);
 
     // Tenant rows in file A (file B gets a conversation only).
-    const raw = (reg: { id: string }) => rawDb(gate.openTenant(reg.id));
+    const raw = (reg: { id: string }) => rawDb(gate.lease(reg.id).db);
     const tenantA = raw(a);
-    for (const id of [staff.id, colleague.id]) ensureIdentityAnchor(gate.openTenant(a.id), id);
+    for (const id of [staff.id, colleague.id]) ensureIdentityAnchor(gate.lease(a.id).db, id);
     const conversation = (db: Database.Database, id: string, userId: string, tenantId: string) =>
       db
         .prepare("INSERT INTO conversations (id, role, content, conversation_id, user_id, tenant_id) VALUES (?, 'user', 'hi', 'conv', ?, ?)")
         .run(id, userId, tenantId);
     conversation(tenantA, "c-staff", staff.id, a.tenantId);
     conversation(tenantA, "c-colleague", colleague.id, a.tenantId);
-    ensureIdentityAnchor(gate.openTenant(b.id), staff.id);
+    ensureIdentityAnchor(gate.lease(b.id).db, staff.id);
     conversation(raw(b), "c-staff-b", staff.id, b.tenantId);
 
     const action = (id: string, userId: string, initiatorUserId: string) =>

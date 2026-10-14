@@ -99,7 +99,7 @@ function fixture(answers: string[]) {
     )
     .run(registrationId, tenantId, `${registrationId}.db`, gerry);
   gate.createTenantFile(registrationId, tenantId);
-  const tenantDb = gate.openTenant(registrationId);
+  const tenantDb = gate.lease(registrationId).db;
   const membership = memberships.upsertFromHandoff({ identityId: gerry, tenantRegistrationId: registrationId, externalUserId: "a-staff", role: "Admin" });
   memberships.applySnapshot(membership.id, { role: "Admin", permissions: ["inventory.transfer"], locationIds: [], tenantStatus: "Active" });
 

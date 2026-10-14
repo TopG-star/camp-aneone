@@ -123,8 +123,8 @@ export interface AppContainer {
   snapshots: SnapshotRefresher;
   /** The personal database handle (the same one the personal repositories were built from). */
   openPersonal: () => import("@oneon/domain").PersonalDb;
-  /** Opens a tenant's database through the gate (refuses when the registration is not active). */
-  openTenant: (registrationId: string) => import("@oneon/domain").TenantDb;
+  /** Runs `fn` with a tenant's database leased from the gate for exactly as long as it runs (refuses when the registration is not active). */
+  withTenant: <T>(registrationId: string, fn: (db: import("@oneon/domain").TenantDb) => T) => T;
   /** Opens a tenant's database and holds it until `release()` (a request's handle: the LRU never closes it meanwhile). */
   leaseTenant: (registrationId: string) => import("@oneon/infrastructure").TenantLease;
   /** Creates a new tenant's database file (enrolment only). */
@@ -201,7 +201,7 @@ export function createContainer(env: Env): AppContainer {
   const backfilled = backfillIdentities(personal, control);
   if (backfilled > 0) logger.info("Identities backfilled", { count: backfilled });
   // A merge re-owns rows in the pharmacy files, so the repository opens them through the gate.
-  const identityRepo = new SqliteIdentityRepository(control, (registrationId) => gate.openTenant(registrationId));
+  const identityRepo = new SqliteIdentityRepository(control, (registrationId, fn) => gate.withTenant(registrationId, fn));
   const linkIntents = new LinkIntentRepository(control);
   const platformOperators = new PlatformOperatorRepository(control);
   const tenantRegistrations = new TenantRegistrationRepository(control);
@@ -535,7 +535,7 @@ export function createContainer(env: Env): AppContainer {
     impressorx,
     snapshots,
     openPersonal: () => personal,
-    openTenant: (registrationId) => gate.openTenant(registrationId),
+    withTenant: (registrationId, fn) => gate.withTenant(registrationId, fn),
     leaseTenant: (registrationId) => gate.lease(registrationId),
     createTenantFile: (registrationId, tenantId) => void gate.createTenantFile(registrationId, tenantId),
     backupSources: { gate, control },

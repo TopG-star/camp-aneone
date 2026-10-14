@@ -10,7 +10,7 @@ export interface ConnectionsRouterDeps {
   memberships: Pick<MembershipRepository, "listActiveForIdentity">;
   registrations: Pick<TenantRegistrationRepository, "findById">;
   /** Opens a pharmacy's file through the gate; refuses a registration that is not active. */
-  openTenant: (registrationId: string) => TenantDb;
+  withTenant: <T>(registrationId: string, fn: (db: TenantDb) => T) => T;
   actionsFor: (db: ContextDb) => Pick<ActionsModule, "instanceRepo" | "registry">;
   logger: Logger;
 }
@@ -88,7 +88,7 @@ export function createConnectionsRouter(deps: ConnectionsRouterDeps): Router {
         seen.add(registrationId);
         const tenantName = pharmacyName(registrationId);
         try {
-          needsReconnect.push(...reconnectActions(deps.openTenant(registrationId), identityId, tenantName, membership.id));
+          needsReconnect.push(...deps.withTenant(registrationId, (db) => reconnectActions(db, identityId, tenantName, membership.id)));
         } catch (error) {
           deps.logger.warn("Connections could not read a pharmacy file", { registrationId, error: error instanceof Error ? error.message : String(error) });
           if (!unavailable.includes(tenantName)) unavailable.push(tenantName);

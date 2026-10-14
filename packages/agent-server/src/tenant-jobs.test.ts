@@ -133,7 +133,7 @@ describe("tenant jobs", () => {
   });
 
   function seedTenant1(s: Setup) {
-    const db = s.gate.openTenant("reg-1");
+    const db = s.gate.lease("reg-1").db;
     ensureIdentityAnchor(db, "u1");
     const raw = rawDb(db);
     const action = raw.prepare(

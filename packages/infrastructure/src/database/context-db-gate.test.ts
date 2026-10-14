@@ -1,11 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { assertRowTenant } from "@oneon/domain";
 import { createDatabase, latestMigrationVersion, runMigrations } from "./connection.js";
-import { ContextDbGate, EVICTION_GRACE_MS, TenantRefusedError, rawDb, ensureIdentityAnchor } from "./context-db-gate.js";
+import { ContextDbGate, TenantRefusedError, rawDb, ensureIdentityAnchor } from "./context-db-gate.js";
 import { openControlDb, type ControlDb } from "./control/open-control-db.js";
 
 const NOW = "2026-10-08T00:00:00.000Z";
@@ -53,12 +53,11 @@ describe("ContextDbGate", () => {
   it("creates a tenant file, then opens it again after the cache is gone", () => {
     const { gate, register } = setup();
     const reg = register();
-    const created = gate.createTenantFile(reg.id, reg.tenantId);
-    expect(created.kind).toBe("tenant");
+    expect(gate.createTenantFile(reg.id, reg.tenantId)).toBeUndefined();
     expect(existsSync(reg.path)).toBe(true);
     expect(() => gate.createTenantFile(reg.id, reg.tenantId)).toThrow("tenant_file_exists");
     gate.close();
-    expect(gate.openTenant(reg.id).tenantId).toBe(reg.tenantId);
+    expect(gate.withTenant(reg.id, (db) => db.tenantId)).toBe(reg.tenantId);
   });
 
   it("writes the personal context_meta row once", () => {
@@ -72,15 +71,15 @@ describe("ContextDbGate", () => {
     ]);
   });
 
-  it("openTenant refuses an unknown registration", () => {
+  it("lease refuses an unknown registration", () => {
     const { gate } = setup();
-    expect(refusal(() => gate.openTenant("nope"))).toBe("tenant_unavailable");
+    expect(refusal(() => gate.lease("nope"))).toBe("tenant_unavailable");
   });
 
-  it("openTenant refuses a suspended registration", () => {
+  it("lease refuses a suspended registration", () => {
     const { gate, register } = setup();
     const reg = register({ status: "suspended_by_operator" });
-    expect(refusal(() => gate.openTenant(reg.id))).toBe("tenant_unavailable");
+    expect(refusal(() => gate.lease(reg.id))).toBe("tenant_unavailable");
   });
 
   it("refuses a cached handle once the registration is suspended", () => {
@@ -88,23 +87,23 @@ describe("ContextDbGate", () => {
     const reg = register();
     gate.createTenantFile(reg.id, reg.tenantId);
     control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = ?").run(reg.id);
-    expect(refusal(() => gate.openTenant(reg.id))).toBe("tenant_unavailable");
+    expect(refusal(() => gate.lease(reg.id))).toBe("tenant_unavailable");
   });
 
-  it("openTenant refuses a file missing on disk and does not create it", () => {
+  it("lease refuses a file missing on disk and does not create it", () => {
     const { gate, register } = setup();
     const reg = register();
-    expect(refusal(() => gate.openTenant(reg.id))).toBe("tenant_unavailable");
+    expect(refusal(() => gate.lease(reg.id))).toBe("tenant_unavailable");
     expect(existsSync(reg.path)).toBe(false);
   });
 
-  it("openTenant refuses a file name outside the pattern", () => {
+  it("lease refuses a file name outside the pattern", () => {
     const { gate, register } = setup();
     const reg = register({ fileName: "../oneon.db" });
-    expect(refusal(() => gate.openTenant(reg.id))).toBe("tenant_unavailable");
+    expect(refusal(() => gate.lease(reg.id))).toBe("tenant_unavailable");
   });
 
-  it("openTenant refuses a file whose context_meta names another tenant", () => {
+  it("lease refuses a file whose context_meta names another tenant", () => {
     const { gate, control, register } = setup();
     const a = register();
     const b = register();
@@ -113,10 +112,10 @@ describe("ContextDbGate", () => {
     gate.close();
     // b's registry row now points at a's file.
     control.prepare("UPDATE tenant_registrations SET file_name = ? WHERE id = ?").run(a.fileName, b.id);
-    expect(refusal(() => gate.openTenant(b.id))).toBe("tenant_unavailable");
+    expect(refusal(() => gate.lease(b.id))).toBe("tenant_unavailable");
   });
 
-  it("openTenant refuses a file at an old schema version", () => {
+  it("lease refuses a file at an old schema version", () => {
     const { gate, register } = setup();
     const reg = register();
     gate.createTenantFile(reg.id, reg.tenantId);
@@ -124,37 +123,36 @@ describe("ContextDbGate", () => {
     const db = createDatabase(reg.path);
     db.prepare("DELETE FROM schema_migrations WHERE version = ?").run(latestMigrationVersion());
     db.close();
-    expect(refusal(() => gate.openTenant(reg.id))).toBe("tenant_schema_behind");
+    expect(refusal(() => gate.lease(reg.id))).toBe("tenant_schema_behind");
   });
 
-  it("the cache closes the least recently used handle beyond its size, after a grace period", () => {
-    vi.useFakeTimers();
-    try {
-      const { gate, register } = setup(2);
-      const handles = [register(), register(), register()].map((r) => gate.createTenantFile(r.id, r.tenantId));
-      expect(rawDb(handles[0]!).open).toBe(true);
-      vi.advanceTimersByTime(EVICTION_GRACE_MS);
-      expect(rawDb(handles[0]!).open).toBe(false);
-      expect(rawDb(handles[1]!).open).toBe(true);
-      expect(rawDb(handles[2]!).open).toBe(true);
-    } finally {
-      vi.useRealTimers();
-    }
+  it("the cache closes the least recently used unleased handle beyond its size, at once", () => {
+    const { gate, register } = setup(2);
+    const handles = [register(), register(), register()].map((r) => {
+      gate.createTenantFile(r.id, r.tenantId);
+      return gate.withTenant(r.id, (db) => db);
+    });
+    expect(rawDb(handles[0]!).open).toBe(false);
+    expect(rawDb(handles[1]!).open).toBe(true);
+    expect(rawDb(handles[2]!).open).toBe(true);
   });
 
   it("anchors an identity in a tenant file", () => {
     const { gate, register } = setup();
     const reg = register();
-    const db = gate.createTenantFile(reg.id, reg.tenantId);
-    ensureIdentityAnchor(db, "id-1");
-    ensureIdentityAnchor(db, "id-1");
-    expect(rawDb(db).prepare("SELECT email FROM users WHERE id = 'id-1'").all()).toEqual([{ email: "id-1@anchor.invalid" }]);
+    gate.createTenantFile(reg.id, reg.tenantId);
+    gate.withTenant(reg.id, (db) => {
+      ensureIdentityAnchor(db, "id-1");
+      ensureIdentityAnchor(db, "id-1");
+      expect(rawDb(db).prepare("SELECT email FROM users WHERE id = 'id-1'").all()).toEqual([{ email: "id-1@anchor.invalid" }]);
+    });
   });
 
   it("assertRowTenant throws tenant_mismatch across contexts", () => {
     const { gate, register } = setup();
     const reg = register();
-    const tenant = gate.createTenantFile(reg.id, reg.tenantId);
+    gate.createTenantFile(reg.id, reg.tenantId);
+    const tenant = gate.lease(reg.id).db;
     const personal = gate.openPersonal();
     expect(() => assertRowTenant(tenant, "other")).toThrow("tenant_mismatch");
     expect(() => assertRowTenant(tenant, null)).toThrow("tenant_mismatch");

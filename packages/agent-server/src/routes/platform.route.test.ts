@@ -98,7 +98,7 @@ describe("platform route", () => {
     const id = res.body.registrationId as string;
     expect(control.prepare("SELECT status FROM tenant_registrations WHERE id = ?").get(id)).toEqual({ status: "active" });
     expect(existsSync(join(dir, "tenants", `${id}.db`))).toBe(true);
-    const meta = rawDb(gate.openTenant(id)).prepare("SELECT tenant_id FROM context_meta").get();
+    const meta = rawDb(gate.lease(id).db).prepare("SELECT tenant_id FROM context_meta").get();
     expect(meta).toEqual({ tenant_id: id });
   });
 
@@ -110,7 +110,6 @@ describe("platform route", () => {
       control
         .prepare("INSERT INTO tenant_rollups (tenant_id, day, metrics_json) VALUES (?, '2026-10-08', '{}'), (?, '2026-10-09', ?)")
         .run(reg.tenantId, reg.tenantId, JSON.stringify({ modelCalls: 3, modelDenials: 1, actionsByStatus: { completed: 2 }, activeGrants: 1 }));
-      const openTenant = vi.spyOn(gate, "openTenant");
       const lease = vi.spyOn(gate, "lease");
 
       const res = await request(app).get("/api/platform/tenants");
@@ -127,7 +126,6 @@ describe("platform route", () => {
           latestRollup: { day: "2026-10-09", metrics: { modelCalls: 3, modelDenials: 1, actionsByStatus: { completed: 2 }, activeGrants: 1 } },
         },
       ]);
-      expect(openTenant).not.toHaveBeenCalled();
       expect(lease).not.toHaveBeenCalled();
     });
 
@@ -245,13 +243,13 @@ describe("platform route", () => {
     it("suspends an active pharmacy: the gate refuses even its cached handle at once, an event and a log line are written", async () => {
       const { app, control, gate, logger } = setup();
       const id = (await request(app).post("/api/platform/enrolments").send(body)).body.registrationId as string;
-      gate.openTenant(id); // cached
+      gate.withTenant(id, () => undefined); // cached
 
       const res = await request(app).post(`/api/platform/registrations/${id}/suspend`);
 
       expect(res.status).toBe(204);
       expect(control.prepare("SELECT status FROM tenant_registrations WHERE id = ?").get(id)).toEqual({ status: "suspended_by_operator" });
-      expect(() => gate.openTenant(id)).toThrow(TenantRefusedError);
+      expect(() => gate.lease(id).db).toThrow(TenantRefusedError);
       expect(events(control, id)).toEqual([{ event: "status_changed", actor: expect.any(String), detail: { from: "active", to: "suspended_by_operator", reason: "operator_suspend" } }]);
       expect(logger.info).toHaveBeenCalledWith("Pharmacy suspended by operator", { registrationId: id });
     });
@@ -265,7 +263,7 @@ describe("platform route", () => {
 
       expect(res.status).toBe(204);
       expect(control.prepare("SELECT status FROM tenant_registrations WHERE id = ?").get(id)).toEqual({ status: "active" });
-      expect(rawDb(gate.openTenant(id)).prepare("SELECT tenant_id FROM context_meta").get()).toEqual({ tenant_id: id });
+      expect(rawDb(gate.lease(id).db).prepare("SELECT tenant_id FROM context_meta").get()).toEqual({ tenant_id: id });
       expect(events(control, id).map((e) => e.detail)).toEqual([
         { from: "active", to: "suspended_by_operator", reason: "operator_suspend" },
         { from: "suspended_by_operator", to: "active", reason: "operator_resume" },
@@ -354,7 +352,7 @@ describe("platform route", () => {
           "INSERT INTO delegation_grants (id, identity_id, membership_id, tenant_registration_id, kind, scope_json, encrypted_value, wrapped_key, generation, status, created_at, absolute_expires_at) VALUES ('g-1', ?, 'm-1', ?, 'attended', '[]', 'x', 'x', 1, 'active', ?, '2099-01-01T00:00:00.000Z')",
         )
         .run(s.otherId, id, NOW);
-      rawDb(s.gate.openTenant(id)).prepare("INSERT INTO users (id, email) VALUES ('kept', 'kept@anchor.invalid')").run();
+      rawDb(s.gate.lease(id).db).prepare("INSERT INTO users (id, email) VALUES ('kept', 'kept@anchor.invalid')").run();
       expect((await request(s.app).post(`/api/platform/registrations/${id}/suspend`)).status).toBe(204);
       s.fake.removeAndEnable(CODE2);
       const status = () => (s.control.prepare("SELECT status FROM tenant_registrations WHERE id = ?").get(id) as { status: string }).status;
@@ -376,7 +374,7 @@ describe("platform route", () => {
         tenant_id: s.id,
         impressorx_tenant_id: s.fake.impressorxTenantId,
       });
-      expect(rawDb(s.gate.openTenant(s.id)).prepare("SELECT id FROM users WHERE id = 'kept'").get()).toEqual({ id: "kept" });
+      expect(rawDb(s.gate.lease(s.id).db).prepare("SELECT id FROM users WHERE id = 'kept'").get()).toEqual({ id: "kept" });
       // The membership is kept as it was; it reactivates through the normal hand-off snapshot path.
       expect(s.control.prepare("SELECT id, status FROM memberships").all()).toEqual([{ id: "m-1", status: "suspended" }]);
       expect(s.grantStatus()).toEqual({ status: "revoked", revoked_reason: "reenrolled" });

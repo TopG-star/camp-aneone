@@ -92,7 +92,7 @@ describe("Migration 017 on a tenant file", () => {
 
     let code: string | null = null;
     try {
-      gate.openTenant("reg-1");
+      gate.withTenant("reg-1", () => undefined);
     } catch (error) {
       code = error instanceof TenantRefusedError ? error.code : String(error);
     }
@@ -102,7 +102,7 @@ describe("Migration 017 on a tenant file", () => {
     expect(result.failed).toEqual([]);
     expect(result.migrated).toEqual(["personal", "reg-1"]);
 
-    const raw = rawDb(gate.openTenant("reg-1"));
+    const raw = rawDb(gate.lease("reg-1").db);
     expect(columns(raw, "model_call_decisions")).toEqual(expect.arrayContaining(["conversation_id", "turn_id"]));
     expect(columns(raw, "action_instances")).toContain("model_call_id");
     expect(raw.prepare("SELECT schema_version FROM context_meta").get()).toEqual({ schema_version: latestMigrationVersion() });

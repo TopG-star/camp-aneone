@@ -32,23 +32,20 @@ export function ensureIdentityAnchor(db: ContextDb, identityId: string): void {
 
 type Registration = { tenant_id: string; file_name: string; status: string };
 
-type Entry = { db: TenantDb; conn: Database.Database; leases: number; closed: boolean; timer?: ReturnType<typeof setTimeout> };
+type Entry = { db: TenantDb; conn: Database.Database; leases: number; closed: boolean };
 
-/** A handle held for the length of a job: never evicted by the cache, and closed only after release. */
+/** A handle held for the length of a job: never closed or evicted by the cache while held. */
 export interface TenantLease {
   db: TenantDb;
   /** Idempotent. */
   release(): void;
 }
 
-/** How long a handle that the LRU pushed out stays open, so a request holding it across awaits is not cut off. */
-export const EVICTION_GRACE_MS = 60_000;
-
 /** The only module that turns a context into a database handle. */
 export class ContextDbGate {
   private personal: PersonalDb | null = null;
   private readonly cache = new Map<string, Entry>();
-  /** Entries out of the cache whose connection is still open (waiting for a grace period or for the last lease). */
+  /** Entries out of the cache (a suspension) whose connection stays open until the last lease ends. */
   private readonly detached = new Set<Entry>();
   private readonly cacheSize: number;
 
@@ -70,7 +67,7 @@ export class ContextDbGate {
     return this.personal;
   }
 
-  openTenant(registrationId: string): TenantDb {
+  private openCached(registrationId: string): TenantDb {
     // The registry is consulted on every call, so a suspension takes effect even for a cached handle.
     const reg = this.registration(registrationId);
     const cached = this.cache.get(registrationId);
@@ -86,7 +83,7 @@ export class ContextDbGate {
 
     if (reg.status !== "active") throw new TenantRefusedError("tenant_unavailable");
     const path = this.tenantPath(reg.file_name);
-    // Opening a missing SQLite path would create it; openTenant never creates.
+    // Opening a missing SQLite path would create it; the gate never creates a file on open.
     if (!existsSync(path)) throw new TenantRefusedError("tenant_unavailable");
 
     let conn: Database.Database;
@@ -105,11 +102,12 @@ export class ContextDbGate {
   }
 
   /**
-   * Opens the tenant like openTenant and holds the handle until `release()`. A leased entry is never evicted by the LRU (the cache may
-   * exceed its size meanwhile); if the tenant is suspended while leased, new opens are refused at once but the file closes at the last release.
+   * The only way to a tenant handle: opens the tenant and holds it until `release()`. A leased entry is never evicted by the LRU (the
+   * cache size is a soft target and stays exceeded while every entry is leased); if the tenant is suspended while leased, new leases
+   * are refused at once but the file closes at the last release.
    */
   lease(registrationId: string): TenantLease {
-    const db = this.openTenant(registrationId);
+    const db = this.openCached(registrationId);
     const entry = this.cache.get(registrationId)!;
     entry.leases += 1;
     let released = false;
@@ -119,12 +117,32 @@ export class ContextDbGate {
         if (released) return;
         released = true;
         entry.leases -= 1;
-        if (entry.leases === 0 && this.detached.has(entry)) this.closeEntry(entry);
+        if (entry.leases > 0) return;
+        if (this.detached.has(entry)) this.closeEntry(entry);
+        else this.trim();
       },
     };
   }
 
-  createTenantFile(registrationId: string, tenantId: string): TenantDb {
+  /** Runs `fn` with the tenant leased for exactly as long as it runs: a sync function until it returns, an async one until it settles. */
+  withTenant<T>(registrationId: string, fn: (db: TenantDb) => T): T {
+    const lease = this.lease(registrationId);
+    let result: T;
+    try {
+      result = fn(lease.db);
+    } catch (error) {
+      lease.release();
+      throw error;
+    }
+    if (isPromiseLike(result)) {
+      return Promise.resolve(result).finally(() => lease.release()) as T;
+    }
+    lease.release();
+    return result;
+  }
+
+  /** Creates the tenant's file and closes it again: use `lease` or `withTenant` to open it. */
+  createTenantFile(registrationId: string, tenantId: string): void {
     const reg = this.registration(registrationId);
     if (reg.tenant_id !== tenantId) throw new TenantRefusedError("tenant_unavailable");
     const path = this.tenantPath(reg.file_name);
@@ -143,7 +161,7 @@ export class ContextDbGate {
       for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true });
       throw error;
     }
-    return this.remember(registrationId, tenantId, conn);
+    conn.close();
   }
 
   close(): void {
@@ -189,16 +207,18 @@ export class ContextDbGate {
   private remember(registrationId: string, tenantId: string, conn: Database.Database): TenantDb {
     const db: TenantDb = { kind: "tenant", tenantId, raw: conn, __brand: "TenantDb" };
     this.cache.set(registrationId, { db, conn, leases: 0, closed: false });
-    // Least recently used first; a leased entry is skipped, so the cache can stay over its size while leases are held.
+    this.trim(registrationId);
+    return db;
+  }
+
+  /** Brings the cache back to its size, least recently used first. A leased entry is skipped: nothing closes while in use. */
+  private trim(keep?: string): void {
     for (const [id, entry] of this.cache) {
       if (this.cache.size <= this.cacheSize) break;
-      if (entry.leases > 0 || id === registrationId) continue;
+      if (entry.leases > 0 || id === keep) continue;
       this.cache.delete(id);
-      this.detach(entry);
-      entry.timer = setTimeout(() => this.closeEntry(entry), EVICTION_GRACE_MS);
-      entry.timer.unref();
+      this.closeEntry(entry);
     }
-    return db;
   }
 
   /** Takes the entry out of the cache. It closes now, or at the last release when it is leased. */
@@ -206,19 +226,18 @@ export class ContextDbGate {
     const entry = this.cache.get(registrationId);
     if (!entry) return;
     this.cache.delete(registrationId);
-    if (entry.leases > 0) this.detach(entry);
+    if (entry.leases > 0) this.detached.add(entry);
     else this.closeEntry(entry);
   }
 
-  private detach(entry: Entry): void {
-    this.detached.add(entry);
-  }
-
   private closeEntry(entry: Entry): void {
-    if (entry.timer) clearTimeout(entry.timer);
     this.detached.delete(entry);
     if (entry.closed) return;
     entry.closed = true;
     entry.conn.close();
   }
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return typeof value === "object" && value !== null && typeof (value as { then?: unknown }).then === "function";
 }

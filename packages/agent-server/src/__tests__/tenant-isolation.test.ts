@@ -106,10 +106,10 @@ describe("tenant isolation through the active context", () => {
     f.actAs({ identityId: f.gerry, membershipId: f.a.membershipId });
     expect((await say(f, "stock in A")).status).toBe(200);
 
-    expect(countIn(f.gate.openTenant(f.a.registrationId))).toBeGreaterThan(0);
-    expect(countIn(f.gate.openTenant(f.b.registrationId))).toBe(0);
+    expect(countIn(f.gate.lease(f.a.registrationId).db)).toBeGreaterThan(0);
+    expect(countIn(f.gate.lease(f.b.registrationId).db)).toBe(0);
     expect(countIn(f.personal)).toBe(0);
-    const rows = rawDb(f.gate.openTenant(f.a.registrationId)).prepare("SELECT DISTINCT tenant_id FROM conversations").all();
+    const rows = rawDb(f.gate.lease(f.a.registrationId).db).prepare("SELECT DISTINCT tenant_id FROM conversations").all();
     expect(rows).toEqual([{ tenant_id: f.a.tenantId }]);
   });
 
@@ -205,14 +205,14 @@ describe("tenant isolation through the active context", () => {
     expect((await say(f, "my own note")).status).toBe(200);
 
     expect(countIn(f.personal)).toBeGreaterThan(0);
-    expect(countIn(f.gate.openTenant(f.a.registrationId))).toBe(0);
-    expect(countIn(f.gate.openTenant(f.b.registrationId))).toBe(0);
+    expect(countIn(f.gate.lease(f.a.registrationId).db)).toBe(0);
+    expect(countIn(f.gate.lease(f.b.registrationId).db)).toBe(0);
     expect(rawDb(f.personal).prepare("SELECT DISTINCT tenant_id FROM conversations").all()).toEqual([{ tenant_id: null }]);
   });
 
   it("a row with another tenant's id in A's file throws tenant_mismatch on read", () => {
     const f = setup();
-    const dbA = f.gate.openTenant(f.a.registrationId);
+    const dbA = f.gate.lease(f.a.registrationId).db;
     rawDb(dbA)
       .prepare("INSERT INTO conversations (id, conversation_id, role, content, user_id, tenant_id) VALUES ('x', 'shared-id', 'user', 'planted', NULL, ?)")
       .run(f.b.tenantId);
@@ -222,7 +222,7 @@ describe("tenant isolation through the active context", () => {
 
   it("an unstamped row in A's file and a tenant row in the personal file are refused the same way", () => {
     const f = setup();
-    const dbA = f.gate.openTenant(f.a.registrationId);
+    const dbA = f.gate.lease(f.a.registrationId).db;
     rawDb(dbA).prepare("INSERT INTO conversations (id, conversation_id, role, content) VALUES ('x', 'shared-id', 'user', 'unstamped')").run();
     rawDb(f.personal)
       .prepare("INSERT INTO conversations (id, conversation_id, role, content, tenant_id) VALUES ('y', 'shared-id', 'user', 'planted', ?)")
@@ -234,7 +234,7 @@ describe("tenant isolation through the active context", () => {
 
   it("action instances and events are stamped with the handle tenant and refuse a foreign row", () => {
     const f = setup();
-    const dbA = f.gate.openTenant(f.a.registrationId);
+    const dbA = f.gate.lease(f.a.registrationId).db;
     ensureIdentityAnchor(dbA, f.gerry);
     const repo = contextRepos(dbA).actionInstances;
     repo.create(
@@ -256,7 +256,7 @@ describe("tenant isolation through the active context", () => {
 
   it("a tenant_mismatch inside a request is logged at error level with the code, tenant and source, then answers 500", async () => {
     const f = setup();
-    const dbA = f.gate.openTenant(f.a.registrationId);
+    const dbA = f.gate.lease(f.a.registrationId).db;
     ensureIdentityAnchor(dbA, f.gerry);
     rawDb(dbA)
       .prepare("INSERT INTO conversations (id, conversation_id, role, content, user_id, tenant_id) VALUES ('x', 'shared-id', 'user', 'SECRET-CONTENT', ?, ?)")
@@ -274,7 +274,7 @@ describe("tenant isolation through the active context", () => {
 
   it("action configs: a tenant file holds only its own tenant scope, the personal file only personal", () => {
     const f = setup();
-    const dbA = f.gate.openTenant(f.a.registrationId);
+    const dbA = f.gate.lease(f.a.registrationId).db;
     const inA = new SqliteActionConfigRepository(dbA);
     const inPersonal = new SqliteActionConfigRepository(f.personal);
     const save = (scope: "personal" | "tenant", ownerId: string) => ({ scope, ownerId, actionType: "notify", configJson: "{}", changedBy: f.gerry });
@@ -294,7 +294,7 @@ describe("tenant isolation through the active context", () => {
 
   it("legacy actions are personal-only", () => {
     const f = setup();
-    expect(() => new SqliteLegacyActionRepository(f.gate.openTenant(f.a.registrationId))).toThrow();
+    expect(() => new SqliteLegacyActionRepository(f.gate.lease(f.a.registrationId).db)).toThrow();
     expect(() => new SqliteLegacyActionRepository(f.personal)).not.toThrow();
   });
 
@@ -307,7 +307,7 @@ describe("tenant isolation through the active context", () => {
         effectiveLimit: null, layers: [], decision: "deny", denyReason: null, released: [], withheld: [], placeholderCount: 0,
         scannerHits: { D3: 0, D4: 0 }, alert: false, policyFingerprint: "p", inputFingerprint: null, keyVersion: 1,
       }) as never;
-    const inA = contextRepos(f.gate.openTenant(f.a.registrationId)).modelAudit;
+    const inA = contextRepos(f.gate.lease(f.a.registrationId).db).modelAudit;
     const inPersonal = contextRepos(f.personal).modelAudit;
 
     expect(() => inA.recordDecision(decision(f.b.tenantId))).toThrow("tenant_mismatch");
@@ -318,7 +318,7 @@ describe("tenant isolation through the active context", () => {
 
   it("memoizes the repositories per handle", () => {
     const f = setup();
-    const dbA = f.gate.openTenant(f.a.registrationId);
+    const dbA = f.gate.lease(f.a.registrationId).db;
     expect(contextRepos(dbA) === contextRepos(dbA)).toBe(true);
     expect(contextRepos(dbA) === contextRepos(f.personal)).toBe(false);
   });
@@ -331,7 +331,7 @@ describe("tenant isolation through the active context", () => {
     const res = await say(f, "hello");
     expect(res.status).toBe(403);
     expect(res.body).toEqual({ error: "membership_suspended", message: "This pharmacy has switched Oneon off, or your account is inactive." });
-    expect(countIn(f.gate.openTenant(f.a.registrationId))).toBe(0);
+    expect(countIn(f.gate.lease(f.a.registrationId).db)).toBe(0);
   });
 
   it("a membership of another identity gets 403, and a tenant the registry suspended gets 403", async () => {
@@ -365,7 +365,7 @@ describe("tenant isolation through the active context", () => {
 
     expect(res.status).toBe(200);
     expect(countIn(f.personal)).toBeGreaterThan(0);
-    expect(countIn(f.gate.openTenant(f.a.registrationId))).toBe(0);
+    expect(countIn(f.gate.lease(f.a.registrationId).db)).toBe(0);
   });
 });
 

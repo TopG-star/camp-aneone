@@ -28,7 +28,7 @@ export interface HandoffRouterDeps {
   identities: Pick<IdentityRepository, "findByLogin" | "createWithLogin" | "findById">;
   memberships: Pick<MembershipRepository, "upsertFromHandoff" | "findById">;
   jti: Pick<UsedHandoffJti, "consume">;
-  openTenant: (registrationId: string) => TenantDb;
+  withTenant: <T>(registrationId: string, fn: (db: TenantDb) => T) => T;
   /** Null when ONEON_GRANT_MASTER_KEY is not configured: every hand-off is then rejected. */
   client: Pick<ImpressoRxClient, "exchangeHandoff" | "forSession"> | null;
   logger: Logger;
@@ -140,7 +140,7 @@ async function redeem(
   if (membership.status === "revoked") throw new Rejected("membership_suspended");
 
   try {
-    ensureIdentityAnchor(deps.openTenant(registration.id), identity.id);
+    deps.withTenant(registration.id, (db) => ensureIdentityAnchor(db, identity.id));
     // The client writes the snapshot through its onSnapshot hook.
     await deps.client.exchangeHandoff(registration.id, handoff, sessionId, identity.id, membership.id, sub);
   } catch (error) {

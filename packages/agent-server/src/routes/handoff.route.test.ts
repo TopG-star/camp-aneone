@@ -42,7 +42,7 @@ describe("hand-off redemption", () => {
     let now = Date.now();
     const clock = () => new Date(now);
 
-    const identities = new SqliteIdentityRepository(control, (id) => gate.openTenant(id));
+    const identities = new SqliteIdentityRepository(control, (id, fn) => gate.withTenant(id, fn));
     const operatorId = identities.createWithLogin({ kind: "google", subject: "op" }).id;
     const registrations = new TenantRegistrationRepository(control);
     const memberships = new MembershipRepository(control);
@@ -83,7 +83,7 @@ describe("hand-off redemption", () => {
         identities,
         memberships,
         jti: new UsedHandoffJti(control, clock),
-        openTenant: (id) => gate.openTenant(id),
+        withTenant: (id, fn) => gate.withTenant(id, fn),
         client,
         logger,
       }),
@@ -120,7 +120,7 @@ describe("hand-off redemption", () => {
       status: "active",
       permissions_json: JSON.stringify(["jobs.read"]),
     });
-    const anchor = rawDb(gate.openTenant(registration.id)).prepare("SELECT id, email FROM users").all();
+    const anchor = rawDb(gate.lease(registration.id).db).prepare("SELECT id, email FROM users").all();
     expect(anchor).toEqual([{ id: res.body.identityId, email: `${res.body.identityId}@anchor.invalid` }]);
   });
 
@@ -152,7 +152,7 @@ describe("hand-off redemption", () => {
     expect(control.prepare("SELECT identity_id, membership_id, status FROM delegation_grants WHERE status = 'active'").all()).toEqual([
       { identity_id: google.id, membership_id: first.body.membershipId, status: "active" },
     ]);
-    expect(rawDb(gate.openTenant(registration.id)).prepare("SELECT id FROM users WHERE id = ?").get(google.id)).toEqual({ id: google.id });
+    expect(rawDb(gate.lease(registration.id).db).prepare("SELECT id FROM users WHERE id = ?").get(google.id)).toEqual({ id: google.id });
   });
 
   it("a merge that lands while the hand-off is being exchanged refuses it and revokes the grant it just stored, here and at ImpressoRx", async () => {

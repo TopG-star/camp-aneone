@@ -54,7 +54,7 @@ describe("backups", () => {
 
   it("backs up every file while a write is in progress and the copy passes integrity_check", async () => {
     const { dir, tenantDir, regs, gate, deps, tmpDir } = setup();
-    rawDb(gate.openTenant("reg-1")).prepare("INSERT INTO users (id, email) VALUES ('committed', 'c@anchor.invalid')").run();
+    rawDb(gate.lease("reg-1").db).prepare("INSERT INTO users (id, email) VALUES ('committed', 'c@anchor.invalid')").run();
     // A second connection holds an open write transaction on the same tenant file for the whole backup.
     const writer = createDatabase(join(tenantDir, regs[0]!.fileName));
     writer.exec("BEGIN IMMEDIATE");

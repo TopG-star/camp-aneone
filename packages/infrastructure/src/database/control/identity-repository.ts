@@ -91,10 +91,10 @@ type MembershipRow = {
 };
 
 export class SqliteIdentityRepository implements IdentityRepository {
-  /** `openTenant` is the gate's: a merge needs it to re-own the rows in each pharmacy file. */
+  /** `withTenant` is the gate's: a merge needs it to re-own the rows in each pharmacy file, holding the file for just that long. */
   constructor(
     private readonly db: ControlDb,
-    private readonly openTenant?: (registrationId: string) => TenantDb,
+    private readonly withTenant?: <T>(registrationId: string, fn: (db: TenantDb) => T) => T,
   ) {}
 
   findByLogin(kind: LoginKind, subject: string): Identity | null {
@@ -188,15 +188,16 @@ export class SqliteIdentityRepository implements IdentityRepository {
     //    failed part-way and is tried again simply finds the earlier files already done.
     const registrationIds = registrations.map((r) => r.id);
     for (const { id: registrationId } of registrations.filter((r) => r.status === "active")) {
-      if (!this.openTenant) throw new Error("merging needs the tenant gate");
-      const tenant = this.openTenant(registrationId);
-      const raw = rawDb(tenant);
-      raw.transaction(() => {
-        ensureIdentityAnchor(tenant, toId);
-        raw.prepare("UPDATE conversations SET user_id = ? WHERE user_id = ?").run(toId, fromId);
-        raw.prepare("UPDATE action_instances SET user_id = ? WHERE user_id = ?").run(toId, fromId);
-        raw.prepare("UPDATE action_instances SET initiator_user_id = ? WHERE initiator_user_id = ?").run(toId, fromId);
-      })();
+      if (!this.withTenant) throw new Error("merging needs the tenant gate");
+      this.withTenant(registrationId, (tenant) => {
+        const raw = rawDb(tenant);
+        raw.transaction(() => {
+          ensureIdentityAnchor(tenant, toId);
+          raw.prepare("UPDATE conversations SET user_id = ? WHERE user_id = ?").run(toId, fromId);
+          raw.prepare("UPDATE action_instances SET user_id = ? WHERE user_id = ?").run(toId, fromId);
+          raw.prepare("UPDATE action_instances SET initiator_user_id = ? WHERE initiator_user_id = ?").run(toId, fromId);
+        })();
+      });
     }
 
     // 2. One control transaction: either all of it happens or none. Append-only rows (action_events, model_call_*) keep

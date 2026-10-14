@@ -362,7 +362,7 @@ describe("tenant actions against the fake ImpressoRx (spec 7, 9.2, 9.3)", () => 
     const gate = new ContextDbGate({ control, personalPath: join(dir, "personal.db"), tenantDir: join(dir, "tenants") });
     closers.push(() => gate.close(), () => control.close());
 
-    const identities = new SqliteIdentityRepository(control, (id) => gate.openTenant(id));
+    const identities = new SqliteIdentityRepository(control, (id, fn) => gate.withTenant(id, fn));
     const identityId = identities.createWithLogin({ kind: "impressorx", subject: "reg:staff-1" }).id;
     const registrations = new TenantRegistrationRepository(control);
     const memberships = new MembershipRepository(control);
@@ -378,7 +378,7 @@ describe("tenant actions against the fake ImpressoRx (spec 7, 9.2, 9.3)", () => 
     const enrolment = new EnrolmentService({ repo: registrations, oneonOrigin: "https://oneon.example", masterKeyB64: randomBytes(32).toString("base64"), fetchImpl });
     const registration = await enrolment.enrol({ origin: ORIGIN, tenantSlug: "acme", enrolmentCode: CODE, enrolledBy: identityId });
     gate.createTenantFile(registration.id, registration.tenantId);
-    const tenantDb = gate.openTenant(registration.id);
+    const tenantDb = gate.lease(registration.id).db;
     ensureIdentityAnchor(tenantDb, identityId);
     const logger = fakeLogger();
     const client = createImpressoRxClient({
