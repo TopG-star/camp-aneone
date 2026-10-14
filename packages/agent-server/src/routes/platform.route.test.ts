@@ -534,6 +534,60 @@ describe("platform route", () => {
     });
   });
 
+  describe("one operation per pharmacy at a time (review I2, option b)", () => {
+    it("two concurrent first enrolments with the same slug: one succeeds, the other is refused with 409 before its code is spent", async () => {
+      const { app, fakes, control, onNextAnswer } = setup();
+      // A second deployment that also calls itself acme, at another origin.
+      const twin = new FakeImpressorx("https://acme-two.example", "acme", "TWIN-CODE-0001");
+      fakes.push(twin);
+      let second: request.Response | undefined;
+      // The second request arrives while the first one waits for its deployment's answer.
+      onNextAnswer(async () => {
+        second = await request(app).post("/api/platform/enrolments").send({ origin: "https://acme-two.example", tenantSlug: "acme", code: "TWIN-CODE-0001" });
+      });
+
+      const first = await request(app).post("/api/platform/enrolments").send(body);
+
+      expect(first.status).toBe(201);
+      expect(second!.status).toBe(409);
+      expect(second!.body.error).toMatch(/An enrolment is in progress for this pharmacy/);
+      expect(second!.body.error).toMatch(/code is still valid/);
+      expect(twin.active).toBe(false);
+      expect(control.prepare("SELECT origin FROM tenant_registrations").all()).toEqual([{ origin: ORIGIN }]);
+    });
+
+    it("Resume during an in-flight re-enrolment is refused with 409, and the re-enrolment completes", async () => {
+      const { app, fake, control, onNextAnswer } = setup();
+      const id = (await request(app).post("/api/platform/enrolments").send(body)).body.registrationId as string;
+      await request(app).post(`/api/platform/registrations/${id}/suspend`);
+      fake.removeAndEnable("NEW1-CODE-2222");
+      let resume: request.Response | undefined;
+      let suspend: request.Response | undefined;
+      onNextAnswer(async () => {
+        resume = await request(app).post(`/api/platform/registrations/${id}/resume`);
+        suspend = await request(app).post(`/api/platform/registrations/${id}/suspend`);
+      });
+
+      const reenrol = await request(app).post("/api/platform/enrolments").send({ ...body, code: "NEW1-CODE-2222" });
+
+      expect(resume!.status).toBe(409);
+      expect(resume!.body.error).toMatch(/A re-enrolment is in progress for this pharmacy/);
+      expect(suspend!.status).toBe(409);
+      expect(suspend!.body.error).toMatch(/A re-enrolment is in progress for this pharmacy/);
+      expect(reenrol.status).toBe(200);
+      expect(control.prepare("SELECT status FROM tenant_registrations WHERE id = ?").get(id)).toEqual({ status: "active" });
+    });
+
+    it("the lock is released after a refusal, so the next operation goes ahead", async () => {
+      const { app, fake } = setup();
+      fake.replyTenantSlug = "other-pharmacy";
+      expect((await request(app).post("/api/platform/enrolments").send(body)).status).toBe(502);
+      fake.replyTenantSlug = null;
+      fake.removeAndEnable("NEW1-CODE-2222");
+      expect((await request(app).post("/api/platform/enrolments").send({ ...body, code: "NEW1-CODE-2222" })).status).toBe(201);
+    });
+  });
+
   describe("explicit failures after the code is spent (review I2, option a)", () => {
     const expectSpent = (error: string) => {
       expect(error).toMatch(CONNECTED);

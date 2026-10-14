@@ -7,6 +7,7 @@ import {
   ReenrolmentRefusedError,
   type EnrolmentService,
   type PlatformOperatorRepository,
+  type TenantRegistration,
   type TenantRegistrationRepository,
 } from "@oneon/infrastructure";
 
@@ -37,6 +38,35 @@ export interface PlatformRouteDeps {
 const CONNECTED_ON_IMPRESSORX =
   "ImpressoRx now shows Oneon as connected on its side. The pharmacy's ImpressoRx admin must press Remove, then Enable, to issue a new code.";
 
+/**
+ * One operation per pharmacy at a time (review I2, option b). Enrolment and re-enrolment hold their pharmacy's keys (its slug, and its
+ * registration id when it has one) from the pre-check to the commit, across the deployment's answer; Suspend and Resume take the same
+ * registration key. A request that finds a key held is refused with 409, never queued. Spec §8.1 runs one agent-server process, so an
+ * in-memory lock is enough; a second process on the same control.db would need the lock there.
+ */
+class PharmacyOperations {
+  private readonly held = new Map<string, string>();
+
+  /** Takes every key or none: the release, or what is holding one of them ("a re-enrolment", ...). */
+  tryAcquire(keys: string[], operation: string): { release: () => void } | { heldBy: string } {
+    for (const key of keys) {
+      const heldBy = this.held.get(key);
+      if (heldBy !== undefined) return { heldBy };
+    }
+    for (const key of keys) this.held.set(key, operation);
+    let released = false;
+    return {
+      release: () => {
+        if (released) return;
+        released = true;
+        for (const key of keys) this.held.delete(key);
+      },
+    };
+  }
+}
+
+const inProgress = (heldBy: string) => `${heldBy.charAt(0).toUpperCase()}${heldBy.slice(1)} is in progress for this pharmacy`;
+
 const EnrolBody = z.object({
   origin: z.string().url().max(300),
   tenantSlug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/),
@@ -46,6 +76,7 @@ const EnrolBody = z.object({
 
 export function createPlatformRouter(deps: PlatformRouteDeps): Router {
   const router = Router();
+  const operations = new PharmacyOperations();
   const { operators, registrations, enrolment, backupConfigured, grantConfigured, latestRollups, createTenantFile, detachTenant, revokeGrantsForRegistration, logger } =
     deps;
 
@@ -78,6 +109,27 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
     }
     const { origin, tenantSlug, code, displayName } = parsed.data;
     const existing = registrations.findBySlug(tenantSlug);
+    // Taken in the same tick as the lookup, and held until the answer is sent.
+    const lock = operations.tryAcquire(
+      existing ? [`slug:${tenantSlug}`, `registration:${existing.id}`] : [`slug:${tenantSlug}`],
+      existing ? "a re-enrolment" : "an enrolment",
+    );
+    if ("heldBy" in lock) {
+      res.status(409).json({ error: `${inProgress(lock.heldBy)}. Nothing was sent, so the code is still valid; try again when it has finished.` });
+      return;
+    }
+    try {
+      await enrolOrReenrol(req, res, { origin, tenantSlug, code, displayName, existing });
+    } finally {
+      lock.release();
+    }
+  });
+
+  async function enrolOrReenrol(
+    req: Request,
+    res: Response,
+    { origin, tenantSlug, code, displayName, existing }: z.infer<typeof EnrolBody> & { existing: TenantRegistration | null },
+  ): Promise<void> {
     if (existing) {
       // Ruling: an existing slug is enrolled again only while an operator has it suspended, only at its pinned origin, and only
       // with the full two-sided proof. Both refusals come before the code is spent.
@@ -121,7 +173,7 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
     } catch (error) {
       enrolmentFailure(res, error, tenantSlug, "Enrolment");
     }
-  });
+  }
 
   /**
    * Every failure answers an explicit status and message (review I2): 409 for a race or a conflict, 502 where the deployment's answer
@@ -220,20 +272,33 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
   for (const [action, t] of Object.entries(transitions)) {
     router.post(`/registrations/:id/${action}`, (req: Request, res: Response) => {
       const registrationId = String(req.params.id);
-      const result = registrations.transitionStatus(registrationId, t.from, t.to, req.identityId!, t.reason);
-      if (result === "unknown") {
-        res.status(404).json({ error: "No such registration" });
+      const lock = operations.tryAcquire([`registration:${registrationId}`], action === "suspend" ? "a suspension" : "a resume");
+      if ("heldBy" in lock) {
+        res.status(409).json({ error: `${inProgress(lock.heldBy)}; try again when it has finished.` });
         return;
       }
-      if (result === "conflict") {
-        res.status(409).json({ error: action === "suspend" ? "Only an active pharmacy can be suspended" : "Only a pharmacy you suspended can be resumed" });
-        return;
+      try {
+        transition(req, res, registrationId, action, t);
+      } finally {
+        lock.release();
       }
-      // A move away from active: the gate would only notice at the next lease attempt, so it is told now.
-      if (t.to !== "active") detachTenant(registrationId);
-      logger.info(t.log, { registrationId });
-      res.status(204).end();
     });
+  }
+
+  function transition(req: Request, res: Response, registrationId: string, action: string, t: (typeof transitions)[keyof typeof transitions]): void {
+    const result = registrations.transitionStatus(registrationId, t.from, t.to, req.identityId!, t.reason);
+    if (result === "unknown") {
+      res.status(404).json({ error: "No such registration" });
+      return;
+    }
+    if (result === "conflict") {
+      res.status(409).json({ error: action === "suspend" ? "Only an active pharmacy can be suspended" : "Only a pharmacy you suspended can be resumed" });
+      return;
+    }
+    // A move away from active: the gate would only notice at the next lease attempt, so it is told now.
+    if (t.to !== "active") detachTenant(registrationId);
+    logger.info(t.log, { registrationId });
+    res.status(204).end();
   }
 
   router.post("/registrations/:id/rotate-key", async (req: Request, res: Response) => {
