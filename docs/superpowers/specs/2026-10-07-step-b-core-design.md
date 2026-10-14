@@ -64,7 +64,7 @@ The chain of trust is: tenant trust → deployment identity → staff identity �
 | I4 | Only the ImpressoRx client holds or exchanges grants. | The grant store is imported only by `impressorx-client`. Architecture test. |
 | I5 | The tenant key never stands in for staff authorization. | ImpressoRx's token endpoint issues tokens only for a valid grant naming a staff user. No endpoint accepts Oneon's service signature alone as authority for a business call. Route test. |
 | I6 | No grant value, access token or enrolment code is logged. | Logger redaction of the named fields plus a test that exercises each flow and scans the captured log output. |
-| I7 | Every Oneon write in ImpressoRx belongs to an Oneon action and is attributed `Agent`. | Database `CHECK` on `AuditLog` (§10) plus the audit layer deriving the actor from the token context. |
+| I7 | Every Oneon write in ImpressoRx belongs to an Oneon action and is attributed `Agent`. | Database `CHECK` plus insert-time trigger on `AuditLog` (§10), plus the audit layer deriving the actor from the token context. Amended 2026-10-14 (owner): the `userId` requirement moved from the `CHECK` to a `BEFORE INSERT` trigger (§10). |
 | I8 | Rows in a tenant file belong to that tenant. | `tenant_id` on content rows, asserted on every read (§8.4). |
 
 ## 4. Identity, membership and active context (Oneon)
@@ -245,7 +245,15 @@ Oneon runs as one long-running Express process with better-sqlite3 on a Hetzner 
 
 ### 8.4 `tenant_id` on rows
 
-An additive migration gives every content table a nullable `tenant_id` (null in the personal database). Repositories compare it with the handle's tenant on every read. A mismatch throws `tenant_mismatch` and raises an operator alert.
+Every table a tenant file writes carries the tenant on each row (null in the personal database). Its repository stamps it on write and compares it with the handle's tenant on every read. A mismatch throws `tenant_mismatch` and raises an operator alert.
+
+- **Tenant-data tables, with `tenant_id`:** `conversations`, `action_instances`, `action_events`, `model_call_decisions`, `model_call_outcomes`.
+- **Tenant-data tables keyed by `scope` and `owner_id` instead of `tenant_id`:** `action_definition_configs`, `action_definition_config_history`. A tenant file holds only `scope = 'tenant'` rows whose `owner_id` is its own tenant id, and the repository refuses any other (B-14-1).
+- **Exempt, bookkeeping:** `schema_migrations` (the file's applied migrations), `context_meta` (the file's own kind and tenant, which the gate checks when it opens the file), `users` (identity anchor rows that let the file's foreign keys hold: an identity id and a placeholder address, no tenant content).
+- **Exempt, personal-only** (a tenant file never writes them; their repositories are built on the personal file only): `inbound_items`, `classifications`, `classification_feedback`, `deadlines`, `notifications`, `preferences`, `push_subscriptions`, `oauth_tokens`, `user_profiles`, `bank_statements`, `bank_statement_metadata`, `bank_statement_transactions`, `bank_statement_parse_runs`, `personal_memory_notes`, `personal_memory_pins`, `action_log_legacy`, `action_legacy_imports`, `ai_data_choices`.
+- **Enforcement:** an architecture test (`packages/agent-server/src/architecture.test.ts`) reads the tenant-file migrations and holds these lists. It fails when a migration creates a table that is on neither list, when a tenant-data table lacks its tenant column, or when the repository that writes it does not assert it. A new table is added to one list in the change that creates it.
+
+> Amended 2026-10-14 (owner): "every content table" became "every table a tenant file writes", with the two lists above and the architecture test as the enforcement (spec amendment A1, ADR-013).
 
 ### 8.5 Ids and cross-file links
 
@@ -282,7 +290,13 @@ The sweeper and scheduler iterate the registry, open one tenant file at a time, 
 
 ### 9.1 Tenant `ActorContext`
 
-Built from the membership: `userId` = identity id; `scope = "tenant"`; `tenantId` = registration id; `roles = [role]`; `permissions` = snapshot codes namespaced `impressorx:<code>`; `locationIds` = context only. `actorForInstance` stops throwing for tenant scope and rebuilds the actor from the current membership. A `suspended` or `revoked` membership fails the action with `delegation_revoked`.
+Built from the membership: `userId` = identity id; `scope = "tenant"`; `tenantId` = the registry `tenant_id` (Oneon's id for the pharmacy, UNIQUE on `tenant_registrations`); `roles = [role]`; `permissions` = snapshot codes namespaced `impressorx:<code>`; `locationIds` = context only. `actorForInstance` stops throwing for tenant scope and rebuilds the actor from the current membership. A `suspended` or `revoked` membership fails the action with `delegation_revoked`.
+
+- Rows, actors, active contexts and the model-call audit all use the registry `tenant_id`. The registration id is carried alongside as `registrationId` on the tenant active context, for grants, the tenant AI limit and the ImpressoRx client.
+- Re-enrolment keeps the same registration row: its history is in `tenant_registration_events`, and no new registration is created per enrolment.
+- ImpressoRx's permanent `Tenant.id` is a third id, stored as `impressorx_tenant_id` on the registration (§5.2, ADR-014). It identifies the pharmacy at enrolment and re-enrolment and is not used on rows.
+
+> Amended 2026-10-14 (owner): `tenantId` is the registry `tenant_id`, not the registration id; the registration id travels separately as `registrationId` (spec amendment A2, ADR-013).
 
 ### 9.2 Where authorization happens
 
@@ -299,8 +313,13 @@ An approver must hold an `active` membership in the tenant with a role in the ac
 
 - `tenant_ai_limit_versions` in the control database: append-only; the newest row applies; default D1. Each row records the class, who set it, when, a reference to the live check that authorized it, and the prerequisite evidence for a raise.
 - The gateway's tenant layer reads the newest row. The effective limit remains the lowest of all layers (boundary spec §6.2).
-- A change requires a live `GET /api/oneon/me` call confirming `settings.oneon`. Lowering applies immediately. Raising must stay within each provider's tenant ceiling; a raise to D2 also needs that provider's complete review record (roadmap E2) and a signed DPA recorded in the provider registry. D3 and D4 are never allowed.
-- **Proposed, for ruling at spec review:** when ImpressoRx is unreachable, lowering may fall back to the cached snapshot's `settings.oneon`, and the row records that fallback. Raising always requires the live check.
+- A change requires a live `GET /api/oneon/me` call confirming `settings.oneon`, except a lowering while ImpressoRx is unreachable (below). Lowering applies immediately. D3 and D4 are never allowed.
+- A raise needs at least one configured provider whose tenant ceiling (platform overrides applied) reaches the class. A raise to D2 also needs that provider to have its complete review record (roadmap E2) and a signed DPA recorded in the provider registry.
+- Every call is still capped by the lowest-of-layers rule, per provider. In a tenant context a provider that is not reviewed with a tenant DPA is held at D1, whatever the pharmacy's limit, so a raise that rests on one provider never lets another provider receive more than it may.
+- The admin screen shows the stored limit as the setting and, for each configured provider, the effective limit a call to it gets in this pharmacy now (the gateway's own computation), with the reason when it is below the stored limit, for example "held at D1: not reviewed with a DPA".
+- **Lowering while ImpressoRx is unreachable:** when the live check fails as unreachable, a lowering (a class strictly below the current one) is allowed only for a hand-off session whose stored membership snapshot, of any age within that session, shows `settings.oneon` for this pharmacy. The appended row records `authorisedFrom: "cached_snapshot"` and the snapshot's time. A raise, or keeping the same class, is refused without the live check. A Google session gets no fallback. When ImpressoRx next delivers a snapshot for that membership (the next successful live check or snapshot refresh), the permission is checked again; if the person no longer has `settings.oneon`, an operator alert `ai_limit_lowered_without_permission` is logged at error level, and the lowered limit stays.
+
+> Amended 2026-10-14 (owner): "each provider's tenant ceiling" became "at least one configured provider's", with the per-call cap and the per-provider effective limit on the admin screen (spec amendment A3); the proposed fallback for lowering was decided as above (ADR-013, A5).
 
 ### 9.5 Gateway and tools in tenant context
 
@@ -311,7 +330,10 @@ An approver must hold an `active` membership in the tenant with a role in the ac
 ## 10. ImpressoRx `Agent` audit
 
 - Migration: add `Agent` to `AuditActorType`; add `AuditLog.oneonActionId` (text, nullable) and `AuditLog.unattended` (boolean, nullable). Keep the immutability triggers. The TypeScript `AuditActorType` in `src/lib/auditLog.ts` is updated with it, as the existing diff test requires.
-- `CHECK` constraints: an `Agent` row has `userId` and `oneonActionId` not null and `actorLabel = 'Oneon'`; a non-`Agent` row has both new columns null.
+- `CHECK` constraints: an `Agent` row has `oneonActionId` and `unattended` not null and `actorLabel = 'Oneon'`; a non-`Agent` row has both new columns null.
+- `userId` is required on an `Agent` row by a `BEFORE INSERT` trigger, not by the `CHECK`. `AuditLog.userId` is `ON DELETE SET NULL`, so a recycle-bin purge of a user nulls it on rows they wrote, and a `CHECK` would refuse that purge. The immutability function permits only that one update and compares `oneonActionId` and `unattended` too.
+
+> Amended 2026-10-14 (owner): the `userId` requirement moved from the `CHECK` to an insert-time trigger so a recycle-bin purge still works (spec amendment A4, ADR-013).
 - `src/lib/data-classes.ts` classifies `oneonActionId` and `unattended` as D1. The phase 1b gate fails until it does.
 - The audit layer sets `actorType = 'Agent'`, `oneonActionId` and `unattended` from the delegated-token context, the same way support sessions are attributed today. No router changes. A test asserts a request body cannot set any of the three.
 - A delegated write whose token carries no `oneonActionId` cannot satisfy the constraint, so every Oneon write belongs to an Oneon action (I7).

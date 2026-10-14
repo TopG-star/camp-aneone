@@ -92,7 +92,7 @@ Every ruling below is recorded as it was made, with the status it has today. Thi
 - **Basis:** Controller judgement. Spec section 8.4 says "every content table", but tenant files never write the personal-only tables.
 - **Assumption:** Tenant files never write the personal-only tables. Not recorded as checked beyond that statement.
 - **Cost if wrong:** A later feature that stores tenant data in such a table must add `tenant_id` in its own migration.
-- **Status:** Accepted in the code. It departs from spec section 8.4 as written: spec amendment awaiting the owner (A1 below).
+- **Status:** Accepted in the code. It departs from spec section 8.4 as written: spec amendment A1, accepted by the owner on 2026-10-14 (below).
 - **Decided by:** controller ruling
 
 ## Task 7: container wiring and identities
@@ -236,7 +236,7 @@ Every ruling below is recorded as it was made, with the status it has today. Thi
 - **Basis:** Tasks 15 and 16 need `registrationId` for grants and the ImpressoRx client.
 - **Assumption:** Not recorded.
 - **Cost if wrong:** None.
-- **Status:** Accepted. It differs from spec section 9.1, which says `tenantId` = registration id: spec amendment awaiting the owner (A2 below).
+- **Status:** Accepted. It differs from spec section 9.1, which says `tenantId` = registration id: spec amendment A2, accepted by the owner on 2026-10-14 (below).
 - **Decided by:** controller ruling. This is tenant matching; it predates the stop rule.
 
 ### B-14-5 Model audit refuses a record whose tenant differs from the handle's
@@ -254,7 +254,7 @@ Every ruling below is recorded as it was made, with the status it has today. Thi
 - **Basis:** Keeps one tenant key across rows, actors and audit.
 - **Assumption:** Not recorded.
 - **Cost if wrong:** A rename at the adapter.
-- **Status:** Accepted. Spec amendment awaiting the owner (A2 below). The rule that tenant recovery runs only at startup in B-core was a gap, fixed by B-25-6.
+- **Status:** Accepted. Spec amendment A2, accepted by the owner on 2026-10-14 (below). The rule that tenant recovery runs only at startup in B-core was a gap, fixed by B-25-6.
 - **Decided by:** controller ruling. This is tenant matching; it predates the stop rule.
 
 ### B-16-1 Tenant `ModelContext.tenantId` uses the registry `tenant_id`; the limit is the default
@@ -262,7 +262,7 @@ Every ruling below is recorded as it was made, with the status it has today. Thi
 - **Basis:** Keeps audit rows on the one tenant key and avoids `tenant_mismatch` on `recordDecision`.
 - **Assumption:** Not recorded.
 - **Cost if wrong:** Audit rows keyed differently from action rows.
-- **Status:** Accepted. Spec amendment awaiting the owner (A2 below). The default limit was replaced by stored limits in B-22-1.
+- **Status:** Accepted. Spec amendment A2, accepted by the owner on 2026-10-14 (below). The default limit was replaced by stored limits in B-22-1.
 - **Decided by:** controller ruling. This is tenant matching; it predates the stop rule.
 
 ## Task 17: context refresh and suspension
@@ -550,9 +550,9 @@ Every ruling below is recorded as it was made, with the status it has today. Thi
 ### B-22-2 The limit change needs a live check; lowering and raising are decided inside the write transaction
 - **Decision:** The live check uses the bound session lookup and Task 17's classification (remote 401 suspends, revokes, 403; other refusal 403 `launch_required`; unreachable 503 `impressorx_unreachable`; nothing appended in any refusal). `settings.oneon` is checked against the live snapshot's raw ImpressoRx codes. Lowering versus raising is decided against the current row read inside the same IMMEDIATE transaction as the append. The gateway reads the current limit on every call (no cache), so lowering takes effect at once.
 - **Basis:** The "Q7 conditions" (design question Q7; its text is not in the sources I used) and spec section 9.4.
-- **Assumption:** ImpressoRx is reachable when someone changes the limit. This is why the spec's proposed fallback to the cached snapshot for lowering is open (A5 below).
+- **Assumption:** ImpressoRx is reachable when someone changes the limit. This is why the spec's proposed fallback to the cached snapshot for lowering was open until the owner decided it on 2026-10-14 (A5 below).
 - **Cost if wrong:** None.
-- **Status:** Accepted. The spec section 9.4 fallback for lowering is not built: awaiting the owner (A5 below).
+- **Status:** Accepted. The owner decided the spec section 9.4 fallback for lowering on 2026-10-14 and it is now built (A5 below).
 - **Decided by:** controller ruling
 
 ### B-22-3 A raise needs one qualified provider, and only a raise to D2 needs review and a DPA
@@ -560,7 +560,7 @@ Every ruling below is recorded as it was made, with the status it has today. Thi
 - **Basis:** Corrects the controller's own earlier dispatch, which required review and DPA for every raise and would have trapped a pharmacy at D0. The spec text says "within each provider's tenant ceiling"; the ruling reads it as "a configured provider's". The final review lists that change as a spec amendment.
 - **Assumption:** Not recorded.
 - **Cost if wrong:** None.
-- **Status:** Corrected: it replaced the controller's earlier dispatch. Spec amendment awaiting the owner (A3 below).
+- **Status:** Corrected: it replaced the controller's earlier dispatch. Spec amendment A3, accepted by the owner on 2026-10-14 (below).
 - **Decided by:** controller ruling
 
 ### B-22-4 In a tenant context each provider is capped at D1 unless reviewed and covered by a DPA
@@ -678,7 +678,7 @@ Every ruling below is recorded as it was made, with the status it has today. Thi
 - **Basis:** Controller judgement under the one-fix-wave rule: each item is cheap and touches correctness or an explicit failure state.
 - **Assumption:** Not recorded.
 - **Cost if wrong:** A slightly larger fix diff.
-- **Status:** Accepted. The ImpressoRx commits are 544ffe8..36909d3; the scoped re-review was clean. The section 10 text is open: A4 below.
+- **Status:** Accepted. The ImpressoRx commits are 544ffe8..36909d3; the scoped re-review was clean. The section 10 text was amended with the owner's acceptance on 2026-10-14 (A4 below).
 - **Decided by:** controller ruling
 
 ### B-FR-2 Suspend, Resume and re-enrolment were built, not deferred
@@ -889,10 +889,10 @@ These rulings changed only the ImpressoRx repository. All were controller ruling
 | B-18-7 | A replayed issue result after switch-off returns 200 with an already-revoked `issued` grant, documented in `impressorx-contract.md`. | A 401 would strand the rotated attended value. | Oneon's first exchange of that grant fails with 401. | Not in SDA; detail here |
 | B-21-1 | `createAuditLog` inside an agent context that lacks an `oneonActionId` throws a clear error before the insert (fail closed; the CHECK is the backstop). | Every Oneon write goes through an action (design question Q8; its text is not in the sources used here). | An attended agent write without an action id is refused until Step C gives it one. | SDA ADR-020 |
 | B-21-2 | If no local Postgres is available, `verify:audit` is not faked: the implementer reports it unrun, and the CI e2e job (`pnpm db:deploy` then `pnpm verify:audit`) is the check. | See B-pre-5. | The constraints are first proven in CI. | SDA ADR-020. Status: `verify:audit` was not run locally and the migration SQL has never run against a database. |
-| B-21-3 | `AuditLog_agent_provenance` drops `"userId" IS NOT NULL`. Attribution at write time is enforced by `createAuditLog` (refuses an Agent write without `userId`) and a BEFORE INSERT trigger on `AuditLog` rejecting Agent rows with NULL `userId`. `verify:audit` asserts the trigger and that a purge's SET NULL still works. | A recycle-bin purge sets `userId` NULL and the CHECK would block purging any user with Agent rows. Deletion must not be blocked by audit provenance. | One more trigger to maintain. | SDA ADR-020. Spec amendment awaiting the owner (A4). |
+| B-21-3 | `AuditLog_agent_provenance` drops `"userId" IS NOT NULL`. Attribution at write time is enforced by `createAuditLog` (refuses an Agent write without `userId`) and a BEFORE INSERT trigger on `AuditLog` rejecting Agent rows with NULL `userId`. `verify:audit` asserts the trigger and that a purge's SET NULL still works. | A recycle-bin purge sets `userId` NULL and the CHECK would block purging any user with Agent rows. Deletion must not be blocked by audit provenance. | One more trigger to maintain. | SDA ADR-020. Spec amendment A4, accepted by the owner on 2026-10-14. |
 | B-21-4 | The never-applied migration is edited in place: `actorLabel` uses `IS NOT DISTINCT FROM 'Oneon'`; `userId` leaves the CHECK (B-21-3) and a BEFORE INSERT trigger rejects Agent rows with NULL `userId`; `fn_prevent_audit_modification` is replaced to also compare `oneonActionId` and `unattended`. | Reviewer finding in Task 21 (confirmed real): the CHECK passed a NULL `actorLabel` on Agent rows, and the immutability trigger did not compare `oneonActionId` or `unattended` (rewritable once the `userId` CHECK is relaxed). | None (nothing deployed). | SDA ADR-020 |
 | B-21-5 | `enforceAuth` refuses an agent mutation whose token has no `oneonActionId` before the resolver runs. `safeCreateAuditLog` rethrows inside an agent context. A Prisma query extension on `auditLog.create`/`createMany` throws inside an agent context unless `actorType` is Agent. `AgentAudit` carries `userId` and `createAuditLog` throws on a mismatch. | Same Task 21 reviewer findings: the post-commit `safeCreateAuditLog` swallowed the missing-action-id throw (an unaudited Oneon write), and direct `auditLog.create` calls in routers wrote `User` inside an agent context. | None while the allow-list is empty. | SDA ADR-020 |
-| B-21-6 | Spec section 10's literal CHECK `"userId" IS NOT NULL` for Agent rows becomes an insert-time trigger so a recycle-bin purge (SET NULL) still works. Ledger: "record for the user". | See B-21-3. | None. | SDA ADR-020. Spec amendment awaiting the owner (A4). |
+| B-21-6 | Spec section 10's literal CHECK `"userId" IS NOT NULL` for Agent rows becomes an insert-time trigger so a recycle-bin purge (SET NULL) still works. Ledger: "record for the user". | See B-21-3. | None. | SDA ADR-020. Spec amendment A4, accepted by the owner on 2026-10-14. |
 
 Verification limit for every row that touches a database: the ImpressoRx migrations (Tasks 1, 9 and 21) and `pnpm verify:audit` have never run against a database. The migration SQL, the FOR UPDATE and cascade behaviour of Task 9, and the CHECK and trigger behaviour of Task 21 are first checked in ImpressoRx's CI Postgres job.
 
@@ -901,45 +901,50 @@ Verification limit for every row that touches a database: the ImpressoRx migrati
 - The ledger is not in the repository. This ADR is now the repo record of the build's rulings. Where a ruling's basis or assumption was never written down, the entry says "Not recorded" instead of supplying one.
 - Every ruling was a controller decision, so none was reviewed by the owner when made. The exceptions are the owner decisions in B-PR-1, B-PR-2, B-PR-8 to B-PR-14 (and B-PR-3 and B-PR-4, which came from the CTO list the owner accepted).
 - Rulings in the four owner areas of `CLAUDE.md` section 5 that were made before the stop rule and still stand as controller decisions are marked in their entries ("predates the stop rule"). The marking is the writer's reading of section 5, not an owner ruling. They are: B-5-1, B-7-3, B-8-3, B-8-6, B-8-7, B-12-1, B-14-1, B-14-4, B-14-5, B-15-1, B-16-1, B-17-1, B-17-3, B-17-4, B-19-5, B-19-6, B-20-2, B-20-3, B-20-4, B-22-1, B-24-1, B-24-3, B-24-4, B-26-2, B-26-3, B-26-4, B-26-6, B-26-7, B-26-8, B-26-10, B-26-11, B-26-12, B-26-13. The owner can confirm or change each one. B-FR-4 is in this group and has already been superseded (ADR-014).
-- Open for the owner, apart from the spec amendments below: the three backup questions in ADR-015 (retention per file or per folder, leftover hourly `.partial` folders, `rclone copy` versus `sync`), and the Step C tickets in B-PR-13.
+- Open for the owner (the spec amendments below were accepted on 2026-10-14): the three backup questions in ADR-015 (retention per file or per folder, leftover hourly `.partial` folders, `rclone copy` versus `sync`), and the Step C tickets in B-PR-13.
 - Deferred by the controller and not fixed: B-FR-7 (Suspend wording) and B-FR-8 (test gap for revocation inside the re-enrolment transaction).
 - Not verified: the ImpressoRx migrations and `verify:audit` have never run against a database; row-lock ordering in Task 18 was tested with a hook; the ledger lists manual browser checks (including one for Task 20) as required before merge, and their results are not in the sources used here.
 
-## Spec amendments awaiting the owner
+## Spec amendments (accepted 2026-10-14)
 
-Each item is a proposal. None is accepted. The spec (`docs/superpowers/specs/2026-10-07-step-b-core-design.md`) still reads as originally approved except where B-PR-1 already changed section 5.2. The final review listed these as "spec amendments to record". "Cost if wrong" is taken from the entries cited.
+The owner (Gerry) accepted A1 to A4 on 2026-10-14, each with the condition below, and decided the open section 9.4 question (A5). The spec (`docs/superpowers/specs/2026-10-07-step-b-core-design.md`) is amended in place: each changed section carries an "Amended 2026-10-14 (owner)" note. "Spec said" is the text as originally approved; "Built" is what the build had done before the owner's decision. "Cost if wrong" is taken from the entries cited.
 
-### A1. Section 8.4: `tenant_id` only on tenant-data tables
-- **Spec says:** an additive migration gives every content table a nullable `tenant_id`.
+### A1. Section 8.4: `tenant_id` on every table a tenant file writes
+- **Spec said:** an additive migration gives every content table a nullable `tenant_id`.
 - **Built:** only the tables that can hold tenant data in B-core carry it (conversations, action_instances and events, model_call_decisions and outcomes). Personal-only tables get none. Action config repositories, which have no `tenant_id`, check `scope` and `owner_id` against the handle instead (B-14-1).
-- **Proposed wording (the writer's draft, for the owner to edit):** "Every table that can hold tenant data carries `tenant_id`; a feature that stores tenant data in another table adds it in its own migration."
-- **Cost if wrong:** a later feature storing tenant data in a table without `tenant_id` must add it in its own migration.
+- **Accepted, with the owner's condition:** an explicit, tested list of tenant-data tables and of exempt tables; an architecture test fails when a table is on neither list.
+- **Spec text now:** section 8.4 lists the tenant-data tables (five with `tenant_id`, and the two action config tables keyed by `scope` and `owner_id`), the exempt bookkeeping tables and the exempt personal-only tables. The architecture test in `packages/agent-server/src/architecture.test.ts` reads the tenant-file migrations and fails when a created table is on neither list, a tenant-data table lacks its tenant column, or the repository that writes it does not assert it.
+- **Cost if wrong:** a later feature storing tenant data in a table without `tenant_id` must add it in its own migration; the architecture test now makes a new table on neither list a failing build rather than a silent gap.
 - **Entries:** B-6-1, B-6-2, B-14-1.
 
 ### A2. Section 9.1: `tenantId` is the registry `tenant_id`, not the registration id
-- **Spec says:** `tenantId` = registration id.
+- **Spec said:** `tenantId` = registration id.
 - **Built:** `tenantId` on actors, actions, rows and the model context is the registry `tenant_id`; the registration id travels separately as `registrationId` on `ActiveContext`.
-- **Proposed wording (the writer's draft, for the owner to edit):** "`tenantId` = the tenant's registry `tenant_id` (UNIQUE on `tenant_registrations`); `registrationId` is carried separately."
+- **Accepted, with the owner's condition:** re-enrolment keeps the single registration row (its history in `tenant_registration_events`); no new registration is created per enrolment.
+- **Spec text now:** rows, actors, contexts and audit use the registry `tenant_id` (Oneon's id for the pharmacy); `registrationId` is carried alongside for grants and the ImpressoRx client; re-enrolment keeps the same registration row; ImpressoRx's permanent `Tenant.id` is `impressorx_tenant_id` (ADR-014).
 - **Cost if wrong:** a rename at the adapter (B-15-1); audit rows keyed differently from action rows (B-16-1).
 - **Entries:** B-14-4, B-15-1, B-16-1, B-22-1.
 
 ### A3. Section 9.4: "each provider" became "at least one configured provider", with a per-call cap
-- **Spec says:** raising must stay within each provider's tenant ceiling, and a raise to D2 needs that provider's review record and DPA.
+- **Spec said:** raising must stay within each provider's tenant ceiling, and a raise to D2 needs that provider's review record and DPA.
 - **Built:** a raise must stay within a configured provider's tenant ceiling; only a raise to D2 also needs a provider that is reviewed and has a DPA. In a tenant context the gateway caps every provider at D1 per call unless it is reviewed and has `tenantDpa`, so a keyed provider that cannot receive D2 data cannot satisfy the gate.
-- **Proposed wording (the writer's draft, for the owner to edit):** "Raising must stay within at least one configured provider's tenant ceiling, and every call is capped by the routed provider's own qualification (D1 unless reviewed and covered by a DPA)."
+- **Accepted, with the owner's condition:** the admin AI-limit screen shows the effective limit per provider, not one headline (the deferred Minor m10 is now required).
+- **Spec text now:** a raise needs at least one configured provider whose tenant ceiling reaches the class (and, for D2, reviewed with a tenant DPA); every call is capped by the lowest-of-layers rule, with uncleared providers held at D1 in tenant context; the admin screen shows the stored limit as the setting and the effective limit per configured provider, with the reason when it is lower. `GET /api/tenant/ai-limit` computes them with the gateway's own functions (`explainProviderLimit` and `lowestOfLayers` in the AI boundary).
 - **Cost if wrong:** none, per the ledger (personal context unchanged). Both tenant ceilings are D1 today, so the difference has no effect yet.
 - **Entries:** B-22-3, B-22-4.
 
 ### A4. Section 10: the Agent audit `userId` CHECK became an insert trigger
-- **Spec says:** a CHECK that an Agent row has `userId` and `oneonActionId` not null and `actorLabel = 'Oneon'`.
+- **Spec said:** a CHECK that an Agent row has `userId` and `oneonActionId` not null and `actorLabel = 'Oneon'`.
 - **Built:** the CHECK no longer requires `userId` not null, because a recycle-bin purge sets `userId` NULL. A BEFORE INSERT trigger rejects Agent rows with NULL `userId`, and `createAuditLog` refuses an Agent write without it. Also built beyond the spec text: the immutability function compares `oneonActionId` and `unattended`; a query guard refuses `auditLog` writes in an agent context unless `actorType` is Agent.
-- **Proposed wording (the writer's draft, for the owner to edit):** replace "CHECK ... `userId` not null" with "an insert-time trigger rejects an Agent row with NULL `userId`; a later SET NULL on purge is allowed".
+- **Accepted, with the owner's addition:** a test on the Oneon side that a throwing model-audit `recordDecision` fails the call with nothing sent to the provider.
+- **Spec text now:** the CHECK covers `oneonActionId`, `actorLabel` and `unattended`; `userId` is required by a BEFORE INSERT trigger so a recycle-bin purge (SET NULL) still works. Section 3.1, I7: "Database CHECK plus insert-time trigger".
 - **Cost if wrong:** none per the ledger; one more trigger to maintain. Not verified: the SQL has never run against a database.
-- **Entries:** B-21-3, B-21-4, B-21-6 (index above); B-FR-1 (the text amendment waits for the owner).
+- **Entries:** B-21-3, B-21-4, B-21-6 (index above); B-FR-1.
 
-### A5. Section 9.4: lowering the AI limit while ImpressoRx is unreachable
-- **Spec says:** "Proposed, for ruling at spec review: when ImpressoRx is unreachable, lowering may fall back to the cached snapshot's `settings.oneon`, and the row records that fallback. Raising always requires the live check."
-- **Built:** no fallback. Every change, lowering or raising, needs the live check; if ImpressoRx is unreachable the request answers 503 `impressorx_unreachable` and nothing is appended (B-22-2).
-- **Open question for the owner:** accept the fallback (code change needed), or amend the spec to say a lowering also needs the live check.
-- **Cost if wrong:** not recorded. With the code as built, nobody can lower a pharmacy's AI limit while ImpressoRx is unreachable.
+### A5. Section 9.4: lowering the AI limit while ImpressoRx is unreachable (decided)
+- **Spec said:** "Proposed, for ruling at spec review: when ImpressoRx is unreachable, lowering may fall back to the cached snapshot's `settings.oneon`, and the row records that fallback. Raising always requires the live check."
+- **Built before the decision:** no fallback. Every change needed the live check; an unreachable ImpressoRx answered 503 `impressorx_unreachable` and nothing was appended (B-22-2).
+- **Decided by the owner:** lowering is allowed while ImpressoRx is unreachable when the admin's current hand-off session snapshot (any age within that session) shows `settings.oneon`; the history row records that it was authorised from the cached snapshot and when; when ImpressoRx is reachable again the permission is re-checked and a loss is logged (the lowered limit stays); raising stays refused without a live check.
+- **Spec text now:** section 9.4, "Lowering while ImpressoRx is unreachable". A Google session gets no fallback. The row's `live_check_ref` records `authorisedFrom: "cached_snapshot"` and the snapshot time. The re-check runs on the next snapshot ImpressoRx delivers for that membership; a loss of `settings.oneon` is logged at error level with `alert: "ai_limit_lowered_without_permission"`.
+- **Cost if wrong:** a person whose permission was removed in ImpressoRx during an outage can still lower the limit. Lowering only ever sends less data, and the loss raises an alert.
 - **Entries:** B-22-2.
