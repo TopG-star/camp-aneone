@@ -170,7 +170,12 @@ export async function backupAll(deps: {
   );
   for (const refusal of visit.refused) {
     skipped.push(refusal);
-    deps.logger?.error("backup skipped: the tenant is refused service", { registrationId: refusal.registrationId, code: refusal.code });
+    // A file that is gone is its own alert: it needs a restore, where a schema that is behind needs a fix and a re-migration.
+    if (refusal.code === "tenant_file_missing") {
+      deps.logger?.error("backup skipped: the tenant file is missing", { alert: "tenant_file_missing", registrationId: refusal.registrationId, code: refusal.code });
+    } else {
+      deps.logger?.error("backup skipped: the tenant is refused service", { registrationId: refusal.registrationId, code: refusal.code });
+    }
   }
   for (const registrationId of visit.failed) {
     const message = visit.errors[registrationId]!;
@@ -184,6 +189,50 @@ export async function backupAll(deps: {
     completed.map((c) => ({ ...c, file: join(finalDir, basename(c.file)) })),
     { skipped },
   );
+}
+
+/** The newest restorable sealed copy of one context; `newestAt` is null when it has none. */
+export interface NewestBackupCopy {
+  context: "control" | "personal" | "tenant";
+  /** Set for a pharmacy. */
+  registrationId?: string;
+  newestAt: Date | null;
+}
+
+const DAY_FOLDER = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * For control, personal and every active pharmacy, when its newest restorable copy was written: the latest modification time among its
+ * sealed files in completed day folders (`<day>/`, never `<day>.partial/`) and in `pre-migration/<run>/`. Only reads; nothing is
+ * opened or removed. A pharmacy the nightly run skips still has its pre-migration copy counted here.
+ */
+export function newestBackupCopies(deps: { outDir: string; registrations: Pick<TenantRegistrationRepository, "listActive"> }): NewestBackupCopy[] {
+  const newest = new Map<string, number>();
+  const scan = (folder: string): void => {
+    for (const entry of readdirSync(folder, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(EXTENSION)) continue;
+      const at = statSync(join(folder, entry.name)).mtimeMs;
+      if (at > (newest.get(entry.name) ?? -Infinity)) newest.set(entry.name, at);
+    }
+  };
+  const subfolders = (folder: string): string[] =>
+    existsSync(folder) ? readdirSync(folder, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name) : [];
+  for (const day of subfolders(deps.outDir).filter((name) => DAY_FOLDER.test(name))) scan(join(deps.outDir, day));
+  for (const run of subfolders(join(deps.outDir, "pre-migration"))) scan(join(deps.outDir, "pre-migration", run));
+
+  const copy = (fileName: string): Date | null => {
+    const at = newest.get(`${fileName}${EXTENSION}`);
+    return at === undefined ? null : new Date(at);
+  };
+  return [
+    { context: "control", newestAt: copy("control") },
+    { context: "personal", newestAt: copy("personal") },
+    ...deps.registrations.listActive().map((reg) => ({
+      context: "tenant" as const,
+      registrationId: reg.id,
+      newestAt: copy(reg.fileName.replace(/\.db$/, "")),
+    })),
+  ];
 }
 
 /**

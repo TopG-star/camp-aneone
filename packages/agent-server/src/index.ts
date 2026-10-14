@@ -29,6 +29,7 @@ import {
   StructuredLogger,
   backupAll,
   backupScratchDir,
+  newestBackupCopies,
   restoreTestOwned,
 } from "@oneon/infrastructure";
 
@@ -348,6 +349,7 @@ if (backupKey) {
     outDir: env.BACKUP_DIR,
     backupAll: () => backupAll({ gate, control, outDir: env.BACKUP_DIR, keyB64: backupKey, now: () => new Date(), scratchDir, logger }),
     restoreTest: (file) => restoreTestOwned({ file, keyB64: backupKey, tmpDir: scratchDir, control }),
+    newestCopies: () => newestBackupCopies({ outDir: env.BACKUP_DIR, registrations: container.tenantRegistrations }),
     logger,
   });
   backupScheduler.start();

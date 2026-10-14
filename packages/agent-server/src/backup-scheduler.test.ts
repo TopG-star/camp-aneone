@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Logger } from "@oneon/domain";
-import { BackupScheduler } from "./background-loop.js";
+import { newestBackupCopies } from "@oneon/infrastructure";
+import { BACKUP_STALE_AFTER_HOURS, BackupScheduler } from "./background-loop.js";
 
 function logger() {
   return { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } satisfies Logger;
@@ -166,5 +167,122 @@ describe("BackupScheduler", () => {
     release();
     await stopping;
     expect(stopped).toBe(true);
+  });
+});
+
+describe("BackupScheduler age alerts", () => {
+  const NOW = new Date("2026-10-10T03:00:00.000Z");
+  const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 60 * 60 * 1000);
+  let outDir: string;
+  beforeEach(() => {
+    outDir = mkdtempSync(join(tmpdir(), "scheduler-age-"));
+    mkdirSync(join(outDir, "2026-10-10")); // today is done: no backup runs
+  });
+  afterEach(() => rmSync(outDir, { recursive: true, force: true }));
+
+  type Copy = { context: "control" | "personal" | "tenant"; registrationId?: string; newestAt: Date | null };
+  const alertsOf = (log: ReturnType<typeof logger>, kind: string) =>
+    log.error.mock.calls.filter((c) => (c[1] as { alert?: string } | undefined)?.alert === kind).map((c) => c[1] as Record<string, unknown>);
+  function run(copies: () => Copy[], log = logger()) {
+    const scheduler = new BackupScheduler({
+      outDir,
+      backupAll: vi.fn(async () => {}),
+      restoreTest: vi.fn(async () => ({ ok: true, integrity: "ok", contextMeta: null })),
+      newestCopies: copies,
+      logger: log,
+      now: () => NOW,
+    });
+    return { scheduler, log };
+  }
+
+  it("names the threshold: 26 hours", () => {
+    expect(BACKUP_STALE_AFTER_HOURS).toBe(26);
+  });
+
+  it("raises backup_stale for a pharmacy whose newest copy is older than 26 hours, with its age", async () => {
+    const { scheduler, log } = run(() => [{ context: "tenant", registrationId: "reg-1", newestAt: hoursAgo(26.5) }]);
+    await scheduler.tick();
+    expect(alertsOf(log, "backup_stale")).toEqual([{ alert: "backup_stale", context: "tenant", registrationId: "reg-1", ageHours: 26.5 }]);
+  });
+
+  it("raises backup_stale with ageHours \"none\" for a pharmacy with no copy at all", async () => {
+    const { scheduler, log } = run(() => [{ context: "tenant", registrationId: "reg-1", newestAt: null }]);
+    await scheduler.tick();
+    expect(alertsOf(log, "backup_stale")).toEqual([{ alert: "backup_stale", context: "tenant", registrationId: "reg-1", ageHours: "none" }]);
+  });
+
+  it("does the same for control.db and the personal file", async () => {
+    const { scheduler, log } = run(() => [
+      { context: "control", newestAt: hoursAgo(30) },
+      { context: "personal", newestAt: null },
+    ]);
+    await scheduler.tick();
+    expect(alertsOf(log, "backup_stale")).toEqual([
+      { alert: "backup_stale", context: "control", ageHours: 30 },
+      { alert: "backup_stale", context: "personal", ageHours: "none" },
+    ]);
+  });
+
+  it("is quiet for copies at or inside 26 hours", async () => {
+    const { scheduler, log } = run(() => [
+      { context: "control", newestAt: hoursAgo(1) },
+      { context: "personal", newestAt: hoursAgo(BACKUP_STALE_AFTER_HOURS) },
+      { context: "tenant", registrationId: "reg-1", newestAt: hoursAgo(25.9) },
+    ]);
+    await scheduler.tick();
+    expect(alertsOf(log, "backup_stale")).toEqual([]);
+  });
+
+  it("alerts again on every hourly tick while a copy stays stale, even after the day's backup has run", async () => {
+    const { scheduler, log } = run(() => [{ context: "tenant", registrationId: "reg-1", newestAt: hoursAgo(40) }]);
+    await scheduler.tick();
+    await scheduler.tick();
+    expect(alertsOf(log, "backup_stale")).toHaveLength(2);
+  });
+
+  it("checks the ages even when the nightly backup failed", async () => {
+    rmSync(join(outDir, "2026-10-10"), { recursive: true });
+    const log = logger();
+    const scheduler = new BackupScheduler({
+      outDir,
+      backupAll: vi.fn().mockRejectedValue(new Error("disk full")),
+      restoreTest: vi.fn(async () => ({ ok: true, integrity: "ok", contextMeta: null })),
+      newestCopies: () => [{ context: "control", newestAt: hoursAgo(50) }],
+      logger: log,
+      now: () => NOW,
+    });
+    await scheduler.tick();
+    expect(alertsOf(log, "backup_stale")).toHaveLength(1);
+  });
+
+  it("a skipped pharmacy whose only copy is a pre-migration backup: quiet while that copy is fresh, stale once it ages", async () => {
+    const registrations = { listActive: () => [{ id: "reg-skipped", fileName: "skipped.db" }] } as never;
+    const stamp = (folder: string, name: string, at: Date) => {
+      mkdirSync(join(outDir, folder), { recursive: true });
+      const file = join(outDir, folder, name);
+      writeFileSync(file, "x");
+      utimesSync(file, at, at);
+    };
+    // The nightly day has control and personal, and lists the pharmacy as skipped: it has no file of its own in any day.
+    stamp("2026-10-10", "control.db.enc", hoursAgo(1));
+    stamp("2026-10-10", "personal.db.enc", hoursAgo(1));
+    writeFileSync(join(outDir, "2026-10-10", "skipped.json"), JSON.stringify([{ registrationId: "reg-skipped", code: "tenant_schema_behind" }]));
+    stamp("pre-migration/2026-10-10T01-00-00Z", "skipped.db.enc", hoursAgo(2));
+    const fresh = run(() => newestBackupCopies({ outDir, registrations }));
+    await fresh.scheduler.tick();
+    expect(alertsOf(fresh.log, "backup_stale")).toEqual([]);
+
+    stamp("pre-migration/2026-10-10T01-00-00Z", "skipped.db.enc", hoursAgo(30));
+    const aged = run(() => newestBackupCopies({ outDir, registrations }));
+    await aged.scheduler.tick();
+    expect(alertsOf(aged.log, "backup_stale")).toEqual([{ alert: "backup_stale", context: "tenant", registrationId: "reg-skipped", ageHours: 30 }]);
+  });
+
+  it("never throws when the age check itself fails", async () => {
+    const { scheduler, log } = run(() => {
+      throw new Error("unreadable folder");
+    });
+    await expect(scheduler.tick()).resolves.toBeUndefined();
+    expect(log.error).toHaveBeenCalledWith("Backup age check failed", expect.objectContaining({ error: "unreadable folder" }));
   });
 });

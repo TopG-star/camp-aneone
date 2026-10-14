@@ -14,7 +14,8 @@ export function tenantFilePath(tenantDir: string, fileName: string): string {
 }
 
 export class TenantRefusedError extends Error {
-  constructor(public readonly code: "tenant_unavailable" | "tenant_schema_behind") {
+  /** `tenant_file_missing` is an active registration whose file is not on disk: the operator's alert, never shown to the client. */
+  constructor(public readonly code: "tenant_unavailable" | "tenant_schema_behind" | "tenant_file_missing") {
     super(code);
     this.name = "TenantRefusedError";
   }
@@ -84,7 +85,7 @@ export class ContextDbGate {
     if (reg.status !== "active") throw new TenantRefusedError("tenant_unavailable");
     const path = this.tenantPath(reg.file_name);
     // Opening a missing SQLite path would create it; the gate never creates a file on open.
-    if (!existsSync(path)) throw new TenantRefusedError("tenant_unavailable");
+    if (!existsSync(path)) throw new TenantRefusedError("tenant_file_missing");
 
     let conn: Database.Database;
     try {

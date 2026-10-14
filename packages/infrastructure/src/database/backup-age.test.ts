@@ -1,0 +1,75 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { newestBackupCopies } from "./backup.js";
+
+const registrations = {
+  listActive: () => [
+    { id: "reg-1", fileName: "aaaa.db" },
+    { id: "reg-2", fileName: "bbbb.db" },
+  ],
+} as never;
+
+describe("newestBackupCopies", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function setup() {
+    const outDir = mkdtempSync(join(tmpdir(), "age-"));
+    dirs.push(outDir);
+    /** Writes `<folder>/<name>` and stamps its modification time. */
+    const put = (folder: string, name: string, at: string) => {
+      mkdirSync(join(outDir, folder), { recursive: true });
+      const file = join(outDir, folder, name);
+      writeFileSync(file, "x");
+      utimesSync(file, new Date(at), new Date(at));
+    };
+    const ofContext = (copies: ReturnType<typeof newestBackupCopies>, context: string, registrationId?: string) =>
+      copies.find((c) => c.context === context && c.registrationId === registrationId)!;
+    return { outDir, put, ofContext };
+  }
+
+  it("reports the newest completed copy of control, personal and each active pharmacy, and none where there is no copy", () => {
+    const { outDir, put, ofContext } = setup();
+    put("2026-10-08", "control.db.enc", "2026-10-08T01:00:00Z");
+    put("2026-10-09", "control.db.enc", "2026-10-09T01:00:00Z");
+    put("2026-10-09", "personal.db.enc", "2026-10-09T01:00:05Z");
+    put("2026-10-09", "aaaa.db.enc", "2026-10-09T01:00:10Z");
+    const copies = newestBackupCopies({ outDir, registrations });
+    expect(ofContext(copies, "control").newestAt).toEqual(new Date("2026-10-09T01:00:00Z"));
+    expect(ofContext(copies, "personal").newestAt).toEqual(new Date("2026-10-09T01:00:05Z"));
+    expect(ofContext(copies, "tenant", "reg-1").newestAt).toEqual(new Date("2026-10-09T01:00:10Z"));
+    expect(ofContext(copies, "tenant", "reg-2").newestAt).toBeNull();
+  });
+
+  it("counts a pre-migration copy, so a skipped pharmacy's only copy is found", () => {
+    const { outDir, put, ofContext } = setup();
+    put("2026-10-09", "control.db.enc", "2026-10-09T01:00:00Z");
+    put("pre-migration/2026-10-05T12-00-00Z", "bbbb.db.enc", "2026-10-05T12:00:00Z");
+    const copies = newestBackupCopies({ outDir, registrations });
+    expect(ofContext(copies, "tenant", "reg-2").newestAt).toEqual(new Date("2026-10-05T12:00:00Z"));
+  });
+
+  it("takes the newest across day folders and pre-migration folders", () => {
+    const { outDir, put, ofContext } = setup();
+    put("2026-10-01", "aaaa.db.enc", "2026-10-01T01:00:00Z");
+    put("pre-migration/2026-10-07T08-00-00Z", "aaaa.db.enc", "2026-10-07T08:00:00Z");
+    expect(ofContext(newestBackupCopies({ outDir, registrations }), "tenant", "reg-1").newestAt).toEqual(new Date("2026-10-07T08:00:00Z"));
+  });
+
+  it("does not count an unfinished day (.partial), a .part file, or a folder that is not a day", () => {
+    const { outDir, put, ofContext } = setup();
+    put("2026-10-09.partial", "aaaa.db.enc", "2026-10-09T01:00:00Z");
+    put("2026-10-08", "aaaa.db.enc.part", "2026-10-08T01:00:00Z");
+    put("notes", "aaaa.db.enc", "2026-10-08T01:00:00Z");
+    expect(ofContext(newestBackupCopies({ outDir, registrations }), "tenant", "reg-1").newestAt).toBeNull();
+  });
+
+  it("reports none everywhere when the backup folder does not exist", () => {
+    const copies = newestBackupCopies({ outDir: join(tmpdir(), "no-such-backup-folder-oneon"), registrations });
+    expect(copies.map((c) => c.newestAt)).toEqual([null, null, null, null]);
+  });
+});

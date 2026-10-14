@@ -372,11 +372,16 @@ export interface BackupSchedulerDeps {
   outDir: string;
   backupAll: () => Promise<unknown>;
   restoreTest: (file: string) => Promise<RestoreCheck>;
+  /** When given, each tick ends by checking every context's newest copy against BACKUP_STALE_AFTER_HOURS. */
+  newestCopies?: () => Array<{ context: "control" | "personal" | "tenant"; registrationId?: string; newestAt: Date | null }>;
   logger: Logger;
   now?: () => Date;
   /** How often to look at the clock. The jobs themselves run once per day and once per month. */
   checkIntervalMs?: number;
 }
+
+/** A context whose newest restorable copy is older than this (or missing) raises `alert: "backup_stale"` on every hourly tick. */
+export const BACKUP_STALE_AFTER_HOURS = 26;
 
 const DAY_FOLDER = /^\d{4}-\d{2}-\d{2}$/;
 const NON_TENANT_BACKUPS = new Set(["control.db.enc", "personal.db.enc"]);
@@ -415,10 +420,33 @@ export class BackupScheduler {
   tick(): Promise<void> {
     // Overlap guard, as in BackgroundLoop.
     if (this.inFlight !== null) return this.inFlight;
-    this.inFlight = this.run().finally(() => {
-      this.inFlight = null;
-    });
+    this.inFlight = this.run()
+      .then(() => this.alertOnStaleBackups())
+      .finally(() => {
+        this.inFlight = null;
+      });
     return this.inFlight;
+  }
+
+  /** Logs `backup_stale` at error for every context whose newest copy is older than the threshold or missing. Never throws. */
+  private alertOnStaleBackups(): void {
+    const { newestCopies, logger } = this.deps;
+    if (!newestCopies) return;
+    try {
+      const nowMs = this.now().getTime();
+      for (const copy of newestCopies()) {
+        const ageHours = copy.newestAt === null ? null : (nowMs - copy.newestAt.getTime()) / (60 * 60 * 1000);
+        if (ageHours !== null && ageHours <= BACKUP_STALE_AFTER_HOURS) continue;
+        logger.error("Backup is stale", {
+          alert: "backup_stale",
+          context: copy.context,
+          ...(copy.registrationId !== undefined ? { registrationId: copy.registrationId } : {}),
+          ageHours: ageHours === null ? "none" : Math.round(ageHours * 10) / 10,
+        });
+      }
+    } catch (error) {
+      logger.error("Backup age check failed", { error: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   private async run(): Promise<void> {

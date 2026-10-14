@@ -243,6 +243,27 @@ describe("backups", () => {
       expect(errors[0]![1]).toMatchObject({ registrationId: "reg-1", code: "tenant_schema_behind" });
     });
 
+    it("a missing tenant file is its own alert, apart from a refusal for a schema that is behind, and is listed in skipped.json", async () => {
+      const { deps, regs, tenantDir, gate } = setup();
+      rmSync(join(tenantDir, regs[0]!.fileName));
+      const errors: Array<[string, Record<string, unknown>]> = [];
+      const logger = { info() {}, warn() {}, debug() {}, error: (m: string, c?: Record<string, unknown>) => void errors.push([m, c ?? {}]) };
+      const results = await backupAll({ ...deps, logger });
+      expect(results.skipped).toEqual([{ registrationId: "reg-1", code: "tenant_file_missing" }]);
+      expect(JSON.parse(readFileSync(join(deps.outDir, "2026-10-10", "skipped.json"), "utf8"))).toEqual([{ registrationId: "reg-1", code: "tenant_file_missing" }]);
+      const alerts = errors.filter(([, c]) => c.alert !== undefined);
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0]![1]).toMatchObject({ alert: "tenant_file_missing", registrationId: "reg-1", code: "tenant_file_missing" });
+
+      // A refusal for a schema that is behind is logged as before and is not a missing file.
+      rmSync(join(deps.outDir, "2026-10-10"), { recursive: true });
+      errors.length = 0;
+      const { wrapped } = flakyGate(gate, "reg-2", new TenantRefusedError("tenant_schema_behind"));
+      await backupAll({ ...deps, gate: wrapped, logger });
+      expect(errors.some(([, c]) => c.alert === "tenant_file_missing" && c.registrationId === "reg-2")).toBe(false);
+      expect(errors.some(([, c]) => c.code === "tenant_schema_behind")).toBe(true);
+    });
+
     it("writes no skipped.json when nothing was skipped", async () => {
       const { deps } = setup();
       const results = await backupAll(deps);

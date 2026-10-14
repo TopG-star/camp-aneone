@@ -93,7 +93,7 @@ describe("ContextDbGate", () => {
   it("lease refuses a file missing on disk and does not create it", () => {
     const { gate, register } = setup();
     const reg = register();
-    expect(refusal(() => gate.lease(reg.id))).toBe("tenant_unavailable");
+    expect(refusal(() => gate.lease(reg.id))).toBe("tenant_file_missing");
     expect(existsSync(reg.path)).toBe(false);
   });
 
