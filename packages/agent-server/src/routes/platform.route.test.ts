@@ -11,11 +11,13 @@ import {
   FakeImpressorx,
   PlatformOperatorRepository,
   SqliteIdentityRepository,
+  StructuredLogger,
   TenantRefusedError,
   TenantRegistrationRepository,
   openControlDb,
   rawDb,
 } from "@oneon/infrastructure";
+import type { Logger } from "@oneon/domain";
 import { latestRollups } from "../tenant-jobs.js";
 import { createPlatformRouter } from "./platform.route.js";
 
@@ -32,7 +34,14 @@ describe("platform route", () => {
   });
 
   function setup(
-    opts: { masterKey?: string | null; operator?: boolean; backupConfigured?: boolean; grantConfigured?: boolean; createTenantFile?: (id: string, tenantId: string) => void } = {},
+    opts: {
+      masterKey?: string | null;
+      operator?: boolean;
+      backupConfigured?: boolean;
+      grantConfigured?: boolean;
+      createTenantFile?: (id: string, tenantId: string) => void;
+      logger?: Logger;
+    } = {},
   ) {
     const dir = mkdtempSync(join(tmpdir(), "platform-"));
     dirs.push(dir);
@@ -46,13 +55,10 @@ describe("platform route", () => {
     if (opts.operator !== false) operators.grant(operatorId);
     const registrations = new TenantRegistrationRepository(control);
     const fake = new FakeImpressorx(ORIGIN, "acme", CODE);
-    const enrolment = new EnrolmentService({
-      repo: registrations,
-      oneonOrigin: "https://oneon.example",
-      masterKeyB64: opts.masterKey === null ? undefined : (opts.masterKey ?? randomBytes(32).toString("base64")),
-      fetchImpl: fake.fetch,
-    });
-    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    const masterKey = opts.masterKey === null ? undefined : (opts.masterKey ?? randomBytes(32).toString("base64"));
+    const enrolment = new EnrolmentService({ repo: registrations, oneonOrigin: "https://oneon.example", masterKeyB64: masterKey, fetchImpl: fake.fetch });
+    const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    const logger = opts.logger ?? mockLogger;
     const app = express();
     app.use(express.json());
     let identityId = operatorId;
@@ -73,7 +79,7 @@ describe("platform route", () => {
         logger,
       }),
     );
-    return { app, control, gate, fake, registrations, logger, dir, actAs: (id: string) => (identityId = id), otherId };
+    return { app, control, gate, fake, registrations, enrolment, masterKey, logger: mockLogger, dir, actAs: (id: string) => (identityId = id), otherId };
   }
 
   it("enrols against the fake deployment", async () => {
@@ -285,6 +291,40 @@ describe("platform route", () => {
       const res = await request(app).get("/api/platform/tenants");
       expect(res.body.tenants).toEqual([expect.objectContaining({ id, status: "suspended_by_operator" })]);
     });
+  });
+
+  it("never writes the enrolment code or any key material to the log, across failed and successful enrolments (spec I6)", async () => {
+    const written: string[] = [];
+    const capture = (chunk: unknown) => (written.push(String(chunk)), true);
+    const out = vi.spyOn(process.stdout, "write").mockImplementation(capture);
+    const err = vi.spyOn(process.stderr, "write").mockImplementation(capture);
+    try {
+      const logger = new StructuredLogger("platform", "debug");
+      // A reply the deployment signed with the wrong key (logged as a warning), a storage error (logged as an error), then success.
+      const wrongKey = setup({ logger });
+      wrongKey.fake.signReplyWithWrongKey = true;
+      expect((await request(wrongKey.app).post("/api/platform/enrolments").send(body)).status).toBe(502);
+      const diskFull = setup({
+        logger,
+        createTenantFile: () => {
+          throw new Error("disk full");
+        },
+      });
+      expect((await request(diskFull.app).post("/api/platform/enrolments").send(body)).status).toBe(500);
+      const good = setup({ logger });
+      const ok = await request(good.app).post("/api/platform/enrolments").send(body);
+      expect(ok.status).toBe(201);
+
+      const log = written.join("");
+      expect(log).toContain("Enrolment failed");
+      expect(log).toContain("Enrolment error");
+      const { privateKeyJwk } = await good.enrolment.oneonSigningKey(ok.body.registrationId as string);
+      const secrets = [CODE, wrongKey.masterKey!, diskFull.masterKey!, good.masterKey!, privateKeyJwk.d as string, JSON.stringify(privateKeyJwk)];
+      for (const secret of secrets) expect(log).not.toContain(secret);
+    } finally {
+      out.mockRestore();
+      err.mockRestore();
+    }
   });
 
   it("leaves no registration, keys, events or file when creating the tenant file fails,", async () => {
