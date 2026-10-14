@@ -38,6 +38,7 @@ describe("tenant registration and operator repositories", () => {
     oneonKeyId: `o-${slug}`,
     oneonPublicKeyJwk: jwk("o"),
     oneonPrivateKeySealed: sealed,
+    impressorxTenantId: `irx-${slug}`,
     enrolledBy: identityId,
   });
 
@@ -51,9 +52,10 @@ describe("tenant registration and operator repositories", () => {
       repo.setStatus(reg.id, "suspended_by_operator", identityId, "test");
       let ranInside = false;
 
-      const after = repo.replaceKeysOnReenrolment(reg.id, keys, identityId, () => (ranInside = true));
+      const after = repo.replaceKeysOnReenrolment(reg.id, keys, "irx-acme", identityId, () => (ranInside = true));
 
       expect(after.status).toBe("active");
+      expect(after.impressorxTenantId).toBe("irx-acme");
       expect(ranInside).toBe(true);
       expect(repo.deploymentKeys(reg.id).map((k) => k.keyId)).toEqual(["d-2"]);
       expect(repo.unretiredOneonKeyIds(reg.id)).toEqual(["o-2"]);
@@ -62,12 +64,12 @@ describe("tenant registration and operator repositories", () => {
     it("throws and changes nothing when the registration is not suspended, or when the in-transaction step fails", () => {
       const { repo, identityId } = setup();
       const reg = repo.create(input(identityId));
-      expect(() => repo.replaceKeysOnReenrolment(reg.id, keys, identityId)).toThrow(/suspended/);
+      expect(() => repo.replaceKeysOnReenrolment(reg.id, keys, "irx-acme", identityId)).toThrow(/suspended/);
       expect(repo.deploymentKeys(reg.id).map((k) => k.keyId)).toEqual(["d-acme"]);
 
       repo.setStatus(reg.id, "suspended_by_operator", identityId, "test");
       expect(() =>
-        repo.replaceKeysOnReenrolment(reg.id, keys, identityId, () => {
+        repo.replaceKeysOnReenrolment(reg.id, keys, "irx-acme", identityId, () => {
           throw new Error("revocation failed");
         }),
       ).toThrow(/revocation failed/);
@@ -75,6 +77,43 @@ describe("tenant registration and operator repositories", () => {
       expect(repo.deploymentKeys(reg.id).map((k) => k.keyId)).toEqual(["d-acme"]);
       expect(repo.unretiredOneonKeyIds(reg.id)).toEqual(["o-acme"]);
     });
+
+    it("refuses a different ImpressoRx tenant id and changes nothing", () => {
+      const { repo, identityId } = setup();
+      const reg = repo.create(input(identityId));
+      repo.setStatus(reg.id, "suspended_by_operator", identityId, "test");
+
+      expect(() => repo.replaceKeysOnReenrolment(reg.id, keys, "irx-someone-else", identityId)).toThrow(/another pharmacy/);
+      expect(repo.findById(reg.id)).toMatchObject({ status: "suspended_by_operator", impressorxTenantId: "irx-acme" });
+      expect(repo.deploymentKeys(reg.id).map((k) => k.keyId)).toEqual(["d-acme"]);
+    });
+
+    it("records the ImpressoRx tenant id on a registration enrolled before it was sent, and says so in the event", () => {
+      const { control, repo, identityId } = setup();
+      const reg = repo.create(input(identityId));
+      control.prepare("UPDATE tenant_registrations SET impressorx_tenant_id = NULL WHERE id = ?").run(reg.id);
+      repo.setStatus(reg.id, "suspended_by_operator", identityId, "test");
+
+      expect(repo.replaceKeysOnReenrolment(reg.id, keys, "irx-acme", identityId).impressorxTenantId).toBe("irx-acme");
+      const event = control
+        .prepare("SELECT detail_json FROM tenant_registration_events WHERE event = 'reenrolled'")
+        .get() as { detail_json: string };
+      expect(JSON.parse(event.detail_json)).toMatchObject({ impressorxTenantIdRecorded: true });
+    });
+  });
+
+  it("holds an ImpressoRx tenant id on one registration at most; registrations from before it was sent hold none", () => {
+    const { control, repo, identityId } = setup();
+    const reg = repo.create(input(identityId));
+    expect(reg.impressorxTenantId).toBe("irx-acme");
+    expect(repo.findByImpressorxTenantId("irx-acme")?.id).toBe(reg.id);
+    expect(repo.findByImpressorxTenantId("irx-other")).toBeNull();
+    expect(() => repo.create({ ...input(identityId, "beta"), impressorxTenantId: "irx-acme" })).toThrow();
+
+    const beta = repo.create(input(identityId, "beta"));
+    control.prepare("UPDATE tenant_registrations SET impressorx_tenant_id = NULL").run();
+    expect(repo.findById(reg.id)!.impressorxTenantId).toBeNull();
+    expect(repo.findById(beta.id)!.impressorxTenantId).toBeNull();
   });
 
   it("creates the registration, both keys and an event together", () => {

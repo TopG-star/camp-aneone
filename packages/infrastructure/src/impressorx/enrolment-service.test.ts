@@ -47,9 +47,10 @@ describe("enrolment service against the fake deployment", () => {
   };
 
   it("enrols, stores both keys, and seals the private key", async () => {
-    const { control, repo, enrol } = setup();
+    const { control, repo, fake, enrol } = setup();
     const reg = await enrol();
     expect(reg).toMatchObject({ tenantSlug: "acme", displayName: "acme", origin: ORIGIN, status: "active" });
+    expect(reg.impressorxTenantId).toBe(fake.impressorxTenantId);
     expect(repo.deploymentKeys(reg.id)).toHaveLength(1);
     const row = control.prepare("SELECT private_key_ciphertext FROM tenant_keys WHERE owner = 'oneon'").get() as { private_key_ciphertext: string };
     expect(row.private_key_ciphertext).not.toContain('"d"');
@@ -94,6 +95,30 @@ describe("enrolment service against the fake deployment", () => {
     fake.replyTenantSlug = "someone-else";
     await expect(enrol()).rejects.toBeInstanceOf(EnrolmentFailedError);
     expect(control.prepare("SELECT COUNT(*) AS n FROM tenant_registrations").get()).toEqual({ n: 0 });
+  });
+
+  it("refuses a reply that does not name the deployment's ImpressoRx tenant id, and stores nothing", async () => {
+    const { control, fake, enrol } = setup();
+    fake.impressorxTenantId = null;
+    await expect(enrol()).rejects.toMatchObject({ reason: "impressorx_tenant_id_missing" });
+    expect(control.prepare("SELECT COUNT(*) AS n FROM tenant_registrations").get()).toEqual({ n: 0 });
+  });
+
+  it("refuses to enrol, under another slug, a pharmacy that is already enrolled", async () => {
+    const ORIGIN_B = "https://beta.example";
+    let fakeB: FakeImpressorx | null = null;
+    const { control, fake, service, enrol, identityId } = setup(undefined, (inner) => (input, init) =>
+      new URL(input.toString()).origin === ORIGIN_B ? fakeB!.fetch(input, init) : inner(input, init),
+    );
+    await enrol();
+    // A copy of acme's database answering under another slug carries acme's Tenant.id.
+    fakeB = new FakeImpressorx(ORIGIN_B, "beta", CODE);
+    fakeB.impressorxTenantId = fake.impressorxTenantId;
+
+    await expect(service.enrol({ origin: ORIGIN_B, tenantSlug: "beta", enrolmentCode: CODE, enrolledBy: identityId })).rejects.toMatchObject({
+      reason: "impressorx_tenant_already_enrolled",
+    });
+    expect(control.prepare("SELECT tenant_slug FROM tenant_registrations").all()).toEqual([{ tenant_slug: "acme" }]);
   });
 
   it("fails on a wrong code", async () => {

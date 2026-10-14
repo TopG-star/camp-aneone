@@ -34,6 +34,11 @@ export class FakeImpressorx {
   /** Test switches. */
   signReplyWithWrongKey = false;
   replyTenantSlug: string | null = null;
+  /**
+   * ImpressoRx's Tenant.id, signed into the enrol reply as `impressorxTenantId`: one per pharmacy database, never reused. Give it a
+   * new value to play a pharmacy set up again under the same slug; null to play an ImpressoRx release that does not send it.
+   */
+  impressorxTenantId: string | null = randomUUID();
   /** Reply with the deployment JWK as an object instead of a JSON string. */
   replyJwkAsObject = false;
   /** Answer 401 to every POST /api/oneon/keys. */
@@ -160,6 +165,7 @@ export class FakeImpressorx {
       claims: {
         nonce: payload.nonce,
         tenantSlug: this.replyTenantSlug ?? this.tenantSlug,
+        ...(this.impressorxTenantId === null ? {} : { impressorxTenantId: this.impressorxTenantId }),
         deploymentKeyId: key.keyId,
         deploymentPublicKeyJwk: this.replyJwkAsObject ? key.publicKeyJwk : JSON.stringify(key.publicKeyJwk),
       },

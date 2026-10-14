@@ -10,11 +10,13 @@ export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Res
 export class EnrolmentFailedError extends Error {
   /**
    * Set only when the signature was valid: the message was too old or already used, or (enrolment) the deployment's signed reply
-   * named another tenant slug than the one entered.
+   * named another tenant slug than the one entered (`slug_mismatch`), named no ImpressoRx tenant id (`impressorx_tenant_id_missing`, an
+   * ImpressoRx release from before it was sent), named another one than the registration holds (`impressorx_tenant_mismatch`, the pharmacy
+   * was set up again or its database replaced), or named one another registration already holds (`impressorx_tenant_already_enrolled`).
    */
   constructor(
     message = "Enrolment failed",
-    readonly reason?: "expired" | "replayed" | "slug_mismatch",
+    readonly reason?: "expired" | "replayed" | "slug_mismatch" | "impressorx_tenant_id_missing" | "impressorx_tenant_mismatch" | "impressorx_tenant_already_enrolled",
   ) {
     super(message);
     this.name = "EnrolmentFailedError";
@@ -81,12 +83,14 @@ export class EnrolmentService {
 
   async enrol(input: EnrolInput): Promise<TenantRegistration> {
     const proved = await this.prove(input.origin, input.tenantSlug, input.enrolmentCode);
+    this.refuseIfHeldByAnother(proved.impressorxTenantId, null);
     return this.deps.repo.create(
       {
         tenantSlug: input.tenantSlug,
         displayName: input.displayName?.trim() || input.tenantSlug,
         origin: proved.origin,
         ...proved.keys,
+        impressorxTenantId: proved.impressorxTenantId,
         enrolledBy: input.enrolledBy,
       },
       input.inTransaction,
@@ -96,14 +100,32 @@ export class EnrolmentService {
   /**
    * Re-enrols a suspended registration (ruling): its pinned origin and slug only, proved like a first enrolment with a fresh code;
    * every old key is retired at once and the proved keys replace them; the registration becomes active. Refused (nothing sent)
-   * when the registration is not suspended or the origin differs.
+   * when the registration is not suspended or the origin differs. Refused after the proof (the code is spent, nothing stored) when
+   * the deployment names another ImpressoRx tenant id than the registration holds: the slug is only a name, and a pharmacy set up
+   * again under it must not inherit this registration. A registration from before the id was sent records it now.
    */
   async reenrol(input: ReenrolInput): Promise<TenantRegistration> {
     const registration = this.deps.repo.findById(input.registrationId);
     if (!registration || registration.status !== "suspended_by_operator") throw new Error("Only a suspended registration can be re-enrolled");
     if (new URL(input.origin).origin !== registration.origin) throw new Error("Re-enrolment must use the registration's pinned origin");
     const proved = await this.prove(registration.origin, registration.tenantSlug, input.enrolmentCode);
-    return this.deps.repo.replaceKeysOnReenrolment(registration.id, proved.keys, input.reenrolledBy, input.inTransaction);
+    if (registration.impressorxTenantId !== null && proved.impressorxTenantId !== registration.impressorxTenantId) {
+      throw new EnrolmentFailedError("Enrolment failed", "impressorx_tenant_mismatch");
+    }
+    this.refuseIfHeldByAnother(proved.impressorxTenantId, registration.id);
+    return this.deps.repo.replaceKeysOnReenrolment(
+      registration.id,
+      proved.keys,
+      proved.impressorxTenantId,
+      input.reenrolledBy,
+      input.inTransaction,
+    );
+  }
+
+  /** One pharmacy, one registration: a copy of an enrolled pharmacy's database carries its Tenant.id under any slug. */
+  private refuseIfHeldByAnother(impressorxTenantId: string, registrationId: string | null): void {
+    const holder = this.deps.repo.findByImpressorxTenantId(impressorxTenantId);
+    if (holder && holder.id !== registrationId) throw new EnrolmentFailedError("Enrolment failed", "impressorx_tenant_already_enrolled");
   }
 
   /** The two-sided enrolment proof (spec §5.1-5.2, 5.6): spends the code at the deployment and returns the keys both sides now hold. */
@@ -111,7 +133,11 @@ export class EnrolmentService {
     originInput: string,
     tenantSlug: string,
     enrolmentCode: string,
-  ): Promise<{ origin: string; keys: { deploymentKeyId: string; deploymentPublicKeyJwk: JWK; oneonKeyId: string; oneonPublicKeyJwk: JWK; oneonPrivateKeySealed: SealedSecret } }> {
+  ): Promise<{
+    origin: string;
+    impressorxTenantId: string;
+    keys: { deploymentKeyId: string; deploymentPublicKeyJwk: JWK; oneonKeyId: string; oneonPublicKeyJwk: JWK; oneonPrivateKeySealed: SealedSecret };
+  }> {
     const input = { tenantSlug, enrolmentCode };
     const master = this.master();
     const origin = new URL(originInput).origin;
@@ -157,9 +183,15 @@ export class EnrolmentService {
     if (claims.nonce !== nonce || claims.deploymentKeyId !== verified.kid || !deploymentJwk) throw new EnrolmentFailedError();
     // The reply is verified: the deployment itself says which tenant it is.
     if (claims.tenantSlug !== input.tenantSlug) throw new EnrolmentFailedError("Enrolment failed", "slug_mismatch");
+    // ImpressoRx's Tenant.id: the pharmacy's permanent identity, which the slug is not.
+    const impressorxTenantId = claims.impressorxTenantId;
+    if (typeof impressorxTenantId !== "string" || impressorxTenantId === "") {
+      throw new EnrolmentFailedError("Enrolment failed", "impressorx_tenant_id_missing");
+    }
 
     return {
       origin,
+      impressorxTenantId,
       keys: {
         deploymentKeyId: verified.kid,
         deploymentPublicKeyJwk: deploymentJwk,

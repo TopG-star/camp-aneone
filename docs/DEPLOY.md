@@ -221,6 +221,8 @@ Keep a copy of each key somewhere other than the VPS. Nothing can decrypt what a
 1. The pharmacy's ImpressoRx admin opens **Settings → Oneon** and presses **Enable**. ImpressoRx shows a one-time enrolment code that is valid for 10 minutes.
 2. Check the deployment's HTTPS origin against the tenant registry, out of band. Enrolment trusts whichever deployment answers at that origin and holds the code.
 3. In the dashboard, open **/platform/enrol** and enter the origin, the tenant slug and the code. A successful enrolment creates the pharmacy's registration and its database file.
+
+   The deployment's signed reply names its ImpressoRx tenant id, ImpressoRx's `Tenant.id`. That id is made once per pharmacy database and never reused, and Oneon stores it as the pharmacy's permanent identity. The slug is only a name: a pharmacy deleted and set up again can come back under the same slug, but not with the same id. Enrolment is refused with 502 if the reply names no tenant id (the ImpressoRx release is too old: update it first), or if another registration already holds that id (for example, a copy of an enrolled pharmacy's database). Both refusals come after the code has been used.
 4. **/platform** lists every pharmacy with its status and its latest daily rollup (counts only).
 
 ### Suspending a pharmacy
@@ -245,7 +247,12 @@ Re-enrolment is refused in these cases:
 
 - with 409 while the pharmacy is active;
 - with 409 at any origin other than the one the pharmacy was enrolled at;
-- with 502 if the deployment's signed reply names a different tenant slug. That last refusal comes after the code has been used, so the admin must issue a new one.
+- with 502 if the deployment's signed reply names a different tenant slug;
+- with 502 if the reply names a different ImpressoRx tenant id from the one stored at enrolment. The pharmacy at that origin was set up again or its database was replaced, so it is not the pharmacy this registration belongs to, and the registration and its data stay with the original. Re-enrolment never moves a registration to a different pharmacy.
+
+The 502 refusals come after the code has been used, so the admin must issue a new one.
+
+A registration enrolled before ImpressoRx sent its tenant id has none stored. Its next successful re-enrolment records the id (the `reenrolled` event says `impressorxTenantIdRecorded: true`), and later re-enrolments must match it.
 
 Moving a pharmacy to a new origin is not possible from the console. It remains a manual procedure on `control.db`, done with the server stopped and a fresh backup.
 

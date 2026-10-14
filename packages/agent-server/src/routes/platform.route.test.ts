@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -372,7 +372,10 @@ describe("platform route", () => {
       expect(res.body).toEqual({ registrationId: s.id, tenantSlug: "acme", reenrolled: true });
       expect(s.status()).toBe("active");
       expect(s.control.prepare("SELECT COUNT(*) AS n FROM tenant_registrations").get()).toEqual({ n: 1 });
-      expect(s.control.prepare("SELECT tenant_id FROM tenant_registrations WHERE id = ?").get(s.id)).toEqual({ tenant_id: s.id });
+      expect(s.control.prepare("SELECT tenant_id, impressorx_tenant_id FROM tenant_registrations WHERE id = ?").get(s.id)).toEqual({
+        tenant_id: s.id,
+        impressorx_tenant_id: s.fake.impressorxTenantId,
+      });
       expect(rawDb(s.gate.openTenant(s.id)).prepare("SELECT id FROM users WHERE id = 'kept'").get()).toEqual({ id: "kept" });
       // The membership is kept as it was; it reactivates through the normal hand-off snapshot path.
       expect(s.control.prepare("SELECT id, status FROM memberships").all()).toEqual([{ id: "m-1", status: "suspended" }]);
@@ -421,6 +424,45 @@ describe("platform route", () => {
       expect(s.status()).toBe("suspended_by_operator");
       expect(s.keyRows()).toEqual(keysBefore);
       expect(s.grantStatus()).toEqual({ status: "active", revoked_reason: null });
+    });
+
+    it("refuses a pharmacy set up again under the same slug (another ImpressoRx tenant id), and changes nothing", async () => {
+      const s = await suspendedWithRemoveAndEnable();
+      const keysBefore = s.keyRows();
+      // Deleted and recreated: a new database, so a new Tenant.id, behind the same slug and origin.
+      s.fake.impressorxTenantId = randomUUID();
+
+      const res = await request(s.app).post("/api/platform/enrolments").send({ ...body, code: CODE2 });
+
+      expect(res.status).toBe(502);
+      expect(res.body.error).toMatch(/different pharmacy from the one enrolled as acme/i);
+      expect(s.status()).toBe("suspended_by_operator");
+      expect(s.keyRows()).toEqual(keysBefore);
+      expect(s.grantStatus()).toEqual({ status: "active", revoked_reason: null });
+      expect(s.revokeGrantsForRegistration).not.toHaveBeenCalled();
+    });
+
+    it("records the ImpressoRx tenant id on the first re-enrolment of a registration enrolled before it was sent", async () => {
+      const s = await suspendedWithRemoveAndEnable();
+      s.control.prepare("UPDATE tenant_registrations SET impressorx_tenant_id = NULL WHERE id = ?").run(s.id);
+
+      const res = await request(s.app).post("/api/platform/enrolments").send({ ...body, code: CODE2 });
+
+      expect(res.status).toBe(200);
+      expect(s.control.prepare("SELECT impressorx_tenant_id FROM tenant_registrations WHERE id = ?").get(s.id)).toEqual({
+        impressorx_tenant_id: s.fake.impressorxTenantId,
+      });
+    });
+
+    it("refuses a reply that does not name its ImpressoRx tenant id, saying ImpressoRx needs updating", async () => {
+      const s = await suspendedWithRemoveAndEnable();
+      s.fake.impressorxTenantId = null;
+
+      const res = await request(s.app).post("/api/platform/enrolments").send({ ...body, code: CODE2 });
+
+      expect(res.status).toBe(502);
+      expect(res.body.error).toMatch(/update ImpressoRx/i);
+      expect(s.status()).toBe("suspended_by_operator");
     });
 
     it("refuses a reply signed for another slug with a clear message, and changes nothing", async () => {

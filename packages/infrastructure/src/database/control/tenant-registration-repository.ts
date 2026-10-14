@@ -8,6 +8,8 @@ export type TenantRegistrationStatus = "active" | "suspended_by_operator" | "dis
 export interface TenantRegistration {
   id: string;
   tenantId: string;
+  /** ImpressoRx's Tenant.id, the pharmacy's permanent identity (not Oneon's `tenantId`). Null for a registration from before it was sent. */
+  impressorxTenantId: string | null;
   tenantSlug: string;
   displayName: string;
   origin: string;
@@ -38,6 +40,7 @@ export interface CreateTenantRegistrationInput {
   oneonKeyId: string;
   oneonPublicKeyJwk: JWK;
   oneonPrivateKeySealed: SealedSecret;
+  impressorxTenantId: string;
   enrolledBy: string;
 }
 
@@ -56,6 +59,7 @@ export const KEY_OVERLAP_MS = 7 * 24 * 60 * 60 * 1000;
 type RegistrationRow = {
   id: string;
   tenant_id: string;
+  impressorx_tenant_id: string | null;
   tenant_slug: string;
   display_name: string;
   origin: string;
@@ -77,6 +81,7 @@ function toRegistration(row: RegistrationRow): TenantRegistration {
   return {
     id: row.id,
     tenantId: row.tenant_id,
+    impressorxTenantId: row.impressorx_tenant_id,
     tenantSlug: row.tenant_slug,
     displayName: row.display_name,
     origin: row.origin,
@@ -103,10 +108,11 @@ export class TenantRegistrationRepository {
     const run = this.db.transaction(() => {
       this.db
         .prepare(
-          `INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+          `INSERT INTO tenant_registrations
+             (id, tenant_id, impressorx_tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
         )
-        .run(id, id, input.tenantSlug, input.displayName, input.origin, `${id}.db`, input.enrolledBy, now);
+        .run(id, id, input.impressorxTenantId, input.tenantSlug, input.displayName, input.origin, `${id}.db`, input.enrolledBy, now);
       this.insertKey(id, "deployment", input.deploymentKeyId, input.deploymentPublicKeyJwk, null, now);
       this.insertKey(id, "oneon", input.oneonKeyId, input.oneonPublicKeyJwk, input.oneonPrivateKeySealed, now);
       this.insertEvent(id, "enrolled", input.enrolledBy, { origin: input.origin, tenantSlug: input.tenantSlug }, now);
@@ -120,14 +126,30 @@ export class TenantRegistrationRepository {
    * Re-enrolment of a suspended registration (ruling): in one transaction, and only if it is still `suspended_by_operator`, every
    * unretired key of both owners is retired now (no overlap), the proved keys are added, `inTransaction` runs (grant revocation),
    * a `reenrolled` event is written and the status becomes `active`. The row, its tenant_id and file, and its memberships are kept.
-   * Throws when the registration is no longer suspended; then nothing changes.
+   * A registration from before ImpressoRx sent its tenant id records `impressorxTenantId` now; one that holds an id must be given
+   * the same one. Throws when the registration is no longer suspended or the id differs; then nothing changes.
    */
-  replaceKeysOnReenrolment(id: string, keys: ReenrolmentKeys, actor: string, inTransaction?: () => void): TenantRegistration {
+  replaceKeysOnReenrolment(
+    id: string,
+    keys: ReenrolmentKeys,
+    impressorxTenantId: string,
+    actor: string,
+    inTransaction?: () => void,
+  ): TenantRegistration {
     const now = this.clock().toISOString();
     const run = this.db.transaction(() => {
+      const current = this.db.prepare("SELECT impressorx_tenant_id FROM tenant_registrations WHERE id = ?").get(id) as
+        | { impressorx_tenant_id: string | null }
+        | undefined;
+      if (current?.impressorx_tenant_id != null && current.impressorx_tenant_id !== impressorxTenantId) {
+        throw new Error("The deployment answered as another pharmacy than the one registered");
+      }
+      const recorded = current?.impressorx_tenant_id == null;
       const changed = this.db
-        .prepare("UPDATE tenant_registrations SET status = 'active' WHERE id = ? AND status = 'suspended_by_operator'")
-        .run(id).changes;
+        .prepare(
+          "UPDATE tenant_registrations SET status = 'active', impressorx_tenant_id = ? WHERE id = ? AND status = 'suspended_by_operator'",
+        )
+        .run(impressorxTenantId, id).changes;
       if (changed !== 1) throw new Error("Only a suspended registration can be re-enrolled");
       // Every key of both owners, a key still inside a rotation overlap included, stops verifying and signing now.
       this.db
@@ -136,7 +158,13 @@ export class TenantRegistrationRepository {
       this.insertKey(id, "deployment", keys.deploymentKeyId, keys.deploymentPublicKeyJwk, null, now);
       this.insertKey(id, "oneon", keys.oneonKeyId, keys.oneonPublicKeyJwk, keys.oneonPrivateKeySealed, now);
       inTransaction?.();
-      this.insertEvent(id, "reenrolled", actor, { oneonKeyId: keys.oneonKeyId, deploymentKeyId: keys.deploymentKeyId }, now);
+      this.insertEvent(
+        id,
+        "reenrolled",
+        actor,
+        { oneonKeyId: keys.oneonKeyId, deploymentKeyId: keys.deploymentKeyId, impressorxTenantIdRecorded: recorded },
+        now,
+      );
       this.insertEvent(id, "status_changed", actor, { from: "suspended_by_operator", to: "active", reason: "reenrolled" }, now);
     });
     run();
@@ -158,6 +186,14 @@ export class TenantRegistrationRepository {
     const row = this.db
       .prepare("SELECT * FROM tenant_registrations WHERE tenant_id = ? AND status = 'active'")
       .get(tenantId) as RegistrationRow | undefined;
+    return row ? toRegistration(row) : null;
+  }
+
+  /** The registration, whatever its status, that holds this ImpressoRx Tenant.id (UNIQUE where set); null when none does. */
+  findByImpressorxTenantId(impressorxTenantId: string): TenantRegistration | null {
+    const row = this.db.prepare("SELECT * FROM tenant_registrations WHERE impressorx_tenant_id = ?").get(impressorxTenantId) as
+      | RegistrationRow
+      | undefined;
     return row ? toRegistration(row) : null;
   }
 

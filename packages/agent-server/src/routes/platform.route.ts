@@ -114,12 +114,16 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
   function enrolmentFailure(res: Response, error: unknown, tenantSlug: string, what: "Enrolment" | "Re-enrolment"): void {
     if (error instanceof EnrolmentFailedError) {
       logger.warn(`${what} failed`, { tenantSlug, reason: error.reason ?? null });
-      res.status(502).json({
-        error:
-          error.reason === "slug_mismatch"
-            ? `The deployment answered for a different pharmacy than ${tenantSlug}. Nothing was changed; the code is used up, so ask for a new one.`
-            : `${what} failed`,
-      });
+      const spent = "Nothing was changed; the code is used up, so ask for a new one.";
+      const explained: Partial<Record<NonNullable<EnrolmentFailedError["reason"]>, string>> = {
+        slug_mismatch: `The deployment answered for a different pharmacy than ${tenantSlug}. ${spent}`,
+        impressorx_tenant_mismatch:
+          `The deployment answered as a different pharmacy from the one enrolled as ${tenantSlug}: it was set up again, or its ` +
+          "database was replaced. The registration and its data stay with the original pharmacy. Nothing was changed.",
+        impressorx_tenant_already_enrolled: `That pharmacy is already enrolled under another slug. ${spent}`,
+        impressorx_tenant_id_missing: `The deployment did not say which pharmacy it is. Update ImpressoRx to a release that sends its tenant id. ${spent}`,
+      };
+      res.status(502).json({ error: (error.reason && explained[error.reason]) ?? `${what} failed` });
       return;
     }
     logger.error(`${what} error`, { tenantSlug, error: error instanceof Error ? error.message : String(error) });
