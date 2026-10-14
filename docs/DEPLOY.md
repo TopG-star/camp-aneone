@@ -227,7 +227,27 @@ Keep a copy of each key somewhere other than the VPS. Nothing can decrypt what a
 
 **Suspend**, on **/platform**, stops Oneon serving a pharmacy at once. Its staff cannot open it in Oneon, and nightly jobs and backups skip it. Nothing changes in ImpressoRx. **Resume** undoes a suspension. Each change is recorded as a `status_changed` event on the registration and as a log line ("Pharmacy suspended by operator", "Pharmacy resumed by operator").
 
-A pharmacy whose admin pressed **Remove** in ImpressoRx, or whose keys are lost (a lost `ONEON_SIGNING_KEY_MASTER_KEY`, or a deployment key Oneon could not refresh within its 7-day overlap), still shows as active, but every exchange with it fails. Suspend it, so Oneon stops trying to serve it. Reconnecting it needs a fresh two-sided enrolment of the same slug. This build does not offer that yet: the slug stays taken, and enrolling it again answers 409.
+A pharmacy whose admin pressed **Remove** in ImpressoRx, or whose keys are lost, still shows as active, but every exchange with it fails. Lost keys means a lost `ONEON_SIGNING_KEY_MASTER_KEY`, or a deployment key Oneon could not refresh within its 7-day overlap. To reconnect it:
+
+1. **Suspend** it on **/platform**.
+2. The pharmacy's ImpressoRx admin opens **Settings → Oneon**. If Oneon is still enabled there, the admin presses **Remove**. The admin then presses **Enable**, which issues a fresh enrolment code.
+3. Enrol it again on **/platform/enrol** with the same origin, the same tenant slug and the new code.
+
+Re-enrolment runs the full two-sided enrolment proof. On success, Oneon:
+
+- retires every old key at once (with no 7-day overlap) and stores the new keys;
+- revokes every grant of the pharmacy;
+- sets the pharmacy active again.
+
+Its database file, tenant id and memberships are kept. Each staff member reconnects by opening Oneon from ImpressoRx, as usual.
+
+Re-enrolment is refused in these cases:
+
+- with 409 while the pharmacy is active;
+- with 409 at any origin other than the one the pharmacy was enrolled at;
+- with 502 if the deployment's signed reply names a different tenant slug. That last refusal comes after the code has been used, so the admin must issue a new one.
+
+Moving a pharmacy to a new origin is not possible from the console. It remains a manual procedure on `control.db`, done with the server stopped and a fresh backup.
 
 ### Log alerts to watch
 

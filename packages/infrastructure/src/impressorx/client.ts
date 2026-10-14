@@ -188,6 +188,14 @@ export class ImpressoRxClient {
     return this.usableBoundGrant(sessionId, identityId, membershipId) !== null;
   }
 
+  /**
+   * Revokes every grant of the registration locally (nothing is sent) and forgets their cached tokens. Used by re-enrolment: the
+   * deployment's Remove already ended them there, and none may outlive the keys it was issued under.
+   */
+  revokeForRegistration(registrationId: string, reason: string): void {
+    for (const id of this.deps.grants.revokeForRegistration(registrationId, reason)) this.dropTokens(id);
+  }
+
   /** Revokes every grant of the membership locally (nothing is sent), e.g. after ImpressoRx refuses it. */
   revokeForMembership(membershipId: string, reason: string): void {
     for (const id of this.deps.grants.revokeForMembership(membershipId, reason)) this.dropTokens(id);

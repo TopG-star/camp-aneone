@@ -59,6 +59,12 @@ describe("platform route", () => {
     const enrolment = new EnrolmentService({ repo: registrations, oneonOrigin: "https://oneon.example", masterKeyB64: masterKey, fetchImpl: fake.fetch });
     const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
     const logger = opts.logger ?? mockLogger;
+    // Production wires the ImpressoRx client's revokeForRegistration (tested with the client); here the same SQL effect.
+    const revokeGrantsForRegistration = vi.fn((registrationId: string, reason: string) =>
+      void control
+        .prepare("UPDATE delegation_grants SET status = 'revoked', revoked_reason = ? WHERE tenant_registration_id = ? AND status = 'active'")
+        .run(reason, registrationId),
+    );
     const app = express();
     app.use(express.json());
     let identityId = operatorId;
@@ -76,10 +82,11 @@ describe("platform route", () => {
         grantConfigured: opts.grantConfigured ?? true,
         latestRollups: () => latestRollups(control),
         createTenantFile: opts.createTenantFile ?? ((id, tenantId) => void gate.createTenantFile(id, tenantId)),
+        revokeGrantsForRegistration,
         logger,
       }),
     );
-    return { app, control, gate, fake, registrations, enrolment, masterKey, logger: mockLogger, dir, actAs: (id: string) => (identityId = id), otherId };
+    return { app, control, gate, fake, registrations, enrolment, masterKey, logger: mockLogger, dir, actAs: (id: string) => (identityId = id), otherId, revokeGrantsForRegistration };
   }
 
   it("enrols against the fake deployment", async () => {
@@ -325,6 +332,111 @@ describe("platform route", () => {
       out.mockRestore();
       err.mockRestore();
     }
+  });
+
+  describe("re-enrolment of a suspended pharmacy (ruling: same origin, same signed slug, keys replaced at once)", () => {
+    const CODE2 = "NEW1-CODE-2222";
+    const NOW = "2026-10-14T00:00:00.000Z";
+
+    /** An enrolled pharmacy with a member, an active grant and a row in its file, suspended, whose admin pressed Remove then Enable. */
+    async function suspendedWithRemoveAndEnable() {
+      const s = setup();
+      const id = (await request(s.app).post("/api/platform/enrolments").send(body)).body.registrationId as string;
+      const oldHandoff = await s.fake.mintHandoff("staff-1"); // signed by the deployment key of the first enrolment
+      const oldOneonKeyIds = s.enrolment.oneonSigningKeys(id).map((k) => k.keyId);
+      s.control
+        .prepare(
+          "INSERT INTO memberships (id, identity_id, tenant_registration_id, external_user_id, role, permissions_json, location_ids_json, status, snapshot_at, created_at) VALUES ('m-1', ?, ?, 'staff-1', 'Manager', '[]', '[]', 'suspended', ?, ?)",
+        )
+        .run(s.otherId, id, NOW, NOW);
+      s.control
+        .prepare(
+          "INSERT INTO delegation_grants (id, identity_id, membership_id, tenant_registration_id, kind, scope_json, encrypted_value, wrapped_key, generation, status, created_at, absolute_expires_at) VALUES ('g-1', ?, 'm-1', ?, 'attended', '[]', 'x', 'x', 1, 'active', ?, '2099-01-01T00:00:00.000Z')",
+        )
+        .run(s.otherId, id, NOW);
+      rawDb(s.gate.openTenant(id)).prepare("INSERT INTO users (id, email) VALUES ('kept', 'kept@anchor.invalid')").run();
+      expect((await request(s.app).post(`/api/platform/registrations/${id}/suspend`)).status).toBe(204);
+      s.fake.removeAndEnable(CODE2);
+      const status = () => (s.control.prepare("SELECT status FROM tenant_registrations WHERE id = ?").get(id) as { status: string }).status;
+      const keyRows = () => s.control.prepare("SELECT key_id, retired_at FROM tenant_keys WHERE tenant_registration_id = ? ORDER BY rowid").all(id);
+      const grantStatus = () => s.control.prepare("SELECT status, revoked_reason FROM delegation_grants WHERE id = 'g-1'").get();
+      return { ...s, id, oldHandoff, oldOneonKeyIds, status, keyRows, grantStatus };
+    }
+
+    it("replaces both keys at once, revokes the grants, keeps file, tenant id and memberships, and reactivates", async () => {
+      const s = await suspendedWithRemoveAndEnable();
+
+      const res = await request(s.app).post("/api/platform/enrolments").send({ ...body, code: CODE2 });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ registrationId: s.id, tenantSlug: "acme", reenrolled: true });
+      expect(s.status()).toBe("active");
+      expect(s.control.prepare("SELECT COUNT(*) AS n FROM tenant_registrations").get()).toEqual({ n: 1 });
+      expect(s.control.prepare("SELECT tenant_id FROM tenant_registrations WHERE id = ?").get(s.id)).toEqual({ tenant_id: s.id });
+      expect(rawDb(s.gate.openTenant(s.id)).prepare("SELECT id FROM users WHERE id = 'kept'").get()).toEqual({ id: "kept" });
+      // The membership is kept as it was; it reactivates through the normal hand-off snapshot path.
+      expect(s.control.prepare("SELECT id, status FROM memberships").all()).toEqual([{ id: "m-1", status: "suspended" }]);
+      expect(s.grantStatus()).toEqual({ status: "revoked", revoked_reason: "reenrolled" });
+      const events = s.control
+        .prepare("SELECT event, detail_json FROM tenant_registration_events WHERE tenant_registration_id = ? ORDER BY created_at, rowid")
+        .all(s.id) as Array<{ event: string; detail_json: string }>;
+      expect(events.slice(-2).map((e) => [e.event, JSON.parse(e.detail_json).to ?? null])).toEqual([
+        ["reenrolled", null],
+        ["status_changed", "active"],
+      ]);
+      expect(s.logger.info).toHaveBeenCalledWith("Pharmacy re-enrolled", { registrationId: s.id });
+
+      // Old keys: every key of the first enrolment is retired now; Oneon signs only with the new key, which the deployment holds.
+      const newOneon = s.enrolment.oneonSigningKeys(s.id).map((k) => k.keyId);
+      expect(newOneon).toHaveLength(1);
+      expect(s.oldOneonKeyIds).not.toContain(newOneon[0]);
+      expect(s.fake.oneonKeys.map((k) => k.keyId)).toEqual(newOneon);
+      expect(s.registrations.deploymentKeys(s.id)).toHaveLength(1);
+      await expect(s.enrolment.verifyFromDeployment(s.id, s.oldHandoff, { audience: "oneon" })).rejects.toThrow();
+      await expect(s.enrolment.verifyFromDeployment(s.id, await s.fake.mintHandoff("staff-1"), { audience: "oneon" })).resolves.toBeTruthy();
+    });
+
+    it("answers 409 for a slug whose registration is active, before spending the code", async () => {
+      const s = setup();
+      await request(s.app).post("/api/platform/enrolments").send(body);
+      s.fake.removeAndEnable(CODE2);
+
+      const res = await request(s.app).post("/api/platform/enrolments").send({ ...body, code: CODE2 });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/already enrolled.*Suspend it first/i);
+      expect(s.fake.active).toBe(false);
+    });
+
+    it("refuses another origin with a clear message, before spending the code, and changes nothing", async () => {
+      const s = await suspendedWithRemoveAndEnable();
+      const keysBefore = s.keyRows();
+
+      const res = await request(s.app).post("/api/platform/enrolments").send({ ...body, origin: "https://acme-new.example", code: CODE2 });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toContain(ORIGIN);
+      expect(res.body.error).toMatch(/same origin/i);
+      expect(s.fake.active).toBe(false);
+      expect(s.status()).toBe("suspended_by_operator");
+      expect(s.keyRows()).toEqual(keysBefore);
+      expect(s.grantStatus()).toEqual({ status: "active", revoked_reason: null });
+    });
+
+    it("refuses a reply signed for another slug with a clear message, and changes nothing", async () => {
+      const s = await suspendedWithRemoveAndEnable();
+      const keysBefore = s.keyRows();
+      s.fake.replyTenantSlug = "other-pharmacy";
+
+      const res = await request(s.app).post("/api/platform/enrolments").send({ ...body, code: CODE2 });
+
+      expect(res.status).toBe(502);
+      expect(res.body.error).toMatch(/different pharmacy.*acme/i);
+      expect(s.status()).toBe("suspended_by_operator");
+      expect(s.keyRows()).toEqual(keysBefore);
+      expect(s.grantStatus()).toEqual({ status: "active", revoked_reason: null });
+      expect(s.revokeGrantsForRegistration).not.toHaveBeenCalled();
+    });
   });
 
   it("leaves no registration, keys, events or file when creating the tenant file fails,", async () => {

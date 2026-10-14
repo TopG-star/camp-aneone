@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { decodeJwt, decodeProtectedHeader } from "jose";
-import { openSecret, sealSecret } from "../crypto/envelope.js";
+import { openSecret, sealSecret, type SealedSecret } from "../crypto/envelope.js";
 import { JwsError, generateEd25519Key, parsePublicJwk, signJws, verifyJws, type JWK, type VerifiedJws } from "../crypto/jws.js";
 import type { TenantRegistration, TenantRegistrationRepository } from "../database/control/tenant-registration-repository.js";
 
@@ -8,10 +8,13 @@ export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Res
 
 /** Any failure talking to, or verifying, the deployment. Carries no remote detail on purpose. */
 export class EnrolmentFailedError extends Error {
-  /** Set only when the signature was valid and the message itself was too old or already used. */
+  /**
+   * Set only when the signature was valid: the message was too old or already used, or (enrolment) the deployment's signed reply
+   * named another tenant slug than the one entered.
+   */
   constructor(
     message = "Enrolment failed",
-    readonly reason?: "expired" | "replayed",
+    readonly reason?: "expired" | "replayed" | "slug_mismatch",
   ) {
     super(message);
     this.name = "EnrolmentFailedError";
@@ -33,6 +36,18 @@ export interface EnrolmentServiceDeps {
   masterKeyB64: string | undefined;
   fetchImpl?: FetchLike;
   clock?: () => Date;
+}
+
+/** Re-enrolment of a suspended registration: the same two-sided proof with a fresh code, at the registration's pinned origin. */
+export interface ReenrolInput {
+  registrationId: string;
+  /** Must be the registration's pinned origin. */
+  origin: string;
+  /** Named so log redaction (key `enrolmentCode`) covers it. */
+  enrolmentCode: string;
+  reenrolledBy: string;
+  /** Runs inside the key replacement's control-database transaction (grant revocation); if it throws, nothing changes. */
+  inTransaction?: () => void;
 }
 
 export interface EnrolInput {
@@ -65,8 +80,41 @@ export class EnrolmentService {
   }
 
   async enrol(input: EnrolInput): Promise<TenantRegistration> {
+    const proved = await this.prove(input.origin, input.tenantSlug, input.enrolmentCode);
+    return this.deps.repo.create(
+      {
+        tenantSlug: input.tenantSlug,
+        displayName: input.displayName?.trim() || input.tenantSlug,
+        origin: proved.origin,
+        ...proved.keys,
+        enrolledBy: input.enrolledBy,
+      },
+      input.inTransaction,
+    );
+  }
+
+  /**
+   * Re-enrols a suspended registration (ruling): its pinned origin and slug only, proved like a first enrolment with a fresh code;
+   * every old key is retired at once and the proved keys replace them; the registration becomes active. Refused (nothing sent)
+   * when the registration is not suspended or the origin differs.
+   */
+  async reenrol(input: ReenrolInput): Promise<TenantRegistration> {
+    const registration = this.deps.repo.findById(input.registrationId);
+    if (!registration || registration.status !== "suspended_by_operator") throw new Error("Only a suspended registration can be re-enrolled");
+    if (new URL(input.origin).origin !== registration.origin) throw new Error("Re-enrolment must use the registration's pinned origin");
+    const proved = await this.prove(registration.origin, registration.tenantSlug, input.enrolmentCode);
+    return this.deps.repo.replaceKeysOnReenrolment(registration.id, proved.keys, input.reenrolledBy, input.inTransaction);
+  }
+
+  /** The two-sided enrolment proof (spec §5.1-5.2, 5.6): spends the code at the deployment and returns the keys both sides now hold. */
+  private async prove(
+    originInput: string,
+    tenantSlug: string,
+    enrolmentCode: string,
+  ): Promise<{ origin: string; keys: { deploymentKeyId: string; deploymentPublicKeyJwk: JWK; oneonKeyId: string; oneonPublicKeyJwk: JWK; oneonPrivateKeySealed: SealedSecret } }> {
+    const input = { tenantSlug, enrolmentCode };
     const master = this.master();
-    const origin = new URL(input.origin).origin;
+    const origin = new URL(originInput).origin;
     const issuer = `impressorx:${input.tenantSlug}`;
     const key = await generateEd25519Key();
     const nonce = randomUUID();
@@ -106,24 +154,20 @@ export class EnrolmentService {
     }
     const claims = verified.payload;
     const deploymentJwk = parsePublicJwk(claims.deploymentPublicKeyJwk);
-    if (claims.nonce !== nonce || claims.tenantSlug !== input.tenantSlug || claims.deploymentKeyId !== verified.kid || !deploymentJwk) {
-      throw new EnrolmentFailedError();
-    }
+    if (claims.nonce !== nonce || claims.deploymentKeyId !== verified.kid || !deploymentJwk) throw new EnrolmentFailedError();
+    // The reply is verified: the deployment itself says which tenant it is.
+    if (claims.tenantSlug !== input.tenantSlug) throw new EnrolmentFailedError("Enrolment failed", "slug_mismatch");
 
-    return this.deps.repo.create(
-      {
-        tenantSlug: input.tenantSlug,
-        displayName: input.displayName?.trim() || input.tenantSlug,
-        origin,
+    return {
+      origin,
+      keys: {
         deploymentKeyId: verified.kid,
         deploymentPublicKeyJwk: deploymentJwk,
         oneonKeyId: key.keyId,
         oneonPublicKeyJwk: key.publicKeyJwk,
         oneonPrivateKeySealed: sealSecret(JSON.stringify(key.privateKeyJwk), master),
-        enrolledBy: input.enrolledBy,
       },
-      input.inTransaction,
-    );
+    };
   }
 
   /** Current Oneon signing key (newest unretired), decrypted on demand. */

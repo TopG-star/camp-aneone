@@ -644,6 +644,21 @@ describe("ImpressoRx client against the fake deployment", () => {
       expect(s.fake.tokenRequests.length).toBe(requestsBefore);
     });
 
+    it("revokeForRegistration revokes every grant of the registration locally, sends nothing, and leaves other registrations alone", async () => {
+      const s = await setup();
+      const { grantId, sessionId } = await s.launch();
+      const requestsBefore = s.fake.tokenRequests.length;
+
+      s.client.revokeForRegistration("some-other-registration", "reenrolled");
+      expect(s.grants.find(grantId)!.status).toBe("active");
+
+      s.client.revokeForRegistration(s.registration.id, "reenrolled");
+      expect(s.grants.find(grantId)).toMatchObject({ status: "revoked", revokedReason: "reenrolled" });
+      expect(s.client.forBoundSession(sessionId, s.identityId, s.membershipId)).toBeNull();
+      await expect(s.client.forGrant(grantId).accessToken()).rejects.toBeInstanceOf(ImpressoRxRefusedError);
+      expect(s.fake.tokenRequests.length).toBe(requestsBefore);
+    });
+
     it("revokeForMembership leaves other memberships' grants alone", async () => {
       const s = await setup();
       const { grantId } = await s.launch();

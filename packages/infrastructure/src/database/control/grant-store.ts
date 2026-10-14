@@ -223,6 +223,22 @@ export class GrantStore {
     }).immediate();
   }
 
+  /** Revokes every active grant of the registration (all memberships, all kinds) and returns their ids. */
+  revokeForRegistration(registrationId: string, reason: string): string[] {
+    return this.db.transaction(() => {
+      const ids = (
+        this.db.prepare("SELECT id FROM delegation_grants WHERE tenant_registration_id = ? AND status = 'active'").all(registrationId) as Array<{ id: string }>
+      ).map((r) => r.id);
+      this.db
+        .prepare(
+          `UPDATE delegation_grants SET status = 'revoked', revoked_reason = ?, pending_request_id = NULL, pending_since = NULL,
+                  pending_request_json = NULL WHERE tenant_registration_id = ? AND status = 'active'`,
+        )
+        .run(reason, registrationId);
+      return ids;
+    }).immediate();
+  }
+
   listForIdentity(identityId: string): GrantRecord[] {
     return (this.db.prepare("SELECT * FROM delegation_grants WHERE identity_id = ? ORDER BY created_at, id").all(identityId) as Row[]).map(toRecord);
   }

@@ -20,6 +20,8 @@ export interface PlatformRouteDeps {
   latestRollups: () => Array<{ tenantId: string; day: string; metrics: unknown }>;
   /** Creates the tenant's database file once its registration exists. */
   createTenantFile: (registrationId: string, tenantId: string) => void;
+  /** Revokes every grant of a registration locally (the ImpressoRx client's revokeForRegistration). Re-enrolment calls it. */
+  revokeGrantsForRegistration: (registrationId: string, reason: string) => void;
   logger: Logger;
 }
 
@@ -32,7 +34,8 @@ const EnrolBody = z.object({
 
 export function createPlatformRouter(deps: PlatformRouteDeps): Router {
   const router = Router();
-  const { operators, registrations, enrolment, backupConfigured, grantConfigured, latestRollups, createTenantFile, logger } = deps;
+  const { operators, registrations, enrolment, backupConfigured, grantConfigured, latestRollups, createTenantFile, revokeGrantsForRegistration, logger } =
+    deps;
 
   // Operator only. A signed-in user who is not an operator gets 403, never a hint of what exists.
   router.use((req: Request, res: Response, next: NextFunction) => {
@@ -62,8 +65,33 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
       return;
     }
     const { origin, tenantSlug, code, displayName } = parsed.data;
-    if (registrations.findBySlug(tenantSlug)) {
-      res.status(409).json({ error: "That tenant is already enrolled" });
+    const existing = registrations.findBySlug(tenantSlug);
+    if (existing) {
+      // Ruling: an existing slug is enrolled again only while an operator has it suspended, only at its pinned origin, and only
+      // with the full two-sided proof. Both refusals come before the code is spent.
+      if (existing.status !== "suspended_by_operator") {
+        res.status(409).json({ error: "That tenant is already enrolled. Suspend it first to enrol it again." });
+        return;
+      }
+      if (new URL(origin).origin !== existing.origin) {
+        res.status(409).json({
+          error: `That pharmacy is enrolled at ${existing.origin}. Re-enrolment must use the same origin; moving a pharmacy to a new origin is a manual procedure (see DEPLOY.md).`,
+        });
+        return;
+      }
+      try {
+        await enrolment.reenrol({
+          registrationId: existing.id,
+          origin,
+          enrolmentCode: code,
+          reenrolledBy: req.identityId!,
+          inTransaction: () => revokeGrantsForRegistration(existing.id, "reenrolled"),
+        });
+        logger.info("Pharmacy re-enrolled", { registrationId: existing.id });
+        res.status(200).json({ registrationId: existing.id, tenantSlug, reenrolled: true });
+      } catch (error) {
+        enrolmentFailure(res, error, tenantSlug, "Re-enrolment");
+      }
       return;
     }
 
@@ -79,15 +107,24 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
       });
       res.status(201).json({ registrationId: registration.id, tenantSlug: registration.tenantSlug });
     } catch (error) {
-      if (error instanceof EnrolmentFailedError) {
-        logger.warn("Enrolment failed", { tenantSlug });
-        res.status(502).json({ error: "Enrolment failed" });
-        return;
-      }
-      logger.error("Enrolment error", { tenantSlug, error: error instanceof Error ? error.message : String(error) });
-      res.status(500).json({ error: "Internal server error" });
+      enrolmentFailure(res, error, tenantSlug, "Enrolment");
     }
   });
+
+  function enrolmentFailure(res: Response, error: unknown, tenantSlug: string, what: "Enrolment" | "Re-enrolment"): void {
+    if (error instanceof EnrolmentFailedError) {
+      logger.warn(`${what} failed`, { tenantSlug, reason: error.reason ?? null });
+      res.status(502).json({
+        error:
+          error.reason === "slug_mismatch"
+            ? `The deployment answered for a different pharmacy than ${tenantSlug}. Nothing was changed; the code is used up, so ask for a new one.`
+            : `${what} failed`,
+      });
+      return;
+    }
+    logger.error(`${what} error`, { tenantSlug, error: error instanceof Error ? error.message : String(error) });
+    res.status(500).json({ error: "Internal server error" });
+  }
 
   router.get("/registrations", (_req: Request, res: Response) => {
     res.json({

@@ -41,6 +41,42 @@ describe("tenant registration and operator repositories", () => {
     enrolledBy: identityId,
   });
 
+  describe("replaceKeysOnReenrolment", () => {
+    const keys = { deploymentKeyId: "d-2", deploymentPublicKeyJwk: jwk("d2"), oneonKeyId: "o-2", oneonPublicKeyJwk: jwk("o2"), oneonPrivateKeySealed: sealed };
+
+    it("retires every old key now (a key in its rotation overlap too), adds the new ones and reactivates, all at once", () => {
+      const { repo, identityId } = setup();
+      const reg = repo.create(input(identityId));
+      repo.addDeploymentKey(reg.id, "d-overlap", jwk("dx"), new Date(Date.now() + KEY_OVERLAP_MS).toISOString());
+      repo.setStatus(reg.id, "suspended_by_operator", identityId, "test");
+      let ranInside = false;
+
+      const after = repo.replaceKeysOnReenrolment(reg.id, keys, identityId, () => (ranInside = true));
+
+      expect(after.status).toBe("active");
+      expect(ranInside).toBe(true);
+      expect(repo.deploymentKeys(reg.id).map((k) => k.keyId)).toEqual(["d-2"]);
+      expect(repo.unretiredOneonKeyIds(reg.id)).toEqual(["o-2"]);
+    });
+
+    it("throws and changes nothing when the registration is not suspended, or when the in-transaction step fails", () => {
+      const { repo, identityId } = setup();
+      const reg = repo.create(input(identityId));
+      expect(() => repo.replaceKeysOnReenrolment(reg.id, keys, identityId)).toThrow(/suspended/);
+      expect(repo.deploymentKeys(reg.id).map((k) => k.keyId)).toEqual(["d-acme"]);
+
+      repo.setStatus(reg.id, "suspended_by_operator", identityId, "test");
+      expect(() =>
+        repo.replaceKeysOnReenrolment(reg.id, keys, identityId, () => {
+          throw new Error("revocation failed");
+        }),
+      ).toThrow(/revocation failed/);
+      expect(repo.findById(reg.id)!.status).toBe("suspended_by_operator");
+      expect(repo.deploymentKeys(reg.id).map((k) => k.keyId)).toEqual(["d-acme"]);
+      expect(repo.unretiredOneonKeyIds(reg.id)).toEqual(["o-acme"]);
+    });
+  });
+
   it("creates the registration, both keys and an event together", () => {
     const { control, repo, identityId } = setup();
     const reg = repo.create(input(identityId));

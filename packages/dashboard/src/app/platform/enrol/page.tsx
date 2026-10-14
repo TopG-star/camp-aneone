@@ -36,7 +36,7 @@ export default function EnrolTenantPage() {
     setBusy(true);
     setMessage(null);
     try {
-      await apiFetch(
+      const result = await apiFetch<{ reenrolled?: boolean }>(
         "/api/platform/enrolments",
         {
           method: "POST",
@@ -45,7 +45,12 @@ export default function EnrolTenantPage() {
         { redirectOnAuth: false },
       );
       setCode("");
-      setMessage({ kind: "ok", text: `Enrolled ${tenantSlug.trim()}.` });
+      setMessage({
+        kind: "ok",
+        text: result?.reenrolled
+          ? `Enrolled ${tenantSlug.trim()} again: its keys were replaced and its grants revoked. Staff open Oneon from ImpressoRx again to reconnect.`
+          : `Enrolled ${tenantSlug.trim()}.`,
+      });
       await mutate();
     } catch (err) {
       setMessage({ kind: "error", text: err instanceof Error ? err.message : "Enrolment failed" });
@@ -78,6 +83,7 @@ export default function EnrolTenantPage() {
           <CardTitle>Enrol a pharmacy</CardTitle>
           <p className="text-label-sm meta-copy">
             Before you enrol, check the origin against the tenant registry. Enrolment trusts whichever deployment answers at this address and holds the code.
+            To reconnect a pharmacy you suspended, enrol it again here with a fresh code, at the same origin.
           </p>
         </CardHeader>
         <CardContent>

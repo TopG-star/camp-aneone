@@ -41,6 +41,15 @@ export interface CreateTenantRegistrationInput {
   enrolledBy: string;
 }
 
+/** The keys a re-enrolment proved: they replace every key of the registration at once. */
+export interface ReenrolmentKeys {
+  deploymentKeyId: string;
+  deploymentPublicKeyJwk: JWK;
+  oneonKeyId: string;
+  oneonPublicKeyJwk: JWK;
+  oneonPrivateKeySealed: SealedSecret;
+}
+
 /** A retiring key stays valid for this long (spec §5.4). */
 export const KEY_OVERLAP_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -102,6 +111,33 @@ export class TenantRegistrationRepository {
       this.insertKey(id, "oneon", input.oneonKeyId, input.oneonPublicKeyJwk, input.oneonPrivateKeySealed, now);
       this.insertEvent(id, "enrolled", input.enrolledBy, { origin: input.origin, tenantSlug: input.tenantSlug }, now);
       inTransaction?.(this.findById(id)!);
+    });
+    run();
+    return this.findById(id)!;
+  }
+
+  /**
+   * Re-enrolment of a suspended registration (ruling): in one transaction, and only if it is still `suspended_by_operator`, every
+   * unretired key of both owners is retired now (no overlap), the proved keys are added, `inTransaction` runs (grant revocation),
+   * a `reenrolled` event is written and the status becomes `active`. The row, its tenant_id and file, and its memberships are kept.
+   * Throws when the registration is no longer suspended; then nothing changes.
+   */
+  replaceKeysOnReenrolment(id: string, keys: ReenrolmentKeys, actor: string, inTransaction?: () => void): TenantRegistration {
+    const now = this.clock().toISOString();
+    const run = this.db.transaction(() => {
+      const changed = this.db
+        .prepare("UPDATE tenant_registrations SET status = 'active' WHERE id = ? AND status = 'suspended_by_operator'")
+        .run(id).changes;
+      if (changed !== 1) throw new Error("Only a suspended registration can be re-enrolled");
+      // Every key of both owners, a key still inside a rotation overlap included, stops verifying and signing now.
+      this.db
+        .prepare("UPDATE tenant_keys SET retired_at = ? WHERE tenant_registration_id = ? AND (retired_at IS NULL OR retired_at > ?)")
+        .run(now, id, now);
+      this.insertKey(id, "deployment", keys.deploymentKeyId, keys.deploymentPublicKeyJwk, null, now);
+      this.insertKey(id, "oneon", keys.oneonKeyId, keys.oneonPublicKeyJwk, keys.oneonPrivateKeySealed, now);
+      inTransaction?.();
+      this.insertEvent(id, "reenrolled", actor, { oneonKeyId: keys.oneonKeyId, deploymentKeyId: keys.deploymentKeyId }, now);
+      this.insertEvent(id, "status_changed", actor, { from: "suspended_by_operator", to: "active", reason: "reenrolled" }, now);
     });
     run();
     return this.findById(id)!;

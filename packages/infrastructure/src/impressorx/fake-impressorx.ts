@@ -75,7 +75,7 @@ export class FakeImpressorx {
   constructor(
     readonly origin: string,
     readonly tenantSlug: string,
-    private readonly code: string,
+    private code: string,
     private readonly clock: () => Date = () => new Date(),
   ) {
     this.issuer = `impressorx:${tenantSlug}`;
@@ -83,6 +83,18 @@ export class FakeImpressorx {
 
   get active(): boolean {
     return this.codeUsed;
+  }
+
+  /**
+   * The tenant admin presses Remove (Oneon's keys and every deployment key are deleted, every grant revoked), then Enable, which
+   * issues a fresh one-time code. Like ImpressoRx, the next enrolment generates a new deployment key.
+   */
+  removeAndEnable(code: string): void {
+    this.oneonKeys.length = 0;
+    this.deploymentKeys.length = 0;
+    for (const grant of this.grants.values()) grant.status = "revoked";
+    this.codeUsed = false;
+    this.code = code;
   }
 
   /** The deployment adds a signing key of its own; the older key is retired in 7 days. */
