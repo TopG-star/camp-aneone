@@ -30,7 +30,9 @@ describe("platform route", () => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  function setup(opts: { masterKey?: string | null; operator?: boolean; backupConfigured?: boolean; createTenantFile?: (id: string, tenantId: string) => void } = {}) {
+  function setup(
+    opts: { masterKey?: string | null; operator?: boolean; backupConfigured?: boolean; grantConfigured?: boolean; createTenantFile?: (id: string, tenantId: string) => void } = {},
+  ) {
     const dir = mkdtempSync(join(tmpdir(), "platform-"));
     dirs.push(dir);
     const control = openControlDb(join(dir, "control.db"));
@@ -64,6 +66,7 @@ describe("platform route", () => {
         registrations,
         enrolment,
         backupConfigured: opts.backupConfigured ?? true,
+        grantConfigured: opts.grantConfigured ?? true,
         latestRollups: () => latestRollups(control),
         createTenantFile: opts.createTenantFile ?? ((id, tenantId) => void gate.createTenantFile(id, tenantId)),
         logger,
@@ -163,13 +166,32 @@ describe("platform route", () => {
     expect(control.prepare("SELECT COUNT(*) AS n FROM tenant_registrations").get()).toEqual({ n: 0 });
   });
 
-  it("fails with a bare 500 when the signing master key is not configured", async () => {
-    const { app, fake, control } = setup({ masterKey: null });
+  it("refuses with 503 naming ONEON_SIGNING_KEY_MASTER_KEY when it is not set, before spending the code or writing anything", async () => {
+    const { app, fake, control, dir } = setup({ masterKey: null });
     const res = await request(app).post("/api/platform/enrolments").send(body);
-    expect(res.status).toBe(500);
-    expect(res.body).toEqual({ error: "Internal server error" });
+    expect(res.status).toBe(503);
+    expect(res.body.error).toMatch(/ONEON_SIGNING_KEY_MASTER_KEY/);
+    expect(res.body.error).not.toMatch(/ONEON_GRANT_MASTER_KEY|BACKUP_ENCRYPTION_KEY/);
     expect(fake.active).toBe(false);
     expect(control.prepare("SELECT COUNT(*) AS n FROM tenant_registrations").get()).toEqual({ n: 0 });
+    expect(existsSync(join(dir, "tenants"))).toBe(false);
+  });
+
+  it("refuses with 503 naming ONEON_GRANT_MASTER_KEY when it is not set (every hand-off would fail), before spending the code", async () => {
+    const { app, fake, control, dir } = setup({ grantConfigured: false });
+    const res = await request(app).post("/api/platform/enrolments").send(body);
+    expect(res.status).toBe(503);
+    expect(res.body.error).toMatch(/ONEON_GRANT_MASTER_KEY/);
+    expect(fake.active).toBe(false);
+    expect(control.prepare("SELECT COUNT(*) AS n FROM tenant_registrations").get()).toEqual({ n: 0 });
+    expect(existsSync(join(dir, "tenants"))).toBe(false);
+  });
+
+  it("names every missing key at once", async () => {
+    const { app } = setup({ masterKey: null, grantConfigured: false, backupConfigured: false });
+    const res = await request(app).post("/api/platform/enrolments").send(body);
+    expect(res.status).toBe(503);
+    for (const key of ["BACKUP_ENCRYPTION_KEY", "ONEON_SIGNING_KEY_MASTER_KEY", "ONEON_GRANT_MASTER_KEY"]) expect(res.body.error).toContain(key);
   });
 
   it("refuses to enrol while BACKUP_ENCRYPTION_KEY is unset, before spending the code or writing anything", async () => {

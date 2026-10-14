@@ -14,6 +14,8 @@ export interface PlatformRouteDeps {
   enrolment: EnrolmentService;
   /** True when BACKUP_ENCRYPTION_KEY is set. Without it a registration would stop the next restart, so enrolment is refused. */
   backupConfigured: boolean;
+  /** True when ONEON_GRANT_MASTER_KEY is set. Without it no hand-off can be proved, so enrolment is refused. */
+  grantConfigured: boolean;
   /** Each tenant's most recent rollup, read from the control database. The platform view never opens a tenant file. */
   latestRollups: () => Array<{ tenantId: string; day: string; metrics: unknown }>;
   /** Creates the tenant's database file once its registration exists. */
@@ -30,7 +32,7 @@ const EnrolBody = z.object({
 
 export function createPlatformRouter(deps: PlatformRouteDeps): Router {
   const router = Router();
-  const { operators, registrations, enrolment, backupConfigured, latestRollups, createTenantFile, logger } = deps;
+  const { operators, registrations, enrolment, backupConfigured, grantConfigured, latestRollups, createTenantFile, logger } = deps;
 
   // Operator only. A signed-in user who is not an operator gets 403, never a hint of what exists.
   router.use((req: Request, res: Response, next: NextFunction) => {
@@ -42,9 +44,15 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
   });
 
   router.post("/enrolments", async (req: Request, res: Response) => {
-    if (!backupConfigured) {
+    // Refused before the code is spent or anything is written: each key is needed by the registration from its first minute.
+    const missing = [
+      !backupConfigured && "BACKUP_ENCRYPTION_KEY",
+      !enrolment.configured && "ONEON_SIGNING_KEY_MASTER_KEY",
+      !grantConfigured && "ONEON_GRANT_MASTER_KEY",
+    ].filter((key): key is string => Boolean(key));
+    if (missing.length > 0) {
       res.status(503).json({
-        error: "Enrolment is disabled until BACKUP_ENCRYPTION_KEY is set on the server (generate one with: openssl rand -base64 32) and the server is restarted",
+        error: `Enrolment is disabled until ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} set on the server (generate each with: openssl rand -base64 32) and the server is restarted`,
       });
       return;
     }

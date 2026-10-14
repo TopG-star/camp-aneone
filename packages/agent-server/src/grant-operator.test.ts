@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { acquireStorageLock, createDatabase, decryptBackup, openControlDb, PlatformOperatorRepository } from "@oneon/infrastructure";
-import { grantOperator } from "./grant-operator.js";
+import { grantOperator, grantOperatorPaths } from "./grant-operator.js";
 
 const NOW = "2026-10-08T00:00:00.000Z";
 
@@ -78,6 +78,16 @@ describe("grantOperator", () => {
     await expect(grantOperator({ controlPath, backupDir, keyB64, identityId: "nobody" })).rejects.toThrow(/No identity with id nobody/);
   });
 
+  it("refuses a control database that does not exist, and creates nothing", async () => {
+    const { dir, backupDir, keyB64 } = setup();
+    const before = readdirSync(dir).sort();
+    // In a folder that exists (where SQLite would otherwise create a fresh, empty control.db) and in one that does not.
+    for (const missing of [join(dir, "other-control.db"), join(dir, "elsewhere", "control.db")]) {
+      await expect(grantOperator({ controlPath: missing, backupDir, keyB64, identityId: "op" })).rejects.toThrow(/No control database at .*CONTROL_DATABASE_PATH/s);
+    }
+    expect(readdirSync(dir).sort()).toEqual(before);
+  });
+
   it("refuses while another process is preparing storage", async () => {
     const { dir, controlPath, backupDir, keyB64 } = setup();
     const release = acquireStorageLock(join(dir, "storage.lock"));
@@ -87,5 +97,22 @@ describe("grantOperator", () => {
     } finally {
       release();
     }
+  });
+});
+
+describe("grantOperatorPaths", () => {
+  it("resolves relative paths against where the command was typed (INIT_CWD), not the package folder pnpm runs it in", () => {
+    const typedIn = resolve("/srv/camp-aneone");
+    expect(grantOperatorPaths({ INIT_CWD: typedIn, CONTROL_DATABASE_PATH: "./data/control.db", BACKUP_DIR: "data/backups" }, resolve("/pkg"))).toEqual({
+      controlPath: join(typedIn, "data", "control.db"),
+      backupDir: join(typedIn, "data", "backups"),
+    });
+  });
+
+  it("uses the server's defaults, falls back to the working directory without INIT_CWD, and keeps absolute paths", () => {
+    const cwd = resolve("/work");
+    const absolute = resolve("/var/lib/oneon/control.db");
+    expect(grantOperatorPaths({}, cwd)).toEqual({ controlPath: join(cwd, "data", "control.db"), backupDir: join(cwd, "data", "backups") });
+    expect(grantOperatorPaths({ INIT_CWD: resolve("/elsewhere"), CONTROL_DATABASE_PATH: absolute }, cwd).controlPath).toBe(absolute);
   });
 });

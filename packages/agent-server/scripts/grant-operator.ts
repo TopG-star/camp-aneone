@@ -1,7 +1,7 @@
-// Usage: pnpm --filter @oneon/agent-server grant-operator <identityId>
+// Usage (from the repository root): pnpm --filter @oneon/agent-server grant-operator <identityId>
 import { config } from "dotenv";
 import { resolve } from "node:path";
-import { grantOperator } from "../src/grant-operator.js";
+import { grantOperator, grantOperatorPaths } from "../src/grant-operator.js";
 
 config({ path: resolve(import.meta.dirname!, "../../..", ".env") });
 
@@ -13,8 +13,7 @@ if (!identityId) {
 
 try {
   await grantOperator({
-    controlPath: process.env.CONTROL_DATABASE_PATH ?? "./data/control.db",
-    backupDir: process.env.BACKUP_DIR ?? "./data/backups",
+    ...grantOperatorPaths(process.env),
     keyB64: process.env.BACKUP_ENCRYPTION_KEY || undefined,
     identityId,
   });

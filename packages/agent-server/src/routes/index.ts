@@ -543,6 +543,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       registrations: container.tenantRegistrations,
       enrolment: container.enrolment,
       backupConfigured: Boolean(env.BACKUP_ENCRYPTION_KEY),
+      grantConfigured: Boolean(env.ONEON_GRANT_MASTER_KEY),
       latestRollups: () => latestRollups(container.backupSources.control),
       createTenantFile: container.createTenantFile,
       logger: platformLogger,
