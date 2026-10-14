@@ -29,8 +29,20 @@ export interface NewTenantAiLimitVersion {
   evidence: Record<string, unknown> | null;
 }
 
-/** `limit_changed`: the newest row is not the class the change was based on. `prerequisites_missing`: a raise `onRaise` could not justify. */
-export type TenantLimitChange = { ok: true } | { ok: false; reason: "limit_changed" | "prerequisites_missing"; current: TenantLimitClass };
+/**
+ * `limit_changed`: the newest row is not the class the change was based on. `prerequisites_missing`: a raise `onRaise` could not justify.
+ * `live_check_required`: a change authorised from the cached snapshot that is not a strict lowering.
+ */
+export type TenantLimitChange =
+  | { ok: true }
+  | { ok: false; reason: "limit_changed" | "prerequisites_missing" | "live_check_required"; current: TenantLimitClass };
+
+/** A lowering authorised from the cached snapshot whose re-check has now been made. */
+export interface ResolvedRecheck {
+  versionId: string;
+  registrationId: string;
+  maxClass: TenantLimitClass;
+}
 
 type Row = {
   id: string;
@@ -82,13 +94,15 @@ export class TenantAiLimitRepository {
    * Writes a row, unconditionally. A caller that changes a limit for a person goes through `change`, which decides against the row it
    * writes after.
    */
-  append(v: NewTenantAiLimitVersion): void {
+  append(v: NewTenantAiLimitVersion): string {
+    const id = randomUUID();
     this.db
       .prepare(
         `INSERT INTO tenant_ai_limit_versions (id, tenant_registration_id, max_class, set_by, live_check_ref, evidence_json, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(randomUUID(), v.registrationId, v.maxClass, v.setBy, v.liveCheckRef, v.evidence === null ? null : JSON.stringify(v.evidence), this.clock().toISOString());
+      .run(id, v.registrationId, v.maxClass, v.setBy, v.liveCheckRef, v.evidence === null ? null : JSON.stringify(v.evidence), this.clock().toISOString());
+    return id;
   }
 
   /**
@@ -99,20 +113,55 @@ export class TenantAiLimitRepository {
    * (`limit_changed`), so a change based on a stale view cannot overwrite what someone else has just set.
    * Keeping the class or lowering it is written as it is. Raising it asks `onRaise` (inside the transaction) for the evidence that
    * allows it; null means the prerequisites are missing, nothing is written, and the answer says what the limit still is.
+   * `cachedSnapshot` (spec 9.4, owner decision 2026-10-14): the change rests on the membership's cached snapshot because ImpressoRx could
+   * not be reached. Only a strict lowering is then written (anything else is `live_check_required`, and `onRaise` is never asked), and
+   * with it a pending re-check for that membership, in the same transaction.
    */
-  change(v: Omit<NewTenantAiLimitVersion, "evidence"> & { expectedCurrent?: TenantLimitClass }, onRaise: () => Record<string, unknown> | null): TenantLimitChange {
-    const { expectedCurrent, ...write } = v;
+  change(
+    v: Omit<NewTenantAiLimitVersion, "evidence"> & { expectedCurrent?: TenantLimitClass; cachedSnapshot?: { membershipId: string } },
+    onRaise: () => Record<string, unknown> | null,
+  ): TenantLimitChange {
+    const { expectedCurrent, cachedSnapshot, ...write } = v;
     return this.db
       .transaction((): TenantLimitChange => {
         const current = this.current(write.registrationId);
         if (expectedCurrent !== undefined && expectedCurrent !== current) return { ok: false, reason: "limit_changed", current };
+        if (cachedSnapshot && classRank(write.maxClass) >= classRank(current)) return { ok: false, reason: "live_check_required", current };
         let evidence: Record<string, unknown> | null = null;
         if (classRank(write.maxClass) > classRank(current)) {
           evidence = onRaise();
           if (evidence === null) return { ok: false, reason: "prerequisites_missing", current };
         }
-        this.append({ ...write, evidence });
+        const versionId = this.append({ ...write, evidence });
+        if (cachedSnapshot) {
+          this.db
+            .prepare("INSERT INTO tenant_ai_limit_rechecks (version_id, membership_id, created_at) VALUES (?, ?, ?)")
+            .run(versionId, cachedSnapshot.membershipId, this.clock().toISOString());
+        }
         return { ok: true };
+      })
+      .immediate();
+  }
+
+  /**
+   * Makes the re-check of every lowering this membership made from its cached snapshot and that is still pending: records when and whether
+   * the person still had the permission (`stillPermitted`, from the snapshot ImpressoRx has just delivered), and answers those lowerings.
+   * Each is resolved once. The limit itself is never changed here: a lowered class stays.
+   */
+  resolveRechecks(membershipId: string, stillPermitted: boolean): ResolvedRecheck[] {
+    return this.db
+      .transaction((): ResolvedRecheck[] => {
+        const rows = this.db
+          .prepare(
+            `SELECT r.version_id, v.tenant_registration_id, v.max_class FROM tenant_ai_limit_rechecks r
+             JOIN tenant_ai_limit_versions v ON v.id = r.version_id
+             WHERE r.membership_id = ? AND r.rechecked_at IS NULL ORDER BY r.rowid`,
+          )
+          .all(membershipId) as Array<{ version_id: string; tenant_registration_id: string; max_class: TenantLimitClass }>;
+        const resolve = this.db.prepare("UPDATE tenant_ai_limit_rechecks SET rechecked_at = ?, outcome = ? WHERE version_id = ? AND rechecked_at IS NULL");
+        const at = this.clock().toISOString();
+        for (const row of rows) resolve.run(at, stillPermitted ? "confirmed" : "permission_lost", row.version_id);
+        return rows.map((r) => ({ versionId: r.version_id, registrationId: r.tenant_registration_id, maxClass: r.max_class }));
       })
       .immediate();
   }

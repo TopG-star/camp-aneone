@@ -1,4 +1,4 @@
-import type { TenantAiLimitView } from "@oneon/contracts";
+import type { TenantAiLimitChangeResult, TenantAiLimitView } from "@oneon/contracts";
 import { formatDate } from "./connections-ui";
 
 // Settings → AI data in a pharmacy: the pharmacy's own limit on what Oneon may send to AI providers (spec 9.4). Every sentence says
@@ -42,6 +42,16 @@ export function historyEntryText(entry: Pick<TenantAiLimitView["history"][number
   return `${tenantClassLabel(entry.maxClass)} · ${formatDate(entry.at)} · by ${entry.byYou ? "you" : "a colleague"}`;
 }
 
+/**
+ * What a saved change says. A lowering saved while ImpressoRx was unreachable rested on the person's cached access (spec 9.4), so the
+ * message says so, and that Oneon checks it again later without undoing the lower limit.
+ */
+export function changeSavedText(result: Pick<TenantAiLimitChangeResult, "current" | "authorisedFrom">): string {
+  const saved = `The limit is now: ${tenantClassLabel(result.current)}.`;
+  if (result.authorisedFrom !== "cached_snapshot") return saved;
+  return `${saved} It was saved while Oneon couldn't reach ImpressoRx, using your access as ImpressoRx last confirmed it. Oneon checks your access again once ImpressoRx is reachable; the lower limit stays either way.`;
+}
+
 /** Why a change was not made (the route's answers, spec 9.3 and 9.4). A 403 from a pharmacy that cannot open carries its own message. */
 export function changeFailureText(status: number, message: string): string {
   if (status === 409 && message === "limit_changed") {
@@ -59,6 +69,9 @@ export function changeFailureText(status: number, message: string): string {
   // A pharmacy that cannot open explains itself in words; a bare code is never shown.
   if (status === 403 && /\s/.test(message.trim())) return message;
   if (status === 403) return "You can't change this right now. Nothing was changed.";
+  if (status === 503 && message === "live_check_required") {
+    return "Oneon can't reach ImpressoRx right now. Until it can, the limit can only be lowered. Nothing was changed.";
+  }
   if (status === 503) return "Oneon can't reach ImpressoRx right now, so it can't check your access. Nothing was changed. Try again in a moment.";
   return "Couldn't change the limit. Nothing was changed. Try again.";
 }

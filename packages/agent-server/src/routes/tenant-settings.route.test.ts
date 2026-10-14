@@ -5,7 +5,7 @@ import { join } from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TenantAiLimitViewSchema } from "@oneon/contracts";
+import { TenantAiLimitChangeResultSchema, TenantAiLimitViewSchema } from "@oneon/contracts";
 import type { ActiveContext } from "@oneon/domain";
 import {
   Fingerprinter,
@@ -27,6 +27,7 @@ import {
   createImpressoRxClient,
   openControlDb,
 } from "@oneon/infrastructure";
+import { createAiLimitRecheck } from "../ai-limit-recheck.js";
 import { createSnapshotRefresher } from "../middleware/active-context.js";
 import { createTenantSettingsRouter } from "./tenant-settings.route.js";
 
@@ -88,11 +89,17 @@ describe("tenant AI limit routes (spec 9.4)", () => {
     const adminMembership = memberships.upsertFromHandoff({ identityId: admin.id, tenantRegistrationId: registration.id, externalUserId: "staff-admin", role: "Admin" });
     const viewerMembership = memberships.upsertFromHandoff({ identityId: viewer.id, tenantRegistrationId: registration.id, externalUserId: "staff-viewer", role: "Staff" });
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    const limits = new TenantAiLimitRepository(control, () => new Date(NOW));
+    // As the container wires it: a snapshot from ImpressoRx is applied, then resolves the membership's pending re-checks (spec 9.4).
+    const recheck = createAiLimitRecheck({ limits, logger });
     const client = createImpressoRxClient({
       control,
       grantMasterKeyB64: randomBytes(32).toString("base64"),
       enrolment,
-      onSnapshot: (id, snapshot) => memberships.applySnapshot(id, snapshot),
+      onSnapshot: (id, snapshot) => {
+        memberships.applySnapshot(id, snapshot);
+        recheck(id, snapshot.permissions);
+      },
       fetchImpl,
       logger,
       sleep: async () => undefined,
@@ -102,7 +109,6 @@ describe("tenant AI limit routes (spec 9.4)", () => {
     await client.exchangeHandoff(registration.id, await fake.mintHandoff("staff-viewer"), "sess-viewer", viewer.id, viewerMembership.id, "staff-viewer");
     sent.length = 0;
 
-    const limits = new TenantAiLimitRepository(control, () => new Date(NOW));
     const snapshots = createSnapshotRefresher({ memberships, registrations, client, logger });
 
     type Who = { identityId: string; membershipId: string; sessionId: string | undefined };
@@ -142,7 +148,7 @@ describe("tenant AI limit routes (spec 9.4)", () => {
     const withMissingMembership = () => void (who = { identityId: admin.id, membershipId: "ghost", sessionId: "sess-admin" });
     const grantStatuses = () => control.prepare("SELECT status, revoked_reason FROM delegation_grants ORDER BY created_at, rowid").all() as Array<{ status: string; revoked_reason: string | null }>;
     return {
-      app, control, fake, sent, hooks, limits, memberships, registration, admin, viewer, adminMembership, viewerMembership, logger, asAdmin, asViewer, inPersonal, withMissingMembership, grantStatuses,
+      app, control, fake, client, sent, hooks, limits, memberships, registration, admin, viewer, adminMembership, viewerMembership, logger, asAdmin, asViewer, inPersonal, withMissingMembership, grantStatuses,
     };
   }
 
@@ -306,7 +312,9 @@ describe("tenant AI limit routes (spec 9.4)", () => {
         canChange: true,
         history: [{ maxClass: "D0", byYou: true }],
         providers: [{ id: "deepseek", effective: "D0" }, { id: "anthropic", effective: "D0" }],
+        authorisedFrom: "live_check",
       });
+      expect(TenantAiLimitChangeResultSchema.safeParse(res.body).success).toBe(true);
       expect(s.sent).toContain("/api/oneon/me"); // the live snapshot, asked now
       expect(s.limits.current(s.registration.id)).toBe("D0");
       const row = s.limits.history(s.registration.id)[0]!;
@@ -527,16 +535,168 @@ describe("tenant AI limit routes (spec 9.4)", () => {
         expect(s.limits.history(s.registration.id)).toEqual([]);
       });
 
-      it("an unreachable ImpressoRx is 503 impressorx_unreachable and nothing is appended, not even a lowering", async () => {
+    });
+
+    // Spec 9.4, owner decision 2026-10-14.
+    describe("while ImpressoRx is unreachable", () => {
+      const newest = (s: S) => s.limits.history(s.registration.id)[0]!;
+      const alerts = (s: S) => s.logger.error.mock.calls.filter(([, fields]) => (fields as { alert?: string } | undefined)?.alert === "ai_limit_lowered_without_permission");
+
+      it("a lowering from a hand-off session whose cached snapshot shows settings.oneon is saved, and the row says it rested on that snapshot and when", async () => {
         const s = await setup();
+        seed(s, "D2");
+        const snapshotAt = s.memberships.findById(s.adminMembership.id)!.snapshotAt;
+        s.fake.unavailable = true;
+
+        const res = await put(s, "D1", { expectedCurrent: "D2" });
+
+        expect(res.status).toBe(200);
+        expect(TenantAiLimitChangeResultSchema.safeParse(res.body).success).toBe(true);
+        expect(res.body).toMatchObject({ current: "D1", authorisedFrom: "cached_snapshot", history: [{ maxClass: "D1", byYou: true }, { maxClass: "D2" }] });
+        expect(s.sent).toContain("/api/oneon/me"); // the live check was tried first
+        expect(newest(s)).toMatchObject({ maxClass: "D1", setBy: s.admin.id, evidence: null });
+        expect(JSON.parse(newest(s).liveCheckRef!)).toEqual({ authorisedFrom: "cached_snapshot", snapshotAt, liveCheckFailedAt: "2026-10-09T12:00:00.000Z" });
+        expect(s.logger.warn).toHaveBeenCalledWith(expect.stringMatching(/cached/i), expect.objectContaining({ membershipId: s.adminMembership.id }));
+        expect(s.memberships.findById(s.adminMembership.id)!.status).toBe("active");
+      });
+
+      it("the cached snapshot may be of any age within the session", async () => {
+        const s = await setup();
+        s.control.prepare("UPDATE memberships SET snapshot_at = '2026-01-01T00:00:00.000Z' WHERE id = ?").run(s.adminMembership.id);
         s.fake.unavailable = true;
 
         const res = await put(s, "D0");
 
+        expect(res.status).toBe(200);
+        expect(JSON.parse(newest(s).liveCheckRef!)).toMatchObject({ authorisedFrom: "cached_snapshot", snapshotAt: "2026-01-01T00:00:00.000Z" });
+      });
+
+      it.each([
+        ["a raise (D1 to D2, which the live check would allow)", "D1" as const, "D2"],
+        ["keeping the same class", "D1" as const, "D1"],
+      ])("%s is refused 503 live_check_required and nothing is appended", async (_name, from, to) => {
+        const s = await setup({ registry: registryWith(reviewed()) });
+        seed(s, from);
+        s.fake.unavailable = true;
+
+        const res = await put(s, to);
+
         expect(res.status).toBe(503);
-        expect(res.body).toMatchObject({ error: "impressorx_unreachable" });
+        expect(res.body).toEqual({ error: "live_check_required", message: expect.stringMatching(/only be lowered/i) });
+        expect(s.limits.history(s.registration.id)).toHaveLength(1);
+        expect(s.limits.current(s.registration.id)).toBe(from);
+      });
+
+      it("a session that is not a hand-off session (Google) gets no fallback: 403 launch_required, and nothing is appended", async () => {
+        const s = await setup();
+        s.asAdmin(null);
+        s.fake.unavailable = true;
+
+        const res = await put(s, "D0");
+
+        expect(res.status).toBe(403);
+        expect(res.body).toMatchObject({ error: "launch_required" });
+        expect(s.sent).toEqual([]);
         expect(s.limits.history(s.registration.id)).toEqual([]);
-        expect(s.memberships.findById(s.adminMembership.id)!.status).toBe("active");
+      });
+
+      it("a cached snapshot without settings.oneon is no authority: 503 impressorx_unreachable, and nothing is appended", async () => {
+        const s = await setup();
+        s.memberships.applySnapshot(s.adminMembership.id, { role: "Staff", permissions: ["jobs.read"], locationIds: [], tenantStatus: "Active" });
+        s.fake.unavailable = true;
+
+        const asAdmin = await put(s, "D0");
+        s.asViewer(); // never had it
+        const asViewer = await put(s, "D0");
+
+        for (const res of [asAdmin, asViewer]) {
+          expect(res.status).toBe(503);
+          expect(res.body).toMatchObject({ error: "impressorx_unreachable" });
+        }
+        expect(s.limits.history(s.registration.id)).toEqual([]);
+      });
+
+      it("the newest row still decides: a lowering judged against a stale view is refused 409 limit_changed", async () => {
+        const s = await setup();
+        seed(s, "D0");
+        s.fake.unavailable = true;
+
+        const res = await put(s, "D0", { expectedCurrent: "D1" });
+
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({ error: "limit_changed" });
+        expect(s.limits.history(s.registration.id)).toHaveLength(1);
+      });
+
+      describe("the re-check when ImpressoRx next delivers a snapshot for the membership", () => {
+        async function lowerFromCache(s: S) {
+          s.fake.unavailable = true;
+          expect((await put(s, "D0")).status).toBe(200);
+          s.fake.unavailable = false;
+        }
+
+        it("logs the loss at error with the alert when the person no longer has settings.oneon, once; the lowered limit stays", async () => {
+          const s = await setup();
+          await lowerFromCache(s);
+          const versionId = newest(s).id;
+          s.fake.snapshots.set("staff-admin", { ...ADMIN_SNAPSHOT, role: "Staff", permissions: ["jobs.read"], tokenVersion: 8 });
+
+          expect((await put(s, "D0")).status).toBe(403); // the next live check: permission_required, and the snapshot arrives with it
+          await put(s, "D0"); // and another
+
+          expect(alerts(s)).toEqual([
+            [
+              expect.any(String),
+              { alert: "ai_limit_lowered_without_permission", membershipId: s.adminMembership.id, registrationId: s.registration.id, versionId, maxClass: "D0" },
+            ],
+          ]);
+          expect(s.limits.current(s.registration.id)).toBe("D0");
+        });
+
+        it("a fresh hand-off is such a snapshot too", async () => {
+          const s = await setup();
+          await lowerFromCache(s);
+          s.fake.snapshots.set("staff-admin", { ...ADMIN_SNAPSHOT, permissions: ["jobs.read"] });
+
+          await s.client.exchangeHandoff(s.registration.id, await s.fake.mintHandoff("staff-admin"), "sess-admin-2", s.admin.id, s.adminMembership.id, "staff-admin");
+
+          expect(alerts(s)).toHaveLength(1);
+        });
+
+        it("a snapshot that still shows settings.oneon resolves it without an alert", async () => {
+          const s = await setup();
+          await lowerFromCache(s);
+
+          expect((await put(s, "D0")).status).toBe(200);
+          s.fake.snapshots.set("staff-admin", { ...ADMIN_SNAPSHOT, permissions: ["jobs.read"] });
+          await put(s, "D0");
+
+          expect(alerts(s)).toEqual([]);
+          expect(s.logger.info).toHaveBeenCalledWith(expect.stringMatching(/confirmed/i), expect.objectContaining({ membershipId: s.adminMembership.id }));
+        });
+
+        it("another person's snapshot does not resolve it", async () => {
+          const s = await setup();
+          await lowerFromCache(s);
+          s.asViewer();
+          await put(s, "D0"); // the viewer's live check: a snapshot for the viewer's membership, without settings.oneon
+
+          expect(alerts(s)).toEqual([]);
+          s.asAdmin();
+          s.fake.snapshots.set("staff-admin", { ...ADMIN_SNAPSHOT, permissions: ["jobs.read"] });
+          await put(s, "D0");
+          expect(alerts(s)).toHaveLength(1);
+        });
+
+        it("a lowering made with the live check is never re-checked", async () => {
+          const s = await setup();
+          expect((await put(s, "D0")).status).toBe(200);
+          s.fake.snapshots.set("staff-admin", { ...ADMIN_SNAPSHOT, permissions: ["jobs.read"] });
+
+          await put(s, "D0");
+
+          expect(alerts(s)).toEqual([]);
+        });
       });
     });
 

@@ -85,6 +85,7 @@ import { dirname } from "node:path";
 import type { BackgroundLoop } from "./background-loop.js";
 import { createActionsFor, type ActionsModule } from "./actions-wiring.js";
 import { activeMembershipLookup } from "./context-wiring.js";
+import { createAiLimitRecheck } from "./ai-limit-recheck.js";
 import { createSnapshotRefresher, type SnapshotRefresher } from "./middleware/active-context.js";
 import { createTenantDelegation } from "./tenant-delegation.js";
 import { createModelWiring } from "./model-wiring.js";
@@ -218,12 +219,18 @@ export function createContainer(env: Env): AppContainer {
   });
   const memberships = new MembershipRepository(control);
   const handoffJti = new UsedHandoffJti(control);
+  const tenantAiLimits = new TenantAiLimitRepository(control);
+  // Spec 9.4: every snapshot ImpressoRx delivers also re-checks the membership's AI limit lowerings made from its cached snapshot.
+  const recheckAiLimit = createAiLimitRecheck({ limits: tenantAiLimits, logger: new StructuredLogger("tenant-settings", env.LOG_LEVEL) });
   const impressorx = env.ONEON_GRANT_MASTER_KEY
     ? createImpressoRxClient({
         control,
         grantMasterKeyB64: env.ONEON_GRANT_MASTER_KEY,
         enrolment,
-        onSnapshot: (membershipId, snapshot) => memberships.applySnapshot(membershipId, snapshot),
+        onSnapshot: (membershipId, snapshot) => {
+          memberships.applySnapshot(membershipId, snapshot);
+          recheckAiLimit(membershipId, snapshot.permissions);
+        },
         logger,
       })
     : null;
@@ -236,7 +243,6 @@ export function createContainer(env: Env): AppContainer {
   });
   logger.info("Database ready", { path: env.DATABASE_PATH });
 
-  const tenantAiLimits = new TenantAiLimitRepository(control);
   const modelWiring = createModelWiring(env, { context: personal, logger, registrations: tenantRegistrations, tenantLimits: tenantAiLimits });
 
   // ── Repositories ──────────────────────────────────────────

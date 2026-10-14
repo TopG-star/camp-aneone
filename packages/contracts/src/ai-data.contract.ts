@@ -76,6 +76,13 @@ export const TenantAiLimitViewSchema = z.object({
 export type TenantAiLimitView = z.infer<typeof TenantAiLimitViewSchema>;
 
 /**
+ * The answer to a change: the view, and what authorised it. `cached_snapshot` (spec 9.4): ImpressoRx could not be reached, and the
+ * lowering rested on the admin's cached snapshot; Oneon checks it again when ImpressoRx is back.
+ */
+export const TenantAiLimitChangeResultSchema = TenantAiLimitViewSchema.extend({ authorisedFrom: z.enum(["live_check", "cached_snapshot"]) });
+export type TenantAiLimitChangeResult = z.infer<typeof TenantAiLimitChangeResultSchema>;
+
+/**
  * D3 and D4 parse here and are refused by the route with their own error, because they are never allowed (spec 9.4).
  * `expectedCurrent` is the class the page showed; the change is refused if the limit is no longer that.
  */

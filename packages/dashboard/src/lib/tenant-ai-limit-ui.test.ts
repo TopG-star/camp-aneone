@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { NO_PROVIDER_CONFIGURED, changeFailureText, historyEntryText, providerLimitText, tenantClassLabel } from "./tenant-ai-limit-ui";
+import { NO_PROVIDER_CONFIGURED, changeFailureText, changeSavedText, historyEntryText, providerLimitText, tenantClassLabel } from "./tenant-ai-limit-ui";
 
 describe("pharmacy AI limit UI helpers", () => {
   it("names each level a pharmacy may choose in plain words, and passes anything else through", () => {
@@ -46,6 +46,19 @@ describe("pharmacy AI limit UI helpers", () => {
     });
   });
 
+  describe("what a saved change says (spec 9.4)", () => {
+    it("checked live: the new limit", () => {
+      expect(changeSavedText({ current: "D0", authorisedFrom: "live_check" })).toBe(
+        "The limit is now: Public only (nothing about your pharmacy's business; chat replies in this pharmacy are refused at this level).",
+      );
+    });
+    it("saved while ImpressoRx was unreachable: says so, and that Oneon checks again once it is back", () => {
+      expect(changeSavedText({ current: "D1", authorisedFrom: "cached_snapshot" })).toBe(
+        "The limit is now: Internal (stock and aggregate sales; no customer or supplier names). It was saved while Oneon couldn't reach ImpressoRx, using your access as ImpressoRx last confirmed it. Oneon checks your access again once ImpressoRx is reachable; the lower limit stays either way.",
+      );
+    });
+  });
+
   describe("why a change was not made", () => {
     it("409: a raise stays within a provider's ceiling, and to Confidential it also needs a reviewed provider with a signed agreement", () => {
       expect(changeFailureText(409, "prerequisites_missing")).toBe(
@@ -77,6 +90,11 @@ describe("pharmacy AI limit UI helpers", () => {
     it("503: ImpressoRx could not be asked, and nothing was changed", () => {
       expect(changeFailureText(503, "impressorx_unreachable")).toBe(
         "Oneon can't reach ImpressoRx right now, so it can't check your access. Nothing was changed. Try again in a moment.",
+      );
+    });
+    it("503 live_check_required: while ImpressoRx is unreachable only a lowering can be saved, and nothing was changed", () => {
+      expect(changeFailureText(503, "live_check_required")).toBe(
+        "Oneon can't reach ImpressoRx right now. Until it can, the limit can only be lowered. Nothing was changed.",
       );
     });
     it("anything else is a plain failure that changed nothing", () => {

@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { TenantAiLimitWriteSchema, type TenantAiLimitView, type TenantProviderLimitView } from "@oneon/contracts";
+import { TenantAiLimitWriteSchema, type TenantAiLimitChangeResult, type TenantAiLimitView, type TenantProviderLimitView } from "@oneon/contracts";
 import type { Logger } from "@oneon/domain";
 import {
   PROVIDER_IDS,
@@ -14,14 +14,18 @@ import {
   type ProviderOverride,
 } from "@oneon/application";
 import type { MembershipRepository, TenantAiLimitRepository, TenantLimitClass } from "@oneon/infrastructure";
+import { MANAGE_ONEON } from "../ai-limit-recheck.js";
 import { IMPRESSORX_UNREACHABLE, LAUNCH_REQUIRED, SUSPENDED, type SnapshotRefresher } from "../middleware/active-context.js";
-
-/** The ImpressoRx permission code (raw, as the snapshot carries it) that lets a person manage Oneon for their pharmacy. */
-const MANAGE_ONEON = "settings.oneon";
 
 const CONTEXT_UNAVAILABLE = {
   error: "context_unavailable",
   message: "This pharmacy isn't available right now. Open Oneon from ImpressoRx again, or ask a pharmacy administrator.",
+} as const;
+
+/** ImpressoRx cannot be reached and the change is not a lowering: only a lowering may rest on the cached snapshot (spec 9.4). */
+const LIVE_CHECK_REQUIRED = {
+  error: "live_check_required",
+  message: "Oneon can't reach ImpressoRx right now. Until it can, the limit can only be lowered. Nothing was changed.",
 } as const;
 
 export interface TenantSettingsRouteDeps {
@@ -102,6 +106,8 @@ export function createTenantSettingsRouter(deps: TenantSettingsRouteDeps): Route
     return providers.length > 0 ? { requested: maxClass, providers, routing: deps.routing } : null;
   }
 
+  const changed = (ctx: TenantContext, authorisedFrom: TenantAiLimitChangeResult["authorisedFrom"]): TenantAiLimitChangeResult => ({ ...view(ctx, true), authorisedFrom });
+
   const refuseLive = (res: Response, reason: "membership_suspended" | "launch_required" | "impressorx_unreachable") => {
     if (reason === "impressorx_unreachable") res.status(503).json(IMPRESSORX_UNREACHABLE);
     else res.status(403).json(reason === "membership_suspended" ? SUSPENDED : LAUNCH_REQUIRED);
@@ -137,9 +143,28 @@ export function createTenantSettingsRouter(deps: TenantSettingsRouteDeps): Route
         res.status(403).json(CONTEXT_UNAVAILABLE);
         return;
       }
-      // Always live, whatever the cached snapshot says: a refusal, or ImpressoRx being out of reach, changes nothing.
+      // Always live first, whatever the cached snapshot says: a refusal changes nothing.
       const live = await deps.snapshots.checkLive({ sessionId: req.sessionId, membership });
       if (!live.ok) {
+        // Spec 9.4 (owner decision 2026-10-14): ImpressoRx being out of reach lets a hand-off session lower the limit on the strength of
+        // the membership's stored snapshot, whatever its age, if it shows settings.oneon. Only a strict lowering, decided inside the write,
+        // and re-checked when ImpressoRx next delivers a snapshot for this membership. A Google session never reaches this: it has no bound
+        // grant, so its live check is launch_required, not unreachable.
+        if (live.reason === "impressorx_unreachable" && req.sessionId && membership.permissions.includes(MANAGE_ONEON)) {
+          const liveCheckRef = JSON.stringify({ authorisedFrom: "cached_snapshot", snapshotAt: membership.snapshotAt, liveCheckFailedAt: clock().toISOString() });
+          const change = deps.limits.change(
+            { registrationId: ctx.registrationId, maxClass, setBy: ctx.identityId, liveCheckRef, expectedCurrent, cachedSnapshot: { membershipId: membership.id } },
+            () => null,
+          );
+          if (!change.ok) {
+            if (change.reason === "live_check_required") res.status(503).json(LIVE_CHECK_REQUIRED);
+            else res.status(409).json({ error: change.reason });
+            return;
+          }
+          deps.logger.warn("AI limit lowered from the cached snapshot while ImpressoRx is unreachable", { membershipId: membership.id, maxClass });
+          res.json(changed(ctx, "cached_snapshot"));
+          return;
+        }
         refuseLive(res, live.reason);
         return;
       }
@@ -157,7 +182,7 @@ export function createTenantSettingsRouter(deps: TenantSettingsRouteDeps): Route
         res.status(409).json({ error: change.reason });
         return;
       }
-      res.json(view(ctx, true));
+      res.json(changed(ctx, "live_check"));
     } catch (error) {
       deps.logger.error("Failed to change the pharmacy AI limit", { error: error instanceof Error ? error.message : String(error) });
       res.status(500).json({ error: "Internal server error" });

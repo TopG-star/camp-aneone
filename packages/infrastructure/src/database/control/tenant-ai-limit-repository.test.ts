@@ -206,5 +206,100 @@ describe("tenant AI limit repository (spec 9.4)", () => {
       expect(rivalRepo.change({ registrationId: "r1", maxClass: "D1", setBy: "admin-2", liveCheckRef: "rival" }, () => null)).toEqual({ ok: true });
       expect(repo.history("r1").map((v) => [v.maxClass, v.setBy])).toEqual([["D1", "admin-2"], ["D2", "admin"], ["D0", "admin"]]);
     });
+
+    // Spec 9.4, owner decision 2026-10-14: a lowering authorised from the cached snapshot while ImpressoRx is unreachable.
+    describe("authorised from the cached snapshot", () => {
+      const cached = { membershipId: "m1" };
+      const pending = (control: ReturnType<typeof setup>["control"]) =>
+        control.prepare("SELECT version_id, membership_id, created_at, rechecked_at, outcome FROM tenant_ai_limit_rechecks ORDER BY rowid").all();
+
+      it("writes a strict lowering together with a pending re-check for the membership", () => {
+        const { repo, control, version } = setup();
+        repo.append(version("D2"));
+
+        expect(repo.change({ registrationId: "r1", maxClass: "D1", setBy: "admin", liveCheckRef: "cached", cachedSnapshot: cached }, () => ({ never: true }))).toEqual({ ok: true });
+
+        const [newest] = repo.history("r1");
+        expect(newest).toMatchObject({ maxClass: "D1", liveCheckRef: "cached", evidence: null });
+        expect(pending(control)).toEqual([{ version_id: newest!.id, membership_id: "m1", created_at: "2026-10-08T10:00:00.000Z", rechecked_at: null, outcome: null }]);
+      });
+
+      it.each([
+        ["keeping the same class", "D1" as const],
+        ["a raise", "D2" as const],
+      ])("refuses %s with live_check_required, writing nothing and never asking for evidence", (_name, maxClass) => {
+        const { repo, control, version } = setup();
+        repo.append(version("D1"));
+        let asked = false;
+
+        const result = repo.change({ registrationId: "r1", maxClass, setBy: "admin", liveCheckRef: "cached", cachedSnapshot: cached }, () => {
+          asked = true;
+          return { would: "allow" };
+        });
+
+        expect(result).toEqual({ ok: false, reason: "live_check_required", current: "D1" });
+        expect(asked).toBe(false);
+        expect(repo.history("r1")).toHaveLength(1);
+        expect(pending(control)).toEqual([]);
+      });
+
+      it("a pharmacy with no row is at D1: D0 is a lowering there, D1 is not", () => {
+        const { repo } = setup();
+        expect(repo.change({ registrationId: "r1", maxClass: "D1", setBy: "admin", liveCheckRef: "c", cachedSnapshot: cached }, () => null)).toMatchObject({ reason: "live_check_required" });
+        expect(repo.change({ registrationId: "r1", maxClass: "D0", setBy: "admin", liveCheckRef: "c", cachedSnapshot: cached }, () => null)).toEqual({ ok: true });
+      });
+
+      it("expectedCurrent still applies first", () => {
+        const { repo, version } = setup();
+        repo.append(version("D2"));
+        expect(repo.change({ registrationId: "r1", maxClass: "D0", setBy: "admin", liveCheckRef: "c", expectedCurrent: "D1", cachedSnapshot: cached }, () => null)).toEqual({
+          ok: false,
+          reason: "limit_changed",
+          current: "D2",
+        });
+      });
+
+      it("a change made with the live check leaves no re-check", () => {
+        const { repo, control, version } = setup();
+        repo.append(version("D2"));
+        repo.change({ registrationId: "r1", maxClass: "D0", setBy: "admin", liveCheckRef: "live" }, () => null);
+        expect(pending(control)).toEqual([]);
+      });
+    });
+  });
+
+  describe("resolveRechecks (the next snapshot ImpressoRx delivers for the membership)", () => {
+    const lowerFromCache = (repo: TenantAiLimitRepository, membershipId: string, registrationId = "r1") =>
+      repo.change({ registrationId, maxClass: "D0", setBy: "admin", liveCheckRef: "cached", cachedSnapshot: { membershipId } }, () => null);
+
+    it("resolves each pending lowering of the membership once, recording whether the permission was still there", () => {
+      const { repo, control, advance } = setup();
+      lowerFromCache(repo, "m1");
+      lowerFromCache(repo, "m2", "r2");
+      advance(60_000);
+
+      const resolved = repo.resolveRechecks("m1", false);
+
+      expect(resolved).toEqual([{ versionId: repo.history("r1")[0]!.id, registrationId: "r1", maxClass: "D0" }]);
+      expect(control.prepare("SELECT membership_id, rechecked_at, outcome FROM tenant_ai_limit_rechecks ORDER BY rowid").all()).toEqual([
+        { membership_id: "m1", rechecked_at: "2026-10-08T10:01:00.000Z", outcome: "permission_lost" },
+        { membership_id: "m2", rechecked_at: null, outcome: null },
+      ]);
+      expect(repo.resolveRechecks("m1", false)).toEqual([]);
+      expect(repo.resolveRechecks("m2", true)).toHaveLength(1);
+      expect(control.prepare("SELECT outcome FROM tenant_ai_limit_rechecks WHERE membership_id = 'm2'").get()).toEqual({ outcome: "confirmed" });
+    });
+
+    it("never changes the limit: the lowered class stays", () => {
+      const { repo } = setup();
+      lowerFromCache(repo, "m1");
+      repo.resolveRechecks("m1", false);
+      expect(repo.current("r1")).toBe("D0");
+    });
+
+    it("answers nothing for a membership with no pending lowering", () => {
+      const { repo } = setup();
+      expect(repo.resolveRechecks("m1", true)).toEqual([]);
+    });
   });
 });

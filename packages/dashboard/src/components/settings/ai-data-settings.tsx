@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { AiDataView, TenantAiLimitView } from "@oneon/contracts";
+import type { AiDataView, TenantAiLimitChangeResult, TenantAiLimitView } from "@oneon/contracts";
 import { AlertTriangle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +14,7 @@ import {
   TENANT_LIMIT_CLASSES,
   TENANT_LIMIT_LOAD_FAILED,
   changeFailureText,
+  changeSavedText,
   historyEntryText,
   providerLimitText,
   tenantClassLabel,
@@ -59,14 +60,14 @@ function TenantAiLimitSettings({ tenantName }: { tenantName: string }) {
     setSaveError("");
     setNotice("");
     try {
-      const updated = await apiFetch<TenantAiLimitView>(
+      const updated = await apiFetch<TenantAiLimitChangeResult>(
         "/api/tenant/ai-limit",
         { method: "POST", body: JSON.stringify({ maxClass: selected, expectedCurrent: view?.current }) },
         { redirectOnAuth: false },
       );
       await mutate(updated, { revalidate: false });
       setChoice(null);
-      setNotice(`The limit is now: ${tenantClassLabel(updated.current)}.`);
+      setNotice(changeSavedText(updated));
     } catch (err) {
       setSaveError(err instanceof ApiError ? changeFailureText(err.status, err.message) : changeFailureText(0, ""));
       // The check may have changed what this person may do; show what the server now says.
@@ -154,7 +155,7 @@ function TenantAiLimitSettings({ tenantName }: { tenantName: string }) {
                   </Button>
                 </div>
                 <p className="text-label-sm meta-copy">
-                  Oneon asks ImpressoRx to confirm you can manage Oneon before it saves. Lowering applies at once. A raise has to stay within what a configured AI
+                  Oneon asks ImpressoRx to confirm you can manage Oneon before it saves. If ImpressoRx can&apos;t be reached, only a lowering can be saved, using your access as ImpressoRx last confirmed it. Lowering applies at once. A raise has to stay within what a configured AI
                   provider may receive, and a raise to Confidential also needs a provider that has been fully reviewed and holds a signed data processing agreement.
                 </p>
               </div>
