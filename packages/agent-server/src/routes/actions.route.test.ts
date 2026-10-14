@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import request from "supertest";
 import { personalActor } from "@oneon/domain";
+import { TenantRefusedError } from "@oneon/infrastructure";
 import { buildActionsTestApp } from "./__tests__/actions-test-app.js";
 
 const reminderDeadline = { id: "d1", userId: "user-A", inboundItemId: "i1", dueDate: "2026-10-07T17:00:00Z", description: "Submit Q4", confidence: 0.9, status: "open" as const, createdAt: "", updatedAt: "" };
@@ -91,6 +92,19 @@ describe("operations", () => {
     seen.length = 0;
     await request(t.app).post(`/api/actions/${id}/undo`).expect(200);
     expect(seen).toEqual([{ statusAtStart: "completed", statusAtEnd: "rolled_back" }]);
+  });
+
+  it("answers 403 context_unavailable, as the middleware does, when the context can no longer be held (re-review N2)", async () => {
+    const t = buildActionsTestApp({
+      holdContext: () => {
+        throw new TenantRefusedError("tenant_unavailable");
+      },
+    });
+    const a = await proposeReminder(t);
+    const res = await request(t.app).post(`/api/actions/${a.id}/approve`);
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "context_unavailable" });
+    expect(t.instanceRepo.findById("user-A", a.id)!.status).toBe("awaiting_approval");
   });
 
   it("holds the request's context for a retry too", async () => {

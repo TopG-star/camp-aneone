@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { TenantMismatchError } from "@oneon/domain";
+import { TenantRefusedError } from "@oneon/infrastructure";
 import type {
   ConversationRepository,
   UserProfileRepository,
@@ -152,8 +153,13 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
     try {
       void (req.holdContext ? req.holdContext(runTurn) : runTurn());
     } catch (error) {
-      // The pharmacy could not be held again (it was suspended meanwhile): nothing ran.
-      logger.error("Chat route: could not hold the context", { error: error instanceof Error ? error.message : String(error) });
+      // The context could not be held (the request's lease had ended): the middleware's answer for that case, and nothing ran.
+      if (error instanceof TenantRefusedError) {
+        res.status(403).json({ error: "context_unavailable" });
+        return;
+      }
+      // Anything else is the turn failing before its first await.
+      logger.error("Chat route: failed to process message", { error: error instanceof Error ? error.message : String(error) });
       res.status(500).json({ error: "Internal server error" });
     }
   });

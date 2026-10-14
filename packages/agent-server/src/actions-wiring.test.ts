@@ -171,7 +171,7 @@ describe("runTenantActionRecovery", () => {
           lease: (id: string) => {
             trail.push("open " + id);
             if (id === failOpenFor) throw new Error("tenant_unavailable");
-            return { db: handle(id), release: () => void trail.push("release " + id) };
+            return { db: handle(id), release: () => void trail.push("release " + id), retain: () => ({ db: handle(id), release: () => {} }) as never };
           },
         },
         actionsFor: (_db: ContextDb) => module(),

@@ -242,8 +242,10 @@ export function resolveActiveContext(deps: ActiveContextDeps): RequestHandler {
           lease.release(); // the client is gone: nothing will read the answer
           return;
         }
-        const registrationId = membership.tenantRegistrationId;
-        req.holdContext = (fn) => runLeased(deps.gate.lease(registrationId), () => fn());
+        // Re-review N1: the hold retains this request's own lease, so it holds the very handle in req.contextDb and opens nothing.
+        // Taken while the request still holds its lease it cannot be refused; after the lease ended (the client left) it throws.
+        const held = lease;
+        req.holdContext = (fn) => runLeased(held.retain(), () => fn());
         const db = lease.db;
         // The file's foreign keys reference users(id), so the identity needs its anchor row before it writes here.
         ensureIdentityAnchor(db, identityId);

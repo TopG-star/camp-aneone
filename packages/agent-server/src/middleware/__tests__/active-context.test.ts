@@ -24,6 +24,7 @@ import {
   rawDb,
   runMigrations,
   type MembershipSnapshot,
+  type TenantLease,
 } from "@oneon/infrastructure";
 import { createSnapshotRefresher, requirePersonalContext, resolveActiveContext } from "../active-context.js";
 
@@ -41,7 +42,8 @@ function tenantDb(): TenantDb {
 
 /** A gate's lease over a plain open function, for tests that only care which handle is opened. */
 function leaseOf(open: (id: string) => TenantDb) {
-  return (id: string) => ({ db: open(id), release: () => {} });
+  const leaseFor = (db: TenantDb): TenantLease => ({ db, release: () => {}, retain: () => leaseFor(db) });
+  return (id: string) => leaseFor(open(id));
 }
 
 function app(deps: { openTenant: (id: string) => TenantDb; log: Logger }) {
@@ -138,12 +140,14 @@ describe("the request's tenant handle is leased for the length of the request", 
       gate.createTenantFile(id, `t-${id}`);
     }
     const releases = vi.fn();
+    const leases = vi.fn();
     const middleware = resolveActiveContext({
       gate: {
         openPersonal: () => ({}) as PersonalDb,
         lease: (id) => {
+          leases(id);
           const lease = gate.lease(id);
-          return { db: lease.db, release: () => (releases(), lease.release()) };
+          return { db: lease.db, release: () => (releases(), lease.release()), retain: () => lease.retain() };
         },
       },
       memberships: { findById: () => ({ id: "m1", identityId: "i1", tenantRegistrationId: "reg-1", status: "active" }) as never },
@@ -153,7 +157,7 @@ describe("the request's tenant handle is leased for the length of the request", 
     });
     const req = { identityId: "i1", userId: "i1", sessionId: "s1", sessionContext: { kind: "tenant", membershipId: "m1" } } as unknown as express.Request;
     const res = Object.assign(new EventEmitter(), { status: vi.fn().mockReturnThis(), json: vi.fn() }) as unknown as express.Response;
-    return { gate, middleware, req, res, releases };
+    return { gate, control, middleware, req, res, releases, leases };
   }
 
   it("an LRU eviction during the request does not close its handle, and the lease is released once at the response's end", async () => {
@@ -200,6 +204,33 @@ describe("the request's tenant handle is leased for the length of the request", 
     // Nothing holds reg-1 any more: the next open of another pharmacy evicts it and closes it at once.
     gate.withTenant("reg-2", () => undefined);
     expect(rawDb(db).open).toBe(false);
+  });
+
+  it("holdContext retains the request's own lease (re-review N1): no second lease by id, the same handle, and a suspension cannot refuse it", async () => {
+    const { gate, control, middleware, req, res, leases } = setup();
+    await middleware(req, res, vi.fn());
+    const db = req.contextDb!;
+    // The operator suspends the pharmacy while the request is admitted: a new lease would now be refused.
+    control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = 'reg-1'").run();
+    gate.detach("reg-1");
+
+    const seen = await req.holdContext!(async () => rawDb(db).prepare("SELECT tenant_id FROM context_meta").get());
+
+    expect(seen).toEqual({ tenant_id: "t-reg-1" });
+    expect(leases).toHaveBeenCalledTimes(1); // the middleware's own, nothing by registration id
+    expect(rawDb(db).open).toBe(true); // the request still holds it
+    res.emit("finish");
+    expect(rawDb(db).open).toBe(false); // the last release of the detached handle closes it
+  });
+
+  it("holdContext once the request's own lease has ended is refused with a TenantRefusedError, and opens nothing", async () => {
+    const { middleware, req, res, leases } = setup();
+    await middleware(req, res, vi.fn());
+    res.emit("close");
+    const work = vi.fn();
+    expect(() => req.holdContext!(work)).toThrow(TenantRefusedError);
+    expect(work).not.toHaveBeenCalled();
+    expect(leases).toHaveBeenCalledTimes(1);
   });
 
   it("releases the handler's own lease when its work throws", async () => {

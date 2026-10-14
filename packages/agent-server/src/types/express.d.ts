@@ -16,9 +16,10 @@ declare global {
       /** Set by resolveActiveContext: the active context's database, valid for this request only */
       contextDb?: import("@oneon/domain").ContextDb;
       /**
-       * Set by resolveActiveContext: runs `fn` holding the context's database open until it is done (a tenant file is leased again, for the
-       * handler's own run). A handler that keeps using `contextDb` after an await goes through it, because the request's own lease ends
-       * when the client disconnects. A tenant lease that cannot be taken (the pharmacy was just suspended) throws.
+       * Set by resolveActiveContext: runs `fn` holding the context's database open until it is done. For a tenant it retains the request's
+       * own lease (the very handle in `contextDb`; nothing is opened). A handler that keeps using `contextDb` after an await goes through
+       * it, because the request's own lease ends when the client disconnects. Call it before the handler's first await: it is refused
+       * with a TenantRefusedError only once the request's lease has ended, which a route answers as 403 context_unavailable.
        */
       holdContext?: <T>(fn: () => T) => T;
     }

@@ -18,6 +18,7 @@ import {
   type ModelContext,
   type ModelGateway,
 } from "@oneon/application";
+import { TenantRefusedError } from "@oneon/infrastructure";
 import { createChatRouter, type ChatRouteDeps } from "./chat.route.js";
 import type { Request } from "express";
 
@@ -152,6 +153,36 @@ describe("POST /api/chat", () => {
   });
 
   // ── Successful request ─────────────────────────────────────
+
+  it("answers 403 context_unavailable, as the middleware does, when the context can no longer be held (re-review N2)", async () => {
+    const holdContext = <T,>(_fn: () => T): T => {
+      throw new TenantRefusedError("tenant_unavailable");
+    };
+    const held = buildApp({ conversationRepo, logger }, "user-A", null, holdContext);
+    const res = await request(held).post("/api/chat").send({ message: "Hello Oneon" });
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "context_unavailable" });
+    expect(conversationRepo.append).not.toHaveBeenCalled();
+  });
+
+  it("does not label an unrelated synchronous failure of the turn as a lost context (re-review N2)", async () => {
+    const failing = buildApp(
+      {
+        conversationRepo,
+        logger,
+        modelGatewayFor: () => {
+          throw new Error("wiring bug");
+        },
+      },
+      "user-A",
+      null,
+      (fn) => fn(),
+    );
+    const res = await request(failing).post("/api/chat").send({ message: "Hello Oneon" });
+    expect(res.status).toBe(500);
+    expect(logger.error).toHaveBeenCalledWith("Chat route: failed to process message", { error: "wiring bug" });
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toMatch(/hold the context|suspended/);
+  });
 
   it("holds the request's context for the whole turn, the writes included", async () => {
     const appends = () => (conversationRepo.append as ReturnType<typeof vi.fn>).mock.calls.length;

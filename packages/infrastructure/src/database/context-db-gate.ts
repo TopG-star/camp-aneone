@@ -40,6 +40,11 @@ export interface TenantLease {
   db: TenantDb;
   /** Idempotent. */
   release(): void;
+  /**
+   * Another hold on this very handle (the same entry's count goes up), released on its own. It opens nothing and checks no status, so
+   * while this lease is held it cannot be refused; once this lease has been released it is refused with tenant_unavailable.
+   */
+  retain(): TenantLease;
 }
 
 /** The only module that turns a context into a database handle. */
@@ -192,6 +197,10 @@ export class ContextDbGate {
         if (entry.leases > 0) return;
         if (this.detached.has(entry)) this.closeEntry(entry);
         else this.trim();
+      },
+      retain: () => {
+        if (released || entry.closed) throw new TenantRefusedError("tenant_unavailable");
+        return this.hold(entry);
       },
     };
   }

@@ -8,6 +8,7 @@ import {
   type Logger,
 } from "@oneon/domain";
 import { ActionOperationError, ApprovalCheckError, clampPolicy, type RequestOutcome } from "@oneon/application";
+import { TenantRefusedError } from "@oneon/infrastructure";
 import type { ActionsModule } from "../actions-wiring.js";
 import { ownerOf } from "../context-wiring.js";
 import { IMPRESSORX_UNREACHABLE, LAUNCH_REQUIRED, SUSPENDED } from "../middleware/active-context.js";
@@ -63,6 +64,11 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
     if (error instanceof ActionOperationError) {
       const status = error.code === "not_found" ? 404 : error.code === "not_allowed" ? 403 : 409;
       res.status(status).json({ error: error.message });
+      return;
+    }
+    // The context could not be held (the request's lease had ended): the middleware's answer for that case, and nothing ran.
+    if (error instanceof TenantRefusedError) {
+      res.status(403).json({ error: "context_unavailable" });
       return;
     }
     // Spec §9.3: the approval could not be checked with ImpressoRx, so nothing was recorded.

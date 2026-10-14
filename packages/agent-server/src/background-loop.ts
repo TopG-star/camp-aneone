@@ -386,7 +386,8 @@ export interface BackupSchedulerDeps {
 
 /**
  * A context whose newest restorable copy is older than this raises `alert: "backup_stale"` on every hourly tick. A pharmacy with no copy
- * at all is measured from when it was enrolled or last became active, so a new or just-resumed one is not alerted before its first night.
+ * at all is measured from when it was enrolled or last became active, so a new one, or a resumed one with no copy yet, is not alerted
+ * before its first backup. A suspended pharmacy keeps being backed up (owner decision D5), so a resumed one is measured from its copies.
  */
 export const BACKUP_STALE_AFTER_HOURS = 26;
 

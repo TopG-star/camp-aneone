@@ -106,6 +106,7 @@ describe("tenant jobs", () => {
               held -= 1;
               lease.release();
             },
+            retain: () => lease.retain(),
           };
         },
       };
