@@ -32,5 +32,5 @@ export function suspendConfirmation(name: string): string {
 }
 
 export function resumeConfirmation(name: string): string {
-  return `Resume ${name}? Oneon serves it again straight away.`;
+  return `Resume ${name}? Oneon first brings its file up to date and refreshes its ImpressoRx keys; if either fails it stays suspended and you see why. Then Oneon serves it again.`;
 }

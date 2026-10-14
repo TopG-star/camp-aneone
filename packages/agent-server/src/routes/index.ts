@@ -549,6 +549,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       detachTenant: container.detachTenant,
       // Enrolment is refused while ONEON_GRANT_MASTER_KEY (and so the client) is missing, so this only no-ops when no grant can exist.
       revokeGrantsForRegistration: (registrationId, reason) => container.impressorx?.revokeForRegistration(registrationId, reason),
+      migrateTenantFile: container.migrateTenantFile,
       logger: platformLogger,
     }),
   );

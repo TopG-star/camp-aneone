@@ -320,9 +320,24 @@ export class EnrolmentService {
     throw new EnrolmentFailedError();
   }
 
-  /** Fetches the key list of a deployment, verifies it with a key already known, and stores it. */
+  /** Fetches the key list of a deployment, verifies it with a key already known, and stores it. Active registrations only. */
   async refreshDeploymentKeys(registrationId: string): Promise<void> {
-    const registration = this.activeRegistration(registrationId);
+    await this.refreshKeys(this.activeRegistration(registrationId));
+  }
+
+  /**
+   * The one refresh a suspended registration gets (owner decision D5): Resume calls it, while the registration is still
+   * `suspended_by_operator`, so that a key the deployment rotated during the suspension is known before the pharmacy is served again.
+   * Verified with the keys already stored, like every refresh. Every other refresh still requires `active`.
+   */
+  async refreshDeploymentKeysBeforeResume(registrationId: string): Promise<void> {
+    const registration = this.deps.repo.findById(registrationId);
+    if (!registration || registration.status !== "suspended_by_operator") throw new EnrolmentFailedError("Unknown registration");
+    await this.refreshKeys(registration);
+  }
+
+  private async refreshKeys(registration: TenantRegistration): Promise<void> {
+    const registrationId = registration.id;
     const known = this.deps.repo.deploymentKeys(registrationId);
     const res = await this.fetchImpl(`${registration.origin}/api/oneon/keys`, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }).catch(() => {
       throw new EnrolmentFailedError();

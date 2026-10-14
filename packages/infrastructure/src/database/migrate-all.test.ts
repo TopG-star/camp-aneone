@@ -6,8 +6,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { Logger } from "@oneon/domain";
 import { createDatabase, latestMigrationVersion, runMigrations } from "./connection.js";
 import { decryptBackup } from "./backup.js";
-import { migrateAll } from "./migrate-all.js";
+import { migrateAll, migrateTenantFile } from "./migrate-all.js";
 import { openControlDb } from "./control/open-control-db.js";
+import { ContextDbGate, rawDb } from "./context-db-gate.js";
 
 const NOW = "2026-10-08T00:00:00.000Z";
 const logger: Logger = { info() {}, warn() {}, error() {}, debug() {} };
@@ -105,6 +106,70 @@ describe("migrateAll", () => {
     expect(check.prepare("SELECT name FROM sqlite_master WHERE name = 'schema_migrations'").get()).toBeUndefined();
     check.close();
     control.close();
+  });
+
+  describe("migrateTenantFile (Resume and re-enrolment, owner decision D5)", () => {
+    const NOW_DATE = new Date("2026-10-14T05:06:07.000Z");
+    function suspendedBehind() {
+      const s = setup();
+      const dir = dirname(s.deps.personalPath);
+      const gate = new ContextDbGate({ control: s.control, personalPath: s.deps.personalPath, tenantDir: s.deps.tenantDir });
+      const reg = s.register("suspended_by_operator");
+      const id = reg.id;
+      const tenantId = `t-${id.slice(4)}`;
+      gate.createTenantFile(id, tenantId);
+      // One migration behind: a release that adds migration 17 was deployed while the pharmacy was suspended.
+      const db = createDatabase(reg.path);
+      db.exec(
+        "DELETE FROM schema_migrations WHERE version = 17; ALTER TABLE model_call_decisions DROP COLUMN conversation_id; ALTER TABLE model_call_decisions DROP COLUMN turn_id; ALTER TABLE action_instances DROP COLUMN model_call_id;",
+      );
+      db.close();
+      const keyB64 = randomBytes(32).toString("base64");
+      const backup = { outDir: join(dir, "backups"), keyB64, now: () => NOW_DATE, scratchDir: join(dir, "backup-scratch") };
+      const registration = { id, tenantId, fileName: basename(reg.path) };
+      return { ...s, gate, reg, registration, backup, keyB64, folder: join(dir, "backups", "pre-migration", "2026-10-14T05-06-07Z") };
+    }
+
+    it("migrates a suspended pharmacy's file that is behind, after a sealed copy of it as it was, and the gate can then open it", async () => {
+      const { control, gate, reg, registration, backup, keyB64, folder } = suspendedBehind();
+
+      await migrateTenantFile({ gate, backup }, registration);
+
+      expect(version(reg.path)).toBe(latestMigrationVersion());
+      const restored = join(dirname(folder), "restored.db");
+      writeFileSync(restored, decryptBackup(join(folder, `${basename(reg.path, ".db")}.db.enc`), keyB64));
+      expect(version(restored)).toBe(latestMigrationVersion() - 1);
+      control.prepare("UPDATE tenant_registrations SET status = 'active' WHERE id = ?").run(reg.id);
+      const lease = gate.lease(reg.id);
+      expect(rawDb(lease.db).prepare("SELECT tenant_id FROM context_meta").get()).toEqual({ tenant_id: registration.tenantId });
+      lease.release();
+      gate.close();
+      control.close();
+    });
+
+    it("does nothing, and takes no copy, when nothing is pending", async () => {
+      const s = setup();
+      const gate = new ContextDbGate({ control: s.control, personalPath: s.deps.personalPath, tenantDir: s.deps.tenantDir });
+      const reg = s.register("suspended_by_operator");
+      gate.createTenantFile(reg.id, `t-${reg.id.slice(4)}`);
+      const outDir = join(dirname(s.deps.personalPath), "backups");
+      await migrateTenantFile(
+        { gate, backup: { outDir, keyB64: randomBytes(32).toString("base64"), now: () => new Date(), scratchDir: join(outDir, "..", "scratch") } },
+        { id: reg.id, tenantId: `t-${reg.id.slice(4)}`, fileName: basename(reg.path) },
+      );
+      expect(existsSync(outDir)).toBe(false);
+      gate.close();
+      s.control.close();
+    });
+
+    it("does not migrate when its copy fails, and says why", async () => {
+      const { control, gate, reg, registration, backup, folder } = suspendedBehind();
+      blockPath(join(folder, `${basename(reg.path, ".db")}.db.enc`));
+      await expect(migrateTenantFile({ gate, backup }, registration)).rejects.toThrow(/pre-migration backup failed/);
+      expect(version(reg.path)).toBe(latestMigrationVersion() - 1);
+      gate.close();
+      control.close();
+    });
   });
 
   describe("pre-migration backup", () => {

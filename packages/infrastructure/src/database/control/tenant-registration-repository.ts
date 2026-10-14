@@ -268,6 +268,11 @@ export class TenantRegistrationRepository {
     return run();
   }
 
+  /** Resume was refused before the status changed (owner decision D5): which step failed, and why. */
+  recordResumeRefused(id: string, actor: string, step: "migration" | "deployment_keys", error: string): void {
+    this.insertEvent(id, "resume_refused", actor, { step, error }, this.clock().toISOString());
+  }
+
   setStatus(id: string, status: TenantRegistrationStatus, actor: string | null, reason: string): void {
     const now = this.clock().toISOString();
     const run = this.db.transaction(() => {

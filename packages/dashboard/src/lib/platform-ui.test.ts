@@ -24,6 +24,8 @@ describe("platform console wording", () => {
     expect(suspendConfirmation("Acme Pharmacy")).toBe(
       "Suspend Acme Pharmacy? Oneon stops serving it at once: its staff can't open it in Oneon, and nightly jobs skip it. Its file is still backed up. Nothing changes in ImpressoRx, and you can resume it later.",
     );
-    expect(resumeConfirmation("Acme Pharmacy")).toBe("Resume Acme Pharmacy? Oneon serves it again straight away.");
+    expect(resumeConfirmation("Acme Pharmacy")).toBe(
+      "Resume Acme Pharmacy? Oneon first brings its file up to date and refreshes its ImpressoRx keys; if either fails it stays suspended and you see why. Then Oneon serves it again.",
+    );
   });
 });

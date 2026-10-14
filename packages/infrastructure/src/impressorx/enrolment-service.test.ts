@@ -247,6 +247,39 @@ describe("enrolment service against the fake deployment", () => {
     expect(repo.deploymentKeys(reg.id).map((k) => k.keyId)).toEqual(known);
   });
 
+  describe("refreshDeploymentKeysBeforeResume (owner decision D5)", () => {
+    it("refreshes a suspended registration's keys, verifying with the keys already stored", async () => {
+      const { repo, fake, service, enrol, identityId } = setup();
+      const reg = await enrol();
+      repo.transitionStatus(reg.id, "active", "suspended_by_operator", identityId, "test");
+      const newKey = await fake.rotateDeploymentKey();
+      await service.refreshDeploymentKeysBeforeResume(reg.id);
+      expect(repo.deploymentKeys(reg.id).map((k) => k.keyId)).toContain(newKey.keyId);
+    });
+
+    it("refuses a list signed by a key Oneon does not hold, and changes nothing", async () => {
+      const { repo, fake, service, enrol, identityId } = setup();
+      const reg = await enrol();
+      repo.transitionStatus(reg.id, "active", "suspended_by_operator", identityId, "test");
+      const known = repo.deploymentKeys(reg.id).map((k) => k.keyId);
+      fake.signListWithUnknownKey = true;
+      await expect(service.refreshDeploymentKeysBeforeResume(reg.id)).rejects.toBeInstanceOf(EnrolmentFailedError);
+      expect(repo.deploymentKeys(reg.id).map((k) => k.keyId)).toEqual(known);
+    });
+
+    it("is only for a suspended registration; the other refreshes still refuse one", async () => {
+      const { repo, service, enrol, identityId } = setup();
+      const reg = await enrol();
+      await expect(service.refreshDeploymentKeysBeforeResume(reg.id)).rejects.toBeInstanceOf(EnrolmentFailedError);
+      repo.transitionStatus(reg.id, "active", "suspended_by_operator", identityId, "test");
+      await expect(service.refreshDeploymentKeys(reg.id)).rejects.toBeInstanceOf(EnrolmentFailedError);
+      for (const status of ["removed", "disabled_by_tenant"] as const) {
+        repo.setStatus(reg.id, status, identityId, "test");
+        await expect(service.refreshDeploymentKeysBeforeResume(reg.id)).rejects.toBeInstanceOf(EnrolmentFailedError);
+      }
+    });
+  });
+
   it("verifyFromDeployment does not touch the network for a bad signature under a known kid", async () => {
     const { repo, service, enrol, calls } = setup();
     const reg = await enrol();

@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
@@ -14,6 +14,10 @@ import {
   StructuredLogger,
   TenantRefusedError,
   TenantRegistrationRepository,
+  createDatabase,
+  decryptBackup,
+  latestMigrationVersion,
+  migrateTenantFile,
   openControlDb,
   rawDb,
 } from "@oneon/infrastructure";
@@ -79,6 +83,9 @@ describe("platform route", () => {
         .prepare("UPDATE delegation_grants SET status = 'revoked', revoked_reason = ? WHERE tenant_registration_id = ? AND status = 'active'")
         .run(reason, registrationId),
     );
+    // A pharmacy file is backed up (sealed) before Resume or re-enrolment migrates it, into pre-migration/2026-10-14T05-06-07Z/.
+    const backupKey = randomBytes(32).toString("base64");
+    const preMigrationBackup = { outDir: join(dir, "backups"), keyB64: backupKey, now: () => new Date("2026-10-14T05:06:07.000Z"), scratchDir: join(dir, "scratch") };
     const app = express();
     app.use(express.json());
     let identityId = operatorId;
@@ -98,10 +105,11 @@ describe("platform route", () => {
         createTenantFile: opts.createTenantFile ?? ((id, tenantId) => void gate.createTenantFile(id, tenantId)),
         detachTenant: (id) => gate.detach(id),
         revokeGrantsForRegistration,
+        migrateTenantFile: (registration) => migrateTenantFile({ gate, backup: preMigrationBackup }, registration),
         logger,
       }),
     );
-    return { app, control, gate, fake, registrations, enrolment, masterKey, logger: mockLogger, dir, actAs: (id: string) => (identityId = id), otherId, operatorId, revokeGrantsForRegistration, onNextAnswer, fakes };
+    return { app, control, gate, fake, registrations, enrolment, masterKey, logger: mockLogger, dir, actAs: (id: string) => (identityId = id), otherId, operatorId, revokeGrantsForRegistration, onNextAnswer, fakes, backupKey };
   }
 
   it("enrols against the fake deployment", async () => {
@@ -531,6 +539,138 @@ describe("platform route", () => {
       expect(s.keyRows()).toEqual(keysBefore);
       expect(s.grantStatus()).toEqual({ status: "active", revoked_reason: null });
       expect(s.logger.error).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Resume reports success only for a servable pharmacy (review I3, owner decision D5)", () => {
+    const PRE_MIGRATION = join("backups", "pre-migration", "2026-10-14T05-06-07Z");
+
+    async function suspended() {
+      const s = setup();
+      const id = (await request(s.app).post("/api/platform/enrolments").send(body)).body.registrationId as string;
+      expect((await request(s.app).post(`/api/platform/registrations/${id}/suspend`)).status).toBe(204);
+      const path = join(s.dir, "tenants", `${id}.db`);
+      const status = () => (s.control.prepare("SELECT status FROM tenant_registrations WHERE id = ?").get(id) as { status: string }).status;
+      const refusals = () =>
+        (s.control.prepare("SELECT actor_identity_id AS actor, detail_json FROM tenant_registration_events WHERE tenant_registration_id = ? AND event = 'resume_refused'").all(id) as Array<{ actor: string; detail_json: string }>).map(
+          (e) => ({ actor: e.actor, ...JSON.parse(e.detail_json) }),
+        );
+      return { ...s, id, path, status, refusals };
+    }
+
+    /** One migration behind: a release that adds migration 17 was deployed while the pharmacy was suspended. */
+    const fallBehind = (path: string) => {
+      const db = createDatabase(path);
+      db.exec(
+        "DELETE FROM schema_migrations WHERE version = 17; ALTER TABLE model_call_decisions DROP COLUMN conversation_id; ALTER TABLE model_call_decisions DROP COLUMN turn_id; ALTER TABLE action_instances DROP COLUMN model_call_id;",
+      );
+      db.close();
+    };
+    const version = (path: string) => {
+      const db = createDatabase(path);
+      const v = (db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number }).v;
+      db.close();
+      return v;
+    };
+
+    it("migrates a file that fell behind while suspended, after a sealed copy of it, before it reports success; the gate then serves it", async () => {
+      const s = await suspended();
+      fallBehind(s.path);
+
+      const res = await request(s.app).post(`/api/platform/registrations/${s.id}/resume`);
+
+      expect(res.status).toBe(204);
+      expect(s.status()).toBe("active");
+      expect(version(s.path)).toBe(latestMigrationVersion());
+      const copy = join(s.dir, PRE_MIGRATION, `${s.id}.db`);
+      writeFileSync(copy, decryptBackup(join(s.dir, PRE_MIGRATION, `${s.id}.db.enc`), s.backupKey));
+      expect(version(copy)).toBe(latestMigrationVersion() - 1);
+      const lease = s.gate.lease(s.id);
+      expect(lease.db.tenantId).toBe(s.id);
+      lease.release();
+    });
+
+    it("refreshes the deployment keys before it reports success, so a key the deployment rotated meanwhile is known", async () => {
+      const s = await suspended();
+      const rotated = await s.fake.rotateDeploymentKey();
+
+      const res = await request(s.app).post(`/api/platform/registrations/${s.id}/resume`);
+
+      expect(res.status).toBe(204);
+      expect(s.registrations.deploymentKeys(s.id).map((k) => k.keyId)).toContain(rotated.keyId);
+    });
+
+    it("refuses when the file cannot be migrated: it stays suspended, the answer names the step, an event is written, no keys are fetched", async () => {
+      const s = await suspended();
+      fallBehind(s.path);
+      // Something already sits where the sealed copy must go, so the copy fails and the file must not be migrated.
+      mkdirSync(join(s.dir, PRE_MIGRATION, `${s.id}.db.enc`), { recursive: true });
+      writeFileSync(join(s.dir, PRE_MIGRATION, `${s.id}.db.enc`, "blocker"), "");
+      const keysBefore = s.registrations.deploymentKeys(s.id);
+      const rotated = await s.fake.rotateDeploymentKey();
+
+      const res = await request(s.app).post(`/api/platform/registrations/${s.id}/resume`);
+
+      expect(res.status).toBe(500);
+      expect(res.body.step).toBe("migration");
+      expect(res.body.error).toMatch(/could not be brought up to date/);
+      expect(res.body.error).toMatch(/stays suspended/);
+      expect(s.status()).toBe("suspended_by_operator");
+      expect(version(s.path)).toBe(latestMigrationVersion() - 1);
+      expect(s.registrations.deploymentKeys(s.id).map((k) => k.keyId)).not.toContain(rotated.keyId);
+      expect(s.registrations.deploymentKeys(s.id)).toEqual(keysBefore);
+      expect(s.refusals()).toEqual([{ actor: s.operatorId, step: "migration", error: expect.stringMatching(/pre-migration backup failed/) }]);
+      expect(s.logger.warn).toHaveBeenCalledWith("Pharmacy resume refused", { registrationId: s.id, step: "migration", error: expect.any(String) });
+    });
+
+    it("refuses when the deployment keys cannot be refreshed: it stays suspended, the answer names the step, an event is written", async () => {
+      const s = await suspended();
+      s.fake.signListWithUnknownKey = true;
+
+      const res = await request(s.app).post(`/api/platform/registrations/${s.id}/resume`);
+
+      expect(res.status).toBe(502);
+      expect(res.body.step).toBe("deployment_keys");
+      expect(res.body.error).toMatch(/could not refresh/);
+      expect(res.body.error).toMatch(/stays suspended/);
+      expect(s.status()).toBe("suspended_by_operator");
+      expect(s.refusals()).toEqual([{ actor: s.operatorId, step: "deployment_keys", error: expect.any(String) }]);
+      expect(() => s.gate.lease(s.id)).toThrow(TenantRefusedError);
+    });
+
+    it("Suspend while a Resume waits for the deployment is refused with 409", async () => {
+      const s = await suspended();
+      let suspend: request.Response | undefined;
+      s.onNextAnswer(async () => {
+        suspend = await request(s.app).post(`/api/platform/registrations/${s.id}/suspend`);
+      });
+
+      const resume = await request(s.app).post(`/api/platform/registrations/${s.id}/resume`);
+
+      expect(resume.status).toBe(204);
+      expect(suspend!.status).toBe(409);
+      expect(suspend!.body.error).toMatch(/A resume is in progress for this pharmacy/);
+    });
+
+    it("re-enrolment migrates the file before the code is spent, and a failed migration refuses with the code unused", async () => {
+      const ok = await suspended();
+      fallBehind(ok.path);
+      ok.fake.removeAndEnable("NEW1-CODE-2222");
+      const res = await request(ok.app).post("/api/platform/enrolments").send({ ...body, code: "NEW1-CODE-2222" });
+      expect(res.status).toBe(200);
+      expect(version(ok.path)).toBe(latestMigrationVersion());
+
+      const bad = await suspended();
+      fallBehind(bad.path);
+      mkdirSync(join(bad.dir, PRE_MIGRATION, `${bad.id}.db.enc`), { recursive: true });
+      writeFileSync(join(bad.dir, PRE_MIGRATION, `${bad.id}.db.enc`, "blocker"), "");
+      bad.fake.removeAndEnable("NEW1-CODE-2222");
+      const refused = await request(bad.app).post("/api/platform/enrolments").send({ ...body, code: "NEW1-CODE-2222" });
+      expect(refused.status).toBe(500);
+      expect(refused.body.error).toMatch(/could not be brought up to date/);
+      expect(refused.body.error).toMatch(/code is still valid/);
+      expect(bad.fake.active).toBe(false);
+      expect(bad.status()).toBe("suspended_by_operator");
     });
   });
 

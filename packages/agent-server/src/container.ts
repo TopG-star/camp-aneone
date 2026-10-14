@@ -37,6 +37,8 @@ import {
   type ImpressoRxClient,
   ContextDbGate,
   rawDb,
+  backupScratchDir,
+  migrateTenantFile,
   backfillIdentities,
   ensureIdentityForUser,
   ensureIdentityAnchor,
@@ -131,6 +133,8 @@ export interface AppContainer {
   detachTenant: (registrationId: string) => void;
   /** Creates a new tenant's database file (enrolment only). */
   createTenantFile: (registrationId: string, tenantId: string) => void;
+  /** Migrates one pharmacy's file if a migration is pending, with a sealed copy first (Resume and re-enrolment, owner decision D5). */
+  migrateTenantFile: (registration: { id: string; tenantId: string; fileName: string }) => Promise<void>;
   /** What the nightly backup reads: the gate that hands out every context file's handle, and the control database. */
   backupSources: { gate: ContextDbGate; control: ControlDb };
   ensureIdentity: (user: { id: string; email: string }) => void;
@@ -541,6 +545,17 @@ export function createContainer(env: Env): AppContainer {
     leaseTenant: (registrationId) => gate.lease(registrationId),
     detachTenant: (registrationId) => gate.detach(registrationId),
     createTenantFile: (registrationId, tenantId) => void gate.createTenantFile(registrationId, tenantId),
+    // The same sealed pre-migration copy as at startup. The key is always set once a registration exists (prepareStorage refuses otherwise).
+    migrateTenantFile: (registration) =>
+      migrateTenantFile(
+        {
+          gate,
+          backup: env.BACKUP_ENCRYPTION_KEY
+            ? { outDir: env.BACKUP_DIR, keyB64: env.BACKUP_ENCRYPTION_KEY, now: () => new Date(), scratchDir: backupScratchDir(env.CONTROL_DATABASE_PATH) }
+            : undefined,
+        },
+        registration,
+      ),
     backupSources: { gate, control },
     ensureIdentity: (user) => void ensureIdentityForUser(control, user),
     ensurePersonalUser: (user) => {

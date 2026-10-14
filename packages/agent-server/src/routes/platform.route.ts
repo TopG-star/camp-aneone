@@ -27,6 +27,11 @@ export interface PlatformRouteDeps {
   detachTenant: (registrationId: string) => void;
   /** Revokes every grant of a registration locally (the ImpressoRx client's revokeForRegistration). Re-enrolment calls it. */
   revokeGrantsForRegistration: (registrationId: string, reason: string) => void;
+  /**
+   * Migrates a pharmacy's file if a migration is pending, with a sealed copy first (migrateTenantFile through the gate's maintenance
+   * lease). Resume and re-enrolment run it while the registration is still suspended; it throws when the file could not be migrated.
+   */
+  migrateTenantFile: (registration: TenantRegistration) => Promise<void>;
   logger: Logger;
 }
 
@@ -65,6 +70,8 @@ class PharmacyOperations {
   }
 }
 
+const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
 const inProgress = (heldBy: string) => `${heldBy.charAt(0).toUpperCase()}${heldBy.slice(1)} is in progress for this pharmacy`;
 
 const EnrolBody = z.object({
@@ -77,8 +84,19 @@ const EnrolBody = z.object({
 export function createPlatformRouter(deps: PlatformRouteDeps): Router {
   const router = Router();
   const operations = new PharmacyOperations();
-  const { operators, registrations, enrolment, backupConfigured, grantConfigured, latestRollups, createTenantFile, detachTenant, revokeGrantsForRegistration, logger } =
-    deps;
+  const {
+    operators,
+    registrations,
+    enrolment,
+    backupConfigured,
+    grantConfigured,
+    latestRollups,
+    createTenantFile,
+    detachTenant,
+    revokeGrantsForRegistration,
+    migrateTenantFile,
+    logger,
+  } = deps;
 
   // Operator only. A signed-in user who is not an operator gets 403, never a hint of what exists.
   router.use((req: Request, res: Response, next: NextFunction) => {
@@ -140,6 +158,16 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
       if (new URL(origin).origin !== existing.origin) {
         res.status(409).json({
           error: `That pharmacy is enrolled at ${existing.origin}. Re-enrolment must use the same origin; moving a pharmacy to a new origin is a manual procedure (see DEPLOY.md).`,
+        });
+        return;
+      }
+      // The file is brought up to date before the code is spent, so a re-enrolled pharmacy is servable when this answers (review I3).
+      try {
+        await migrateTenantFile(existing);
+      } catch (error) {
+        logger.warn("Pharmacy re-enrolment refused", { registrationId: existing.id, step: "migration", error: errorMessage(error) });
+        res.status(500).json({
+          error: "Re-enrolment refused: the pharmacy's file could not be brought up to date (see the server log). Nothing was sent, so the code is still valid.",
         });
         return;
       }
@@ -270,7 +298,7 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
     resume: { from: "suspended_by_operator", to: "active", reason: "operator_resume", log: "Pharmacy resumed by operator" },
   } as const;
   for (const [action, t] of Object.entries(transitions)) {
-    router.post(`/registrations/:id/${action}`, (req: Request, res: Response) => {
+    router.post(`/registrations/:id/${action}`, async (req: Request, res: Response) => {
       const registrationId = String(req.params.id);
       const lock = operations.tryAcquire([`registration:${registrationId}`], action === "suspend" ? "a suspension" : "a resume");
       if ("heldBy" in lock) {
@@ -278,11 +306,53 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
         return;
       }
       try {
+        if (action === "resume" && !(await readyToResume(req, res, registrationId))) return;
         transition(req, res, registrationId, action, t);
       } finally {
         lock.release();
       }
     });
+  }
+
+  /**
+   * Resume reports success only for a pharmacy that can be served (review I3, owner decision D5). While the registration is still
+   * suspended, in order: its file is migrated if a migration is pending (a sealed copy first), then its deployment keys are refreshed,
+   * verified with the keys already stored. Only then may the status flip. A failed step leaves it suspended, answers which step failed
+   * and writes a `resume_refused` event. False when the answer has been sent.
+   */
+  async function readyToResume(req: Request, res: Response, registrationId: string): Promise<boolean> {
+    const registration = registrations.findById(registrationId);
+    if (!registration) {
+      res.status(404).json({ error: "No such registration" });
+      return false;
+    }
+    if (registration.status !== "suspended_by_operator") {
+      res.status(409).json({ error: "Only a pharmacy you suspended can be resumed" });
+      return false;
+    }
+    const refuse = (status: number, step: "migration" | "deployment_keys", message: string, error: unknown): false => {
+      registrations.recordResumeRefused(registrationId, req.identityId!, step, errorMessage(error));
+      logger.warn("Pharmacy resume refused", { registrationId, step, error: errorMessage(error) });
+      res.status(status).json({ error: message, step });
+      return false;
+    };
+    try {
+      await migrateTenantFile(registration);
+    } catch (error) {
+      return refuse(500, "migration", "Resume refused: the pharmacy's file could not be brought up to date (see the server log). It stays suspended.", error);
+    }
+    try {
+      await enrolment.refreshDeploymentKeysBeforeResume(registrationId);
+    } catch (error) {
+      return refuse(
+        502,
+        "deployment_keys",
+        "Resume refused: Oneon could not refresh the pharmacy's deployment keys from ImpressoRx (the deployment did not answer, or its key " +
+          "list was not signed by a key Oneon holds). It stays suspended. If this keeps failing, re-enrol it (see DEPLOY.md).",
+        error,
+      );
+    }
+    return true;
   }
 
   function transition(req: Request, res: Response, registrationId: string, action: string, t: (typeof transitions)[keyof typeof transitions]): void {
