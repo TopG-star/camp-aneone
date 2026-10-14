@@ -5,7 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import type { Logger } from "@oneon/domain";
 import { createDatabase, latestMigrationVersion, runMigrations } from "./connection.js";
-import { decryptBackup } from "./backup.js";
+import { backupAll, decryptBackup } from "./backup.js";
 import { migrateAll, migrateTenantFile } from "./migrate-all.js";
 import { openControlDb } from "./control/open-control-db.js";
 import { ContextDbGate, rawDb } from "./context-db-gate.js";
@@ -46,6 +46,13 @@ describe("migrateAll", () => {
     return { control, register, deps: { control, personalPath: join(dir, "personal.db"), tenantDir, logger } };
   }
 
+  const hasMigrations = (path: string) => {
+    const db = createDatabase(path);
+    const has = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'schema_migrations'").get() !== undefined;
+    db.close();
+    return has;
+  };
+
   const version = (path: string) => {
     const db = createDatabase(path);
     const v = (db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number }).v;
@@ -53,23 +60,76 @@ describe("migrateAll", () => {
     return v;
   };
 
-  it("migrates personal and every active tenant, and continues past a failing file", async () => {
+  it("migrates personal and every active or operator-suspended tenant, never a removed or tenant-disabled one, and continues past a failing file", async () => {
     const { control, register, deps } = setup();
     const good = register();
     const bad = register();
     const suspended = register("suspended_by_operator");
+    const removed = register("removed");
+    const disabled = register("disabled_by_tenant");
     const missing = register();
-    createDatabase(good.path).close();
+    for (const r of [good, suspended, removed, disabled]) createDatabase(r.path).close();
     writeFileSync(bad.path, "this is not a sqlite database, just text padding".repeat(20));
 
     const result = await migrateAll(deps);
 
-    expect(result.migrated).toEqual(["personal", good.id]);
+    expect(result.migrated).toEqual(["personal", good.id, suspended.id]);
     expect(result.failed.map((f) => f.registrationId).sort()).toEqual([bad.id, missing.id].sort());
     expect(version(deps.personalPath)).toBe(latestMigrationVersion());
     expect(version(good.path)).toBe(latestMigrationVersion());
-    expect(existsSync(suspended.path)).toBe(false);
+    expect(version(suspended.path)).toBe(latestMigrationVersion());
+    expect(hasMigrations(removed.path)).toBe(false);
+    expect(hasMigrations(disabled.path)).toBe(false);
     expect(existsSync(missing.path)).toBe(false);
+    control.close();
+  });
+
+  it("a suspended pharmacy behind a migration is migrated at startup, after its sealed copy, and then backed up (fix round 1, I1)", async () => {
+    const { control, register, deps } = setup();
+    const dir = dirname(deps.personalPath);
+    const gate = new ContextDbGate({ control, personalPath: deps.personalPath, tenantDir: deps.tenantDir });
+    const reg = register("suspended_by_operator");
+    gate.createTenantFile(reg.id, `t-${reg.id.slice(4)}`);
+    const behind = createDatabase(reg.path);
+    behind.exec(
+      "DELETE FROM schema_migrations WHERE version = 17; ALTER TABLE model_call_decisions DROP COLUMN conversation_id; ALTER TABLE model_call_decisions DROP COLUMN turn_id; ALTER TABLE action_instances DROP COLUMN model_call_id;",
+    );
+    behind.close();
+    createDatabase(deps.personalPath).close();
+    const keyB64 = randomBytes(32).toString("base64");
+    const now = new Date("2026-10-14T05:06:07.000Z");
+    const outDir = join(dir, "backups");
+    const scratchDir = join(dir, "backup-scratch");
+
+    const result = await migrateAll({ ...deps, backup: { outDir, keyB64, now: () => now, scratchDir } });
+
+    expect(result.migrated).toContain(reg.id);
+    expect(version(reg.path)).toBe(latestMigrationVersion());
+    const sealed = join(outDir, "pre-migration", "2026-10-14T05-06-07Z", `${basename(reg.path, ".db")}.db.enc`);
+    const copy = join(dir, "pre-migration-copy.db");
+    writeFileSync(copy, decryptBackup(sealed, keyB64));
+    expect(version(copy)).toBe(latestMigrationVersion() - 1);
+
+    const day = await backupAll({ gate, control, outDir, keyB64, now: () => now, scratchDir });
+    expect(day.skipped).toEqual([]);
+    expect(day.map((r) => r.context)).toContain(`t-${reg.id.slice(4)}`);
+    gate.close();
+    control.close();
+  });
+
+  it("does not migrate a suspended pharmacy whose pre-migration copy fails, like an active one", async () => {
+    const { control, register, deps } = setup();
+    const dir = dirname(deps.personalPath);
+    const reg = register("suspended_by_operator");
+    createDatabase(reg.path).close();
+    const now = new Date("2026-10-14T05:06:07.000Z");
+    const outDir = join(dir, "backups");
+    blockPath(join(outDir, "pre-migration", "2026-10-14T05-06-07Z", `${basename(reg.path, ".db")}.db.enc`));
+
+    const result = await migrateAll({ ...deps, backup: { outDir, keyB64: randomBytes(32).toString("base64"), now: () => now, scratchDir: join(dir, "scratch") } });
+
+    expect(result.failed.map((f) => f.registrationId)).toEqual([reg.id]);
+    expect(hasMigrations(reg.path)).toBe(false);
     control.close();
   });
 

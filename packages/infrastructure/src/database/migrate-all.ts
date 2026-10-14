@@ -75,7 +75,9 @@ export async function migrateAll(deps: {
     { id: "personal", name: "personal", resolve: () => deps.personalPath, mustExist: false },
   ];
   const rows = deps.control
-    .prepare("SELECT id, tenant_id, file_name FROM tenant_registrations WHERE status = 'active' ORDER BY enrolled_at, id")
+    // Fix round 1, I1: an operator-suspended pharmacy is migrated too, so its backups (owner decision D5) are not refused as behind after
+    // a release that adds a tenant migration. Never a removed or tenant-disabled one. Resume's own migration step stays as the backstop.
+    .prepare("SELECT id, tenant_id, file_name FROM tenant_registrations WHERE status IN ('active', 'suspended_by_operator') ORDER BY enrolled_at, id")
     .all() as Array<{ id: string; tenant_id: string; file_name: string }>;
   for (const row of rows) {
     targets.push({ id: row.id, name: row.file_name.replace(/.db$/, ""), tenantId: row.tenant_id, resolve: () => tenantFilePath(deps.tenantDir, row.file_name), mustExist: true });

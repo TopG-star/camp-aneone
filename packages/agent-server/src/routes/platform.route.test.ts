@@ -674,6 +674,67 @@ describe("platform route", () => {
     });
   });
 
+  describe("an unexpected error in an async handler is answered, never left hanging (fix round 1, I2)", () => {
+    it("Suspend: a repository throw before the status changed answers an explicit 500 saying nothing changed, and frees the lock", async () => {
+      const { app, registrations, logger } = setup();
+      const id = (await request(app).post("/api/platform/enrolments").send(body)).body.registrationId as string;
+      const spy = vi.spyOn(registrations, "transitionStatus").mockImplementationOnce(() => {
+        throw new Error("database is locked");
+      });
+
+      const res = await request(app).post(`/api/platform/registrations/${id}/suspend`).timeout(2000);
+
+      expect(res.status).toBe(500);
+      expect(res.body.error).toMatch(/Suspend failed.*status was not changed/);
+      expect(logger.error).toHaveBeenCalledWith("Pharmacy suspend error", { registrationId: id, statusChanged: false, error: "database is locked" });
+      spy.mockRestore();
+      expect((await request(app).post(`/api/platform/registrations/${id}/suspend`)).status).toBe(204); // the lock was released
+    });
+
+    it("Suspend: a throw after the status changed says the change is committed", async () => {
+      const s = setup();
+      const id = (await request(s.app).post("/api/platform/enrolments").send(body)).body.registrationId as string;
+      vi.spyOn(s.gate, "detach").mockImplementationOnce(() => {
+        throw new Error("close failed");
+      });
+
+      const res = await request(s.app).post(`/api/platform/registrations/${id}/suspend`).timeout(2000);
+
+      expect(res.status).toBe(500);
+      expect(res.body.error).toMatch(/now suspended/);
+      expect(s.control.prepare("SELECT status FROM tenant_registrations WHERE id = ?").get(id)).toEqual({ status: "suspended_by_operator" });
+    });
+
+    it("Resume: a throw while recording a refusal still answers", async () => {
+      const s = setup();
+      const id = (await request(s.app).post("/api/platform/enrolments").send(body)).body.registrationId as string;
+      await request(s.app).post(`/api/platform/registrations/${id}/suspend`);
+      s.fake.signListWithUnknownKey = true;
+      vi.spyOn(s.registrations, "recordResumeRefused").mockImplementationOnce(() => {
+        throw new Error("disk I/O error");
+      });
+
+      const res = await request(s.app).post(`/api/platform/registrations/${id}/resume`).timeout(2000);
+
+      expect(res.status).toBe(500);
+      expect(res.body.error).toMatch(/Resume failed.*status was not changed/);
+      expect(s.control.prepare("SELECT status FROM tenant_registrations WHERE id = ?").get(id)).toEqual({ status: "suspended_by_operator" });
+    });
+
+    it("Enrolment: a repository throw before anything was sent answers an explicit 500 saying the code is still valid", async () => {
+      const { app, registrations, fake } = setup();
+      vi.spyOn(registrations, "findBySlug").mockImplementationOnce(() => {
+        throw new Error("database is locked");
+      });
+
+      const res = await request(app).post("/api/platform/enrolments").send(body).timeout(2000);
+
+      expect(res.status).toBe(500);
+      expect(res.body.error).toMatch(/code is still valid/);
+      expect(fake.active).toBe(false);
+    });
+  });
+
   describe("one operation per pharmacy at a time (review I2, option b)", () => {
     it("two concurrent first enrolments with the same slug: one succeeds, the other is refused with 409 before its code is spent", async () => {
       const { app, fakes, control, onNextAnswer } = setup();

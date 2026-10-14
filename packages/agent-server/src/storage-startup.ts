@@ -15,7 +15,7 @@ import type { Env } from "./config/env.js";
 export type StorageEnv = Pick<Env, "DATABASE_PATH" | "CONTROL_DATABASE_PATH" | "TENANT_DATA_DIR" | "BACKUP_DIR" | "BACKUP_ENCRYPTION_KEY">;
 
 /**
- * Runs before the container opens anything: migrates control.db, the personal file and every tenant file (spec 8.6), backing each
+ * Runs before the container opens anything: migrates control.db, the personal file and every active or operator-suspended tenant file (spec 8.6), backing each
  * one up first when a migration is pending (spec 8.7).
  *
  * - A file whose backup fails is not migrated. A tenant is then refused service by the gate (tenant_schema_behind) and logged at

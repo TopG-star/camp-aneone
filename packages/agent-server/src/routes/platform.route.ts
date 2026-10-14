@@ -108,6 +108,19 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
   });
 
   router.post("/enrolments", async (req: Request, res: Response) => {
+    // Fix round 1, I2: Express 4 drops a rejected handler promise, so every failure is caught here and answered explicitly.
+    const progress = { contacted: false };
+    try {
+      await enrolHandler(req, res, progress);
+    } catch (error) {
+      unexpected(res, "Enrolment error", { error: errorMessage(error) }, progress.contacted
+        ? "Enrolment failed unexpectedly (the error is in the server log). Check the pharmacy on /platform: if ImpressoRx shows Oneon as connected and " +
+          "Oneon does not list it as active, the pharmacy's ImpressoRx admin must press Remove, then Enable, to issue a new code."
+        : "Enrolment failed unexpectedly (the error is in the server log). Nothing was sent, so the code is still valid.");
+    }
+  });
+
+  async function enrolHandler(req: Request, res: Response, progress: { contacted: boolean }): Promise<void> {
     // Refused before the code is spent or anything is written: each key is needed by the registration from its first minute.
     const missing = [
       !backupConfigured && "BACKUP_ENCRYPTION_KEY",
@@ -137,16 +150,17 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
       return;
     }
     try {
-      await enrolOrReenrol(req, res, { origin, tenantSlug, code, displayName, existing });
+      await enrolOrReenrol(req, res, { origin, tenantSlug, code, displayName, existing }, progress);
     } finally {
       lock.release();
     }
-  });
+  }
 
   async function enrolOrReenrol(
     req: Request,
     res: Response,
     { origin, tenantSlug, code, displayName, existing }: z.infer<typeof EnrolBody> & { existing: TenantRegistration | null },
+    progress: { contacted: boolean },
   ): Promise<void> {
     if (existing) {
       // Ruling: an existing slug is enrolled again only while an operator has it suspended, only at its pinned origin, and only
@@ -172,6 +186,7 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
         return;
       }
       try {
+        progress.contacted = true;
         await enrolment.reenrol({
           registrationId: existing.id,
           origin,
@@ -189,6 +204,7 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
 
     try {
       // The tenant file is created inside the registration's transaction: if it fails, nothing is stored.
+      progress.contacted = true;
       const registration = await enrolment.enrol({
         origin,
         tenantSlug,
@@ -305,13 +321,26 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
         res.status(409).json({ error: `${inProgress(lock.heldBy)}; try again when it has finished.` });
         return;
       }
+      // Fix round 1, I2: every failure is answered, saying whether the status change was saved (it is committed once transitionStatus succeeds).
+      let committed = false;
       try {
         if (action === "resume" && !(await readyToResume(req, res, registrationId))) return;
-        transition(req, res, registrationId, action, t);
+        transition(req, res, registrationId, action, t, () => (committed = true));
+      } catch (error) {
+        const verb = action === "suspend" ? "Suspend" : "Resume";
+        unexpected(res, `Pharmacy ${action} error`, { registrationId, statusChanged: committed, error: errorMessage(error) }, committed
+          ? `${verb} failed after the change was saved (the error is in the server log): the pharmacy is now ${t.to === "active" ? "active" : "suspended"}.`
+          : `${verb} failed unexpectedly (the error is in the server log). The pharmacy's status was not changed.`);
       } finally {
         lock.release();
       }
     });
+  }
+
+  /** An error no other branch explains: logged at error, and answered with an explicit 500 unless an answer was already sent. */
+  function unexpected(res: Response, logLine: string, fields: Record<string, unknown>, message: string): void {
+    logger.error(logLine, fields);
+    if (!res.headersSent) res.status(500).json({ error: message });
   }
 
   /**
@@ -355,8 +384,16 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
     return true;
   }
 
-  function transition(req: Request, res: Response, registrationId: string, action: string, t: (typeof transitions)[keyof typeof transitions]): void {
+  function transition(
+    req: Request,
+    res: Response,
+    registrationId: string,
+    action: string,
+    t: (typeof transitions)[keyof typeof transitions],
+    onCommitted: () => void,
+  ): void {
     const result = registrations.transitionStatus(registrationId, t.from, t.to, req.identityId!, t.reason);
+    if (result === "ok") onCommitted();
     if (result === "unknown") {
       res.status(404).json({ error: "No such registration" });
       return;
