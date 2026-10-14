@@ -128,6 +128,8 @@ cd camp-aneone
 ./deploy.sh
 ```
 
+> **Upgrading to the release that adds pharmacies (Step B-core):** set `BACKUP_ENCRYPTION_KEY` in `.env` (`openssl rand -base64 32`, with a copy kept off the VPS) *before* you deploy it. Its first start migrates `oneon.db` and creates `control.db`, and Oneon backs a file up before migrating it only when the key is set. Without the key that first migration runs with no backup of its own (the server only warns), and the copy `deploy.sh` takes is a plain file copy, which can catch the file mid-write.
+
 To restart without rebuilding:
 ```bash
 ./deploy.sh --no-build
