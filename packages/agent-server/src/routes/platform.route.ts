@@ -125,8 +125,9 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
   } as const;
   for (const [action, t] of Object.entries(transitions)) {
     router.post(`/registrations/:id/${action}`, (req: Request, res: Response) => {
-      const registrationId = String(req.params.id);
-      const result = registrations.transitionStatus(registrationId, t.from, t.to, req.identityId!, t.reason);
+      // The operator names the registration to act on, as for rotate-key; this is not the request's active context.
+      const id = String(req.params.id);
+      const result = registrations.transitionStatus(id, t.from, t.to, req.identityId!, t.reason);
       if (result === "unknown") {
         res.status(404).json({ error: "No such registration" });
         return;
@@ -135,7 +136,7 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
         res.status(409).json({ error: action === "suspend" ? "Only an active pharmacy can be suspended" : "Only a pharmacy you suspended can be resumed" });
         return;
       }
-      logger.info(t.log, { registrationId });
+      logger.info(t.log, { registrationId: id });
       res.status(204).end();
     });
   }
