@@ -23,7 +23,7 @@ describe("tenant AI limit repository (spec 9.4)", () => {
     for (const [id, tenantId] of [["r1", "t1"], ["r2", "t2"]]) {
       control
         .prepare(
-          "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (?, ?, ?, 'Name', 'https://x', ?, 'active', 'admin', 'now')",
+          "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), ?, ?, ?, 'Name', 'https://x', ?, 'active', 'admin', 'now')",
         )
         .run(id, tenantId, `slug-${id}`, `${id}.db`);
     }

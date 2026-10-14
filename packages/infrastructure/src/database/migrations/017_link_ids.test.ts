@@ -75,7 +75,7 @@ describe("Migration 017 on a tenant file", () => {
     const fileName = `${randomUUID()}.db`;
     control
       .prepare(
-        "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES ('reg-1', 'tenant-1', 's', 'P', 'https://x.example', ?, 'active', 'op', ?)",
+        "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), 'reg-1', 'tenant-1', 's', 'P', 'https://x.example', ?, 'active', 'op', ?)",
       )
       .run(fileName, NOW);
     const gate = new ContextDbGate({ control, personalPath: join(dir, "personal.db"), tenantDir });

@@ -108,7 +108,7 @@ describe("identity repository and backfill", () => {
     const a = repo.createWithLogin({ kind: "google", subject: "s1" });
     control
       .prepare(
-        "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES ('r1', 't1', 'slug', 'Name', 'https://x', 'f.db', 'active', ?, 'now')",
+        "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), 'r1', 't1', 'slug', 'Name', 'https://x', 'f.db', 'active', ?, 'now')",
       )
       .run(a.id);
     control
@@ -182,7 +182,7 @@ describe("linking identities", () => {
       const tenantId = randomUUID();
       control
         .prepare(
-          "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (?, ?, ?, 'Pharmacy', 'https://p.example', ?, 'active', ?, ?)",
+          "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), ?, ?, ?, 'Pharmacy', 'https://p.example', ?, 'active', ?, ?)",
         )
         .run(id, tenantId, `slug-${id.slice(0, 8)}`, `${id}.db`, google.id, NOW);
       gate.createTenantFile(id, tenantId);

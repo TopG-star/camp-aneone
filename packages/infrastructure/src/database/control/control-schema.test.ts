@@ -33,9 +33,9 @@ describe("control database schema", () => {
   function seed(db: ControlDb) {
     db.prepare("INSERT INTO identities (id, status, created_at) VALUES ('i1', 'active', ?)").run(NOW);
     db.prepare(
-      `INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin,
+      `INSERT INTO tenant_registrations (id, tenant_id, impressorx_tenant_id, tenant_slug, display_name, origin,
          file_name, status, enrolled_by, enrolled_at)
-       VALUES ('r1', 't1', 'acme', 'Acme', 'https://acme.example', 't1.db', 'active', 'i1', ?)`,
+       VALUES ('r1', 't1', 'irx-r1', 'acme', 'Acme', 'https://acme.example', 't1.db', 'active', 'i1', ?)`,
     ).run(NOW);
   }
 
@@ -100,5 +100,22 @@ describe("control database schema", () => {
     expect(() => insert.run("k4", "oneon", "kid-4", null, null, NOW)).toThrow(/CHECK constraint failed/);
     expect(() => insert.run("k5", "oneon", "kid-4", "w", null, NOW)).toThrow(/CHECK constraint failed/);
     expect(() => insert.run("k6", "oneon", "kid-1", "w", "c", NOW)).toThrow(/UNIQUE constraint failed/);
+  });
+
+  it("every registration holds an ImpressoRx tenant id: an insert or update that leaves it NULL is refused (owner decision D1)", () => {
+    const db = open();
+    seed(db);
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at)
+           VALUES ('r2', 't2', 'beta', 'Beta', 'https://beta.example', 't2.db', 'active', 'i1', ?)`,
+        )
+        .run(NOW),
+    ).toThrow(/impressorx_tenant_id is required/);
+    expect(() => db.prepare("UPDATE tenant_registrations SET impressorx_tenant_id = NULL WHERE id = 'r1'").run()).toThrow(
+      /impressorx_tenant_id is required/,
+    );
+    expect(db.prepare("SELECT impressorx_tenant_id FROM tenant_registrations WHERE id = 'r1'").get()).toEqual({ impressorx_tenant_id: "irx-r1" });
   });
 });

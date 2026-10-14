@@ -132,7 +132,7 @@ describe("the request's tenant handle is leased for the length of the request", 
     for (const [id, file] of [["reg-1", "11111111-1111-1111-1111-111111111111.db"], ["reg-2", "22222222-2222-2222-2222-222222222222.db"]] as const) {
       control
         .prepare(
-          "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (?, ?, ?, 'P', 'https://x.example', ?, 'active', ?, 'now')",
+          "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), ?, ?, ?, 'P', 'https://x.example', ?, 'active', ?, 'now')",
         )
         .run(id, `t-${id}`, id, file, op);
       gate.createTenantFile(id, `t-${id}`);
@@ -270,7 +270,7 @@ describe("snapshot refresh (spec 4.6: at least every 5 minutes while a session i
     const identityId = new SqliteIdentityRepository(control).createWithLogin({ kind: "impressorx", subject: "reg:staff-1" }).id;
     control
       .prepare(
-        "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES ('reg-1', 'tenant-1', 'acme', 'Acme Pharmacy', 'https://acme.example', 'reg-1.db', 'active', ?, 'now')",
+        "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), 'reg-1', 'tenant-1', 'acme', 'Acme Pharmacy', 'https://acme.example', 'reg-1.db', 'active', ?, 'now')",
       )
       .run(identityId);
     const memberships = new MembershipRepository(control, clock);

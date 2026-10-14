@@ -95,7 +95,7 @@ function fixture(answers: string[]) {
   const tenantId = randomUUID();
   control
     .prepare(
-      "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (?, ?, 'a', 'a', 'https://a.example', ?, 'active', ?, 'now')",
+      "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), ?, ?, 'a', 'a', 'https://a.example', ?, 'active', ?, 'now')",
     )
     .run(registrationId, tenantId, `${registrationId}.db`, gerry);
   gate.createTenantFile(registrationId, tenantId);

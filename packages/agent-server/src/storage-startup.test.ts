@@ -31,7 +31,7 @@ describe("prepareStorage", () => {
       control.prepare("INSERT INTO identities (id, status, created_at) VALUES ('op', 'active', ?)").run(NOW);
       control
         .prepare(
-          "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES ('reg-1', 't-1', 's-1', 'P', 'https://x.example', '11111111-1111-1111-1111-111111111111.db', 'suspended_by_operator', 'op', ?)",
+          "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), 'reg-1', 't-1', 's-1', 'P', 'https://x.example', '11111111-1111-1111-1111-111111111111.db', 'suspended_by_operator', 'op', ?)",
         )
         .run(NOW);
       control.close();

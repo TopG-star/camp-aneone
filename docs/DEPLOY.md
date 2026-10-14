@@ -225,7 +225,7 @@ Keep a copy of each key somewhere other than the VPS. Nothing can decrypt what a
 3. In the dashboard, open **/platform/enrol** and enter the origin, the tenant slug and the code. A successful enrolment creates the pharmacy's registration and its database file.
 
    The deployment's signed reply names its ImpressoRx tenant id, ImpressoRx's `Tenant.id`. That id is made once per pharmacy database and never reused, and Oneon stores it as the pharmacy's permanent identity. The slug is only a name: a pharmacy deleted and set up again can come back under the same slug, but not with the same id. Enrolment is refused with 502 if the reply names no tenant id (the ImpressoRx release is too old: update it first), or if another registration already holds that id (for example, a copy of an enrolled pharmacy's database). Both refusals come after the code has been used.
-4. **/platform** lists every pharmacy with its status and its latest daily rollup (counts only).
+4. **/platform** lists every pharmacy with its status, its ImpressoRx tenant id and its latest daily rollup (counts only).
 
 ### Suspending a pharmacy
 
@@ -254,7 +254,7 @@ Re-enrolment is refused in these cases:
 
 The 502 refusals come after the code has been used, so the admin must issue a new one.
 
-A registration enrolled before ImpressoRx sent its tenant id has none stored. Its next successful re-enrolment records the id (the `reenrolled` event says `impressorxTenantIdRecorded: true`), and later re-enrolments must match it.
+Every registration holds its ImpressoRx tenant id, and re-enrolment always compares the id in the reply with the stored one. A control database with a registration that has no id (one enrolled before ImpressoRx sent it, on a development database) cannot be upgraded: control migration 007 refuses, and the server does not start, with a message naming each such registration (`<registration id> (<slug>)`). Nothing is changed by the refused migration. Give each named registration its id by hand (`UPDATE tenant_registrations SET impressorx_tenant_id = '<the pharmacy's Tenant.id from ImpressoRx>' WHERE id = '<registration id>'`, with the server stopped and a fresh backup), or create the control database again. After the migration the database itself refuses a registration without an id.
 
 Moving a pharmacy to a new origin is not possible from the console. It remains a manual procedure on `control.db`, done with the server stopped and a fresh backup.
 

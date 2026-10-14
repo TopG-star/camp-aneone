@@ -25,7 +25,7 @@ describe("membership repository and hand-off jti store", () => {
     const b = identities.createWithLogin({ kind: "impressorx", subject: "r1:s2" }).id;
     control
       .prepare(
-        "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES ('r1', 't1', 'slug', 'Name', 'https://x', 'f.db', 'active', ?, 'now')",
+        "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), 'r1', 't1', 'slug', 'Name', 'https://x', 'f.db', 'active', ?, 'now')",
       )
       .run(a);
     let now = Date.parse("2026-10-08T10:00:00Z");

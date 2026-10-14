@@ -243,7 +243,7 @@ describe("tenant AI limit routes (spec 9.4)", () => {
       const s = await setup();
       s.control
         .prepare(
-          "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES ('other', 'other', 'other', 'Other', 'https://o', 'o.db', 'active', ?, 'now')",
+          "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), 'other', 'other', 'other', 'Other', 'https://o', 'o.db', 'active', ?, 'now')",
         )
         .run(s.admin.id);
 

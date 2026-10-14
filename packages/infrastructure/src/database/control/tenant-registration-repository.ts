@@ -8,8 +8,8 @@ export type TenantRegistrationStatus = "active" | "suspended_by_operator" | "dis
 export interface TenantRegistration {
   id: string;
   tenantId: string;
-  /** ImpressoRx's Tenant.id, the pharmacy's permanent identity (not Oneon's `tenantId`). Null for a registration from before it was sent. */
-  impressorxTenantId: string | null;
+  /** ImpressoRx's Tenant.id, the pharmacy's permanent identity (not Oneon's `tenantId`). Every registration holds one (control migration 007). */
+  impressorxTenantId: string;
   tenantSlug: string;
   displayName: string;
   origin: string;
@@ -59,7 +59,7 @@ export const KEY_OVERLAP_MS = 7 * 24 * 60 * 60 * 1000;
 type RegistrationRow = {
   id: string;
   tenant_id: string;
-  impressorx_tenant_id: string | null;
+  impressorx_tenant_id: string;
   tenant_slug: string;
   display_name: string;
   origin: string;
@@ -125,9 +125,9 @@ export class TenantRegistrationRepository {
   /**
    * Re-enrolment of a suspended registration (ruling): in one transaction, and only if it is still `suspended_by_operator`, every
    * unretired key of both owners is retired now (no overlap), the proved keys are added, `inTransaction` runs (grant revocation),
-   * a `reenrolled` event is written and the status becomes `active`. The row, its tenant_id and file, and its memberships are kept.
-   * A registration from before ImpressoRx sent its tenant id records `impressorxTenantId` now; one that holds an id must be given
-   * the same one. Throws when the registration is no longer suspended or the id differs; then nothing changes.
+   * a `reenrolled` event is written and the status becomes `active`. The row, its tenant_id and file, its ImpressoRx tenant id and its
+   * memberships are kept. Throws when the registration is no longer suspended or `impressorxTenantId` is not the stored one; then
+   * nothing changes.
    */
   replaceKeysOnReenrolment(
     id: string,
@@ -139,17 +139,14 @@ export class TenantRegistrationRepository {
     const now = this.clock().toISOString();
     const run = this.db.transaction(() => {
       const current = this.db.prepare("SELECT impressorx_tenant_id FROM tenant_registrations WHERE id = ?").get(id) as
-        | { impressorx_tenant_id: string | null }
+        | { impressorx_tenant_id: string }
         | undefined;
-      if (current?.impressorx_tenant_id != null && current.impressorx_tenant_id !== impressorxTenantId) {
+      if (current && current.impressorx_tenant_id !== impressorxTenantId) {
         throw new Error("The deployment answered as another pharmacy than the one registered");
       }
-      const recorded = current?.impressorx_tenant_id == null;
       const changed = this.db
-        .prepare(
-          "UPDATE tenant_registrations SET status = 'active', impressorx_tenant_id = ? WHERE id = ? AND status = 'suspended_by_operator'",
-        )
-        .run(impressorxTenantId, id).changes;
+        .prepare("UPDATE tenant_registrations SET status = 'active' WHERE id = ? AND status = 'suspended_by_operator'")
+        .run(id).changes;
       if (changed !== 1) throw new Error("Only a suspended registration can be re-enrolled");
       // Every key of both owners, a key still inside a rotation overlap included, stops verifying and signing now.
       this.db
@@ -162,7 +159,7 @@ export class TenantRegistrationRepository {
         id,
         "reenrolled",
         actor,
-        { oneonKeyId: keys.oneonKeyId, deploymentKeyId: keys.deploymentKeyId, impressorxTenantIdRecorded: recorded },
+        { oneonKeyId: keys.oneonKeyId, deploymentKeyId: keys.deploymentKeyId },
         now,
       );
       this.insertEvent(id, "status_changed", actor, { from: "suspended_by_operator", to: "active", reason: "reenrolled" }, now);
@@ -189,7 +186,7 @@ export class TenantRegistrationRepository {
     return row ? toRegistration(row) : null;
   }
 
-  /** The registration, whatever its status, that holds this ImpressoRx Tenant.id (UNIQUE where set); null when none does. */
+  /** The registration, whatever its status, that holds this ImpressoRx Tenant.id (UNIQUE); null when none does. */
   findByImpressorxTenantId(impressorxTenantId: string): TenantRegistration | null {
     const row = this.db.prepare("SELECT * FROM tenant_registrations WHERE impressorx_tenant_id = ?").get(impressorxTenantId) as
       | RegistrationRow

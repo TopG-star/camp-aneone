@@ -34,7 +34,7 @@ describe("backups", () => {
       const fileName = `${randomUUID()}.db`;
       control
         .prepare(
-          "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (?, ?, ?, 'P', 'https://x.example', ?, 'active', 'op', ?)",
+          "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), ?, ?, ?, 'P', 'https://x.example', ?, 'active', 'op', ?)",
         )
         .run(`reg-${n}`, `t-${n}`, `s-${n}`, fileName, NOW);
       gate.createTenantFile(`reg-${n}`, `t-${n}`);

@@ -23,7 +23,7 @@ describe("grantOperator", () => {
     db.prepare("INSERT INTO identities (id, status, created_at) VALUES ('op', 'active', ?)").run(NOW);
     if (opts.registration) {
       db.prepare(
-        "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES ('reg-1', 't-1', 's-1', 'P', 'https://x.example', 'f.db', 'active', 'op', ?)",
+        "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), 'reg-1', 't-1', 's-1', 'P', 'https://x.example', 'f.db', 'active', 'op', ?)",
       ).run(NOW);
     }
     db.exec("DROP TABLE action_grant_tombstones; DELETE FROM schema_migrations WHERE version = 5");

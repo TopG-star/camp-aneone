@@ -151,6 +151,7 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
       tenants: registrations.listAll().map((r) => ({
         id: r.id,
         tenantSlug: r.tenantSlug,
+        impressorxTenantId: r.impressorxTenantId,
         displayName: r.displayName,
         origin: r.origin,
         enrolledAt: r.enrolledAt,

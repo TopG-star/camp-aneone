@@ -83,7 +83,7 @@ export class EnrolmentService {
 
   async enrol(input: EnrolInput): Promise<TenantRegistration> {
     const proved = await this.prove(input.origin, input.tenantSlug, input.enrolmentCode);
-    this.refuseIfHeldByAnother(proved.impressorxTenantId, null);
+    this.refuseIfHeldByAnother(proved.impressorxTenantId);
     return this.deps.repo.create(
       {
         tenantSlug: input.tenantSlug,
@@ -102,17 +102,16 @@ export class EnrolmentService {
    * every old key is retired at once and the proved keys replace them; the registration becomes active. Refused (nothing sent)
    * when the registration is not suspended or the origin differs. Refused after the proof (the code is spent, nothing stored) when
    * the deployment names another ImpressoRx tenant id than the registration holds: the slug is only a name, and a pharmacy set up
-   * again under it must not inherit this registration. A registration from before the id was sent records it now.
+   * again under it must not inherit this registration. Every registration holds its id (owner decision D1), so the id always decides.
    */
   async reenrol(input: ReenrolInput): Promise<TenantRegistration> {
     const registration = this.deps.repo.findById(input.registrationId);
     if (!registration || registration.status !== "suspended_by_operator") throw new Error("Only a suspended registration can be re-enrolled");
     if (new URL(input.origin).origin !== registration.origin) throw new Error("Re-enrolment must use the registration's pinned origin");
     const proved = await this.prove(registration.origin, registration.tenantSlug, input.enrolmentCode);
-    if (registration.impressorxTenantId !== null && proved.impressorxTenantId !== registration.impressorxTenantId) {
+    if (proved.impressorxTenantId !== registration.impressorxTenantId) {
       throw new EnrolmentFailedError("Enrolment failed", "impressorx_tenant_mismatch");
     }
-    this.refuseIfHeldByAnother(proved.impressorxTenantId, registration.id);
     return this.deps.repo.replaceKeysOnReenrolment(
       registration.id,
       proved.keys,
@@ -123,9 +122,8 @@ export class EnrolmentService {
   }
 
   /** One pharmacy, one registration: a copy of an enrolled pharmacy's database carries its Tenant.id under any slug. */
-  private refuseIfHeldByAnother(impressorxTenantId: string, registrationId: string | null): void {
-    const holder = this.deps.repo.findByImpressorxTenantId(impressorxTenantId);
-    if (holder && holder.id !== registrationId) throw new EnrolmentFailedError("Enrolment failed", "impressorx_tenant_already_enrolled");
+  private refuseIfHeldByAnother(impressorxTenantId: string): void {
+    if (this.deps.repo.findByImpressorxTenantId(impressorxTenantId)) throw new EnrolmentFailedError("Enrolment failed", "impressorx_tenant_already_enrolled");
   }
 
   /** The two-sided enrolment proof (spec §5.1-5.2, 5.6): spends the code at the deployment and returns the keys both sides now hold. */

@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { registrationAction, registrationStatusText, suspendConfirmation, resumeConfirmation } from "./platform-ui";
+import { impressorxTenantIdText, registrationAction, registrationStatusText, suspendConfirmation, resumeConfirmation } from "./platform-ui";
 
 describe("platform console wording", () => {
+  it("names the pharmacy's ImpressoRx tenant id, its permanent identity", () => {
+    expect(impressorxTenantIdText("9b2c-1f")).toBe("ImpressoRx tenant id: 9b2c-1f");
+  });
+
   it("says plainly whether Oneon serves the pharmacy, and who switched it off", () => {
     expect(registrationStatusText("active")).toBe("Served by Oneon.");
     expect(registrationStatusText("suspended_by_operator")).toBe("Suspended by a platform operator: Oneon is not serving this pharmacy. ImpressoRx is unchanged.");

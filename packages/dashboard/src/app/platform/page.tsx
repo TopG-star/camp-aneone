@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ApiError, apiFetch } from "@/lib/api";
 import {
+  impressorxTenantIdText,
   registrationAction,
   registrationStatusText,
   resumeConfirmation,
@@ -24,6 +25,7 @@ interface RollupMetrics {
 interface PlatformTenant {
   id: string;
   tenantSlug: string;
+  impressorxTenantId: string;
   displayName: string;
   origin: string;
   enrolledAt: string;
@@ -91,6 +93,7 @@ export default function PlatformPage() {
                       <div>
                         {t.displayName} <span className="meta-copy">({t.tenantSlug}, {t.origin})</span>
                       </div>
+                      <div className="meta-copy">{impressorxTenantIdText(t.impressorxTenantId)}</div>
                       <div className={t.status === "active" ? "meta-copy" : "state-error"}>{registrationStatusText(t.status)}</div>
                       {t.latestRollup ? (
                         <div className="meta-copy">

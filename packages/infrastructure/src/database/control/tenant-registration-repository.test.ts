@@ -88,32 +88,27 @@ describe("tenant registration and operator repositories", () => {
       expect(repo.deploymentKeys(reg.id).map((k) => k.keyId)).toEqual(["d-acme"]);
     });
 
-    it("records the ImpressoRx tenant id on a registration enrolled before it was sent, and says so in the event", () => {
+    it("keeps the stored ImpressoRx tenant id, and the event records only the new key ids (no id is recorded on first use)", () => {
       const { control, repo, identityId } = setup();
       const reg = repo.create(input(identityId));
-      control.prepare("UPDATE tenant_registrations SET impressorx_tenant_id = NULL WHERE id = ?").run(reg.id);
       repo.setStatus(reg.id, "suspended_by_operator", identityId, "test");
 
       expect(repo.replaceKeysOnReenrolment(reg.id, keys, "irx-acme", identityId).impressorxTenantId).toBe("irx-acme");
       const event = control
         .prepare("SELECT detail_json FROM tenant_registration_events WHERE event = 'reenrolled'")
         .get() as { detail_json: string };
-      expect(JSON.parse(event.detail_json)).toMatchObject({ impressorxTenantIdRecorded: true });
+      expect(JSON.parse(event.detail_json)).toEqual({ oneonKeyId: "o-2", deploymentKeyId: "d-2" });
     });
   });
 
-  it("holds an ImpressoRx tenant id on one registration at most; registrations from before it was sent hold none", () => {
+  it("holds an ImpressoRx tenant id on one registration at most, and every registration holds one", () => {
     const { control, repo, identityId } = setup();
     const reg = repo.create(input(identityId));
     expect(reg.impressorxTenantId).toBe("irx-acme");
     expect(repo.findByImpressorxTenantId("irx-acme")?.id).toBe(reg.id);
     expect(repo.findByImpressorxTenantId("irx-other")).toBeNull();
     expect(() => repo.create({ ...input(identityId, "beta"), impressorxTenantId: "irx-acme" })).toThrow();
-
-    const beta = repo.create(input(identityId, "beta"));
-    control.prepare("UPDATE tenant_registrations SET impressorx_tenant_id = NULL").run();
-    expect(repo.findById(reg.id)!.impressorxTenantId).toBeNull();
-    expect(repo.findById(beta.id)!.impressorxTenantId).toBeNull();
+    expect(() => control.prepare("UPDATE tenant_registrations SET impressorx_tenant_id = NULL").run()).toThrow(/impressorx_tenant_id is required/);
   });
 
   it("creates the registration, both keys and an event together", () => {

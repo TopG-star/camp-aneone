@@ -30,7 +30,7 @@ describe("ContextDbGate", () => {
       const fileName = opts.fileName ?? `${randomUUID()}.db`;
       control
         .prepare(
-          "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (?, ?, ?, ?, 'https://x.example', ?, ?, 'op', ?)",
+          "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, 'https://x.example', ?, ?, 'op', ?)",
         )
         .run(id, tenantId, `slug-${n}`, `Pharmacy ${n}`, fileName, opts.status ?? "active", NOW);
       return { id, tenantId, fileName, path: join(tenantDir, fileName) };

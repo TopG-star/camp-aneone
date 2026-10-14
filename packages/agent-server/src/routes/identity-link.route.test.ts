@@ -52,7 +52,7 @@ describe("identity linking routes", () => {
       const tenantId = randomUUID();
       control
         .prepare(
-          "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (?, ?, ?, ?, 'https://p.example', ?, 'active', ?, ?)",
+          "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, 'https://p.example', ?, 'active', ?, ?)",
         )
         .run(id, tenantId, slug, slug, `${id}.db`, gerry.id, NOW);
       gate.createTenantFile(id, tenantId);

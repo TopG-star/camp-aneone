@@ -45,7 +45,7 @@ function fixture(chat?: (parts: { memberships: MembershipRepository }) => Partia
     const tenantId = randomUUID();
     control
       .prepare(
-        "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, 'now')",
+        "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, 'active', ?, 'now')",
       )
       .run(registrationId, tenantId, slug, slug, `https://${slug}.example`, `${registrationId}.db`, gerry);
     gate.createTenantFile(registrationId, tenantId);

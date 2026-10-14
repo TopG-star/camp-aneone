@@ -15,6 +15,11 @@ export function registrationStatusText(status: RegistrationStatus): string {
   }
 }
 
+/** ImpressoRx's Tenant.id: the pharmacy's permanent identity, which the slug (only a name) is not. */
+export function impressorxTenantIdText(impressorxTenantId: string): string {
+  return `ImpressoRx tenant id: ${impressorxTenantId}`;
+}
+
 /** The one console action a registration offers: Resume undoes only an operator's own suspension. */
 export function registrationAction(status: RegistrationStatus): "suspend" | "resume" | null {
   if (status === "active") return "suspend";

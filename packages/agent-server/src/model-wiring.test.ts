@@ -222,7 +222,7 @@ describe("createModelWiring tenant limit (spec 9.4)", () => {
     const staff = new SqliteIdentityRepository(control).createWithLogin({ kind: "impressorx", subject: "reg-1:staff-1" }).id;
     control
       .prepare(
-        "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES ('reg-1', 't1', 'acme', 'Acme', 'https://acme.example', 'reg-1.db', 'active', ?, 'now')",
+        "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), 'reg-1', 't1', 'acme', 'Acme', 'https://acme.example', 'reg-1.db', 'active', ?, 'now')",
       )
       .run(staff);
     const limits = new TenantAiLimitRepository(control);

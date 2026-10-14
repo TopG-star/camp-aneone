@@ -120,6 +120,7 @@ describe("platform route", () => {
         {
           id: reg.id,
           tenantSlug: "acme",
+          impressorxTenantId: reg.impressorxTenantId,
           displayName: reg.displayName,
           origin: ORIGIN,
           enrolledAt: reg.enrolledAt,
@@ -463,18 +464,6 @@ describe("platform route", () => {
       expect(s.keyRows()).toEqual(keysBefore);
       expect(s.grantStatus()).toEqual({ status: "active", revoked_reason: null });
       expect(s.revokeGrantsForRegistration).not.toHaveBeenCalled();
-    });
-
-    it("records the ImpressoRx tenant id on the first re-enrolment of a registration enrolled before it was sent", async () => {
-      const s = await suspendedWithRemoveAndEnable();
-      s.control.prepare("UPDATE tenant_registrations SET impressorx_tenant_id = NULL WHERE id = ?").run(s.id);
-
-      const res = await request(s.app).post("/api/platform/enrolments").send({ ...body, code: CODE2 });
-
-      expect(res.status).toBe(200);
-      expect(s.control.prepare("SELECT impressorx_tenant_id FROM tenant_registrations WHERE id = ?").get(s.id)).toEqual({
-        impressorx_tenant_id: s.fake.impressorxTenantId,
-      });
     });
 
     it("refuses a reply that does not name its ImpressoRx tenant id, saying ImpressoRx needs updating", async () => {

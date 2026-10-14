@@ -34,7 +34,7 @@ describe("ContextDbGate.createTenantFile cleanup", () => {
     const id = "11111111-1111-1111-1111-111111111111";
     control
       .prepare(
-        "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (?, ?, 's', 's', 'https://x.example', ?, 'active', 'op', 'x')",
+        "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), ?, ?, 's', 's', 'https://x.example', ?, 'active', 'op', 'x')",
       )
       .run(id, id, `${id}.db`);
     const gate = new ContextDbGate({ control, personalPath: join(dir, "personal.db"), tenantDir: join(dir, "tenants") });

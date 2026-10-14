@@ -49,7 +49,7 @@ describe("contexts route", () => {
       const id = randomUUID();
       control
         .prepare(
-          "INSERT INTO tenant_registrations (id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'now')",
+          "INSERT INTO tenant_registrations (impressorx_tenant_id, id, tenant_id, tenant_slug, display_name, origin, file_name, status, enrolled_by, enrolled_at) VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, ?, 'now')",
         )
         .run(id, id, slug, name, `https://${slug}.example`, `${id}.db`, status, gerry);
       return id;
