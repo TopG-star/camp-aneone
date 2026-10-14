@@ -152,7 +152,7 @@ Oneon writes its own backups; do not copy the database files by hand (a plain `c
 - **Skipped pharmacies:** a pharmacy the server refuses to open (for example `tenant_schema_behind` after its pre-migration backup failed, so it was not migrated) does not hold the day back. The day completes without it; the pharmacy is listed in `yyyy-mm-dd/skipped.json` (`[{registrationId, code}]`, absent when nothing was skipped) and logged at error ("backup skipped") on every nightly run until it is fixed. Its last good copy is its backup under `pre-migration/<timestamp>/`. Any other failure (a backup, seal or write error, or an unexpected error opening a file) still keeps the day in `.partial` and is retried hourly.
 - **Encryption:** AES-256-GCM under `BACKUP_ENCRYPTION_KEY` (base64 of 32 bytes: `openssl rand -base64 32`). Without it no backups are made and the server warns at startup; once any pharmacy is registered the server refuses to start without it, so enrolling a pharmacy is refused (HTTP 503, naming `BACKUP_ENCRYPTION_KEY`) until the key is set and the server restarted. Keep a copy of the key somewhere other than the VPS: a backup is only as recoverable as its key. Each file is bound to its own folder and file name (`<day>/<name>.db.enc`), so sync the folder as it is. If a file was renamed or moved anyway (for example fetched from off-site into another folder), restore it with `--as` (below).
 - **Restore test:** once a month Oneon restores one pharmacy (rotating) from the latest backup into a temporary folder, runs `PRAGMA integrity_check`, reads `context_meta`, and deletes the copy. The test passes only if `context_meta` says kind `tenant` with the tenant id of the registration that owns the file; a file with no owning registration, a different tenant id or no `context_meta` fails. A failure is logged at error level ("Monthly restore test failed"); watch the logs for it.
-- **Startup lock:** while the server prepares storage (opening and migrating `control.db`, backing up, migrating the other files) it holds an operating-system lock on `storage.lock`, beside `control.db`. If a second Oneon process starts meanwhile it stops with "Another Oneon process is preparing storage". The system releases the lock when a process dies, so a crash or kill never leaves it stuck: there is no lock file to delete by hand. Startup also removes plaintext scratch folders and `.part` files an interrupted backup left behind.
+- **Startup lock:** while the server prepares storage (opening and migrating `control.db`, backing up, migrating the other files) it holds an operating-system lock on `storage.lock`, beside `control.db`. If a second Oneon process starts meanwhile it stops with "Another Oneon process is preparing storage". The system releases the lock when a process dies, so a crash or kill never leaves it stuck: there is no lock file to delete by hand. Backups and restore tests keep their plaintext scratch in `backup-scratch/`, beside `control.db` (on the data volume, never in `BACKUP_DIR` or the system's temporary folder); startup removes what an interrupted backup left there, and `.part` files in `BACKUP_DIR`.
 - **Off-site:** the folder only protects against mistakes until it leaves the VPS. Sync `BACKUP_DIR` off-site with the tool of your choice, for example `rclone` to Cloudflare R2 or to a Hetzner Storage Box:
   ```bash
   docker run --rm -v camp-aneone_db-data:/data:ro -v ~/.config/rclone:/config/rclone rclone/rclone \
@@ -184,6 +184,56 @@ docker compose up -d
 ```
 
 The decrypted file is plaintext: delete it when you are done, and do not leave it in `BACKUP_DIR`. The file you restore carries its own schema version; the server migrates it when it starts (with a backup first).
+
+## Pharmacies (ImpressoRx)
+
+Oneon serves a pharmacy only after a platform operator has enrolled that pharmacy's ImpressoRx deployment.
+
+### Keys
+
+Set these in `.env` before you enrol the first pharmacy. Each is base64 of 32 bytes (`openssl rand -base64 32`):
+
+| Key | What it seals | If it is lost |
+|---|---|---|
+| `BACKUP_ENCRYPTION_KEY` | backups (see Backups) | no backup can be restored |
+| `ONEON_SIGNING_KEY_MASTER_KEY` | Oneon's private signing key for each pharmacy | every pharmacy registration stops working; each must be enrolled again |
+| `ONEON_GRANT_MASTER_KEY` | the delegation grants ImpressoRx issues at each hand-off | every grant is unusable; staff open Oneon from ImpressoRx again |
+
+Keep a copy of each key somewhere other than the VPS. Nothing can decrypt what a lost key sealed. Enrolment is refused with HTTP 503, naming each missing key, until all three are set and the server has been restarted. `CONTROL_DATABASE_PATH` (default `./data/control.db`) and `TENANT_DATA_DIR` (default `./data/tenants`) must stay on the data volume.
+
+### Becoming the first platform operator
+
+1. Sign in to the dashboard with Google once. That creates your Oneon identity.
+2. Find your identity id (replace the email with yours):
+   ```bash
+   docker compose exec agent-server node -e "const db = require('better-sqlite3')(process.env.CONTROL_DATABASE_PATH || './data/control.db', { fileMustExist: true }); console.log(db.prepare('SELECT identity_id, kind, email FROM login_identities WHERE lower(email) = lower(?)').all(process.argv[1]))" you@example.com
+   ```
+3. Grant operator to that id. The command backs up `control.db` first if a migration is pending, and it refuses a control database that does not exist (it never creates an empty one):
+   ```bash
+   docker compose exec agent-server node --input-type=module -e "const { grantOperator, grantOperatorPaths } = await import('/app/packages/agent-server/dist/grant-operator.js'); await grantOperator({ ...grantOperatorPaths(process.env), keyB64: process.env.BACKUP_ENCRYPTION_KEY || undefined, identityId: process.argv[1] }); console.log('Granted platform operator')" <identity-id>
+   ```
+   From a checkout of the repository (local development), the same step is `pnpm --filter @oneon/agent-server grant-operator <identity-id>`, run from the repository root. A relative `CONTROL_DATABASE_PATH` is taken from the folder you typed the command in.
+
+### Enrolling a pharmacy
+
+1. The pharmacy's ImpressoRx admin opens **Settings → Oneon** and presses **Enable**. ImpressoRx shows a one-time enrolment code that is valid for 10 minutes.
+2. Check the deployment's HTTPS origin against the tenant registry, out of band. Enrolment trusts whichever deployment answers at that origin and holds the code.
+3. In the dashboard, open **/platform/enrol** and enter the origin, the tenant slug and the code. A successful enrolment creates the pharmacy's registration and its database file.
+4. **/platform** lists every pharmacy with its status and its latest daily rollup (counts only).
+
+### Suspending a pharmacy
+
+**Suspend**, on **/platform**, stops Oneon serving a pharmacy at once. Its staff cannot open it in Oneon, and nightly jobs and backups skip it. Nothing changes in ImpressoRx. **Resume** undoes a suspension. Each change is recorded as a `status_changed` event on the registration and as a log line ("Pharmacy suspended by operator", "Pharmacy resumed by operator").
+
+A pharmacy whose admin pressed **Remove** in ImpressoRx, or whose keys are lost (a lost `ONEON_SIGNING_KEY_MASTER_KEY`, or a deployment key Oneon could not refresh within its 7-day overlap), still shows as active, but every exchange with it fails. Suspend it, so Oneon stops trying to serve it. Reconnecting it needs a fresh two-sided enrolment of the same slug. This build does not offer that yet: the slug stays taken, and enrolling it again answers 409.
+
+### Log alerts to watch
+
+- `code: "tenant_mismatch"` ("Tenant mismatch", error): a row of another context was found in a pharmacy's file. No row content is logged.
+- `alert: "link_check"` (error): the nightly link check found an action grant whose action no longer exists, or could not check a pharmacy.
+- "backup skipped: the tenant is refused service" (error, every night until it is fixed): see Backups.
+- "Monthly restore test failed" (error): see Backups.
+- "Deployment key refresh failed" (warning): Oneon could not refresh a deployment's public keys. The refresh runs at startup and once a day. If it keeps failing for 7 days after the pharmacy rotates its key, the pharmacy can be stranded.
 
 ## Firewall (Optional but Recommended)
 
