@@ -77,6 +77,38 @@ describe("gateway in a tenant context", () => {
     expect(personalAudit.decisions).toHaveLength(1);
   });
 
+  // Spec 10 / amendment A4 (Oneon side): a call whose decision cannot be recorded is never made.
+  describe("a model-audit recordDecision that throws", () => {
+    const failingAudit = () => {
+      const audit = new InMemoryModelAudit();
+      audit.recordDecision = () => {
+        throw new Error("disk I/O error");
+      };
+      return audit;
+    };
+
+    it.each([
+      ["an allowed tenant call", tenant, () => chat()],
+      ["a denied tenant call", tenant, () => ({ purpose: "no_such_purpose", output: "json" as const, parts: [userMessage("hi")] })],
+      ["an allowed personal call", personal, () => chat()],
+    ])("%s fails with that error: no answer, nothing sent to the provider, no outcome", async (_name, context, request) => {
+      const audit = failingAudit();
+      const deepseek = new FakeProvider("deepseek", [REPLY]);
+      const shadow = new FakeProvider("anthropic", [REPLY]);
+      const { gateway } = setup({
+        auditFor: () => audit,
+        providers: { deepseek, anthropic: shadow },
+        routing: { standard: "deepseek", reasoning: "deepseek", shadow: "anthropic" },
+      });
+
+      await expect(gateway.beginTurn(context).call(request())).rejects.toThrow("disk I/O error");
+
+      expect(deepseek.calls).toEqual([]);
+      expect(shadow.calls).toEqual([]);
+      expect(audit.outcomes).toEqual([]);
+    });
+  });
+
   describe("tenantLimit", () => {
     const toolData = () => record("tool:show_my_access", [row([field("role", "D1", "Admin"), field("amount", "D2", 4250)])]);
 
