@@ -20,6 +20,8 @@ export interface PlatformRouteDeps {
   latestRollups: () => Array<{ tenantId: string; day: string; metrics: unknown }>;
   /** Creates the tenant's database file once its registration exists. */
   createTenantFile: (registrationId: string, tenantId: string) => void;
+  /** Tells the gate a registration stopped being servable: its open file closes now, or at the last release if something still uses it. */
+  detachTenant: (registrationId: string) => void;
   /** Revokes every grant of a registration locally (the ImpressoRx client's revokeForRegistration). Re-enrolment calls it. */
   revokeGrantsForRegistration: (registrationId: string, reason: string) => void;
   logger: Logger;
@@ -34,7 +36,7 @@ const EnrolBody = z.object({
 
 export function createPlatformRouter(deps: PlatformRouteDeps): Router {
   const router = Router();
-  const { operators, registrations, enrolment, backupConfigured, grantConfigured, latestRollups, createTenantFile, revokeGrantsForRegistration, logger } =
+  const { operators, registrations, enrolment, backupConfigured, grantConfigured, latestRollups, createTenantFile, detachTenant, revokeGrantsForRegistration, logger } =
     deps;
 
   // Operator only. A signed-in user who is not an operator gets 403, never a hint of what exists.
@@ -176,6 +178,8 @@ export function createPlatformRouter(deps: PlatformRouteDeps): Router {
         res.status(409).json({ error: action === "suspend" ? "Only an active pharmacy can be suspended" : "Only a pharmacy you suspended can be resumed" });
         return;
       }
+      // A move away from active: the gate would only notice at the next lease attempt, so it is told now.
+      if (t.to !== "active") detachTenant(registrationId);
       logger.info(t.log, { registrationId });
       res.status(204).end();
     });

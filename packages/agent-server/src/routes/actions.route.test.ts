@@ -71,6 +71,41 @@ describe("operations", () => {
     expect((await request(t.app).post(`/api/actions/${a.id}/retry`)).status).toBe(403);
   });
 
+  it("holds the request's context for the whole of an operation, the execution and the view included", async () => {
+    const seen: Array<{ statusAtStart: string; statusAtEnd?: string }> = [];
+    let t!: ReturnType<typeof buildActionsTestApp>;
+    let id = "";
+    const holdContext = <T,>(fn: () => T): T => {
+      const entry = { statusAtStart: t.instanceRepo.findById("user-A", id)!.status } as { statusAtStart: string; statusAtEnd?: string };
+      seen.push(entry);
+      const result = fn();
+      void Promise.resolve(result).then(() => {
+        entry.statusAtEnd = t.instanceRepo.findById("user-A", id)!.status;
+      });
+      return result;
+    };
+    t = buildActionsTestApp({ holdContext });
+    id = (await proposeReminder(t)).id;
+    await request(t.app).post(`/api/actions/${id}/approve`).expect(200);
+    expect(seen).toEqual([{ statusAtStart: "awaiting_approval", statusAtEnd: "completed" }]);
+    seen.length = 0;
+    await request(t.app).post(`/api/actions/${id}/undo`).expect(200);
+    expect(seen).toEqual([{ statusAtStart: "completed", statusAtEnd: "rolled_back" }]);
+  });
+
+  it("holds the request's context for a retry too", async () => {
+    let holds = 0;
+    const t = buildActionsTestApp({
+      holdContext: (fn) => {
+        holds += 1;
+        return fn();
+      },
+    });
+    const a = await proposeReminder(t);
+    await request(t.app).post(`/api/actions/${a.id}/retry`); // refused by policy (403), but the work ran inside the hold
+    expect(holds).toBe(1);
+  });
+
   it("keeps executing after the client disconnects", async () => {
     const t = buildActionsTestApp({ createDelayMs: 100 });
     const a = await proposeReminder(t);

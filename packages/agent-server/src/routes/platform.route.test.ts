@@ -82,6 +82,7 @@ describe("platform route", () => {
         grantConfigured: opts.grantConfigured ?? true,
         latestRollups: () => latestRollups(control),
         createTenantFile: opts.createTenantFile ?? ((id, tenantId) => void gate.createTenantFile(id, tenantId)),
+        detachTenant: (id) => gate.detach(id),
         revokeGrantsForRegistration,
         logger,
       }),
@@ -252,6 +253,30 @@ describe("platform route", () => {
       expect(() => gate.lease(id).db).toThrow(TenantRefusedError);
       expect(events(control, id)).toEqual([{ event: "status_changed", actor: expect.any(String), detail: { from: "active", to: "suspended_by_operator", reason: "operator_suspend" } }]);
       expect(logger.info).toHaveBeenCalledWith("Pharmacy suspended by operator", { registrationId: id });
+    });
+
+    it("suspending closes the pharmacy's unleased handle at once, and a leased one at its last release, with no lease attempt in between", async () => {
+      const { app, gate } = setup();
+      const id = (await request(app).post("/api/platform/enrolments").send(body)).body.registrationId as string;
+      const unleased = gate.withTenant(id, (db) => db); // cached, nobody using it
+      expect(rawDb(unleased).open).toBe(true);
+      await request(app).post(`/api/platform/registrations/${id}/suspend`);
+      expect(rawDb(unleased).open).toBe(false);
+
+      await request(app).post(`/api/platform/registrations/${id}/resume`);
+      const lease = gate.lease(id);
+      await request(app).post(`/api/platform/registrations/${id}/suspend`);
+      expect(rawDb(lease.db).open).toBe(true);
+      lease.release();
+      expect(rawDb(lease.db).open).toBe(false);
+    });
+
+    it("a refused suspend leaves the pharmacy's handle alone", async () => {
+      const { app, gate } = setup();
+      const id = (await request(app).post("/api/platform/enrolments").send(body)).body.registrationId as string;
+      const db = gate.withTenant(id, (d) => d);
+      await request(app).post(`/api/platform/registrations/${id}/resume`); // 409: it is not suspended
+      expect(rawDb(db).open).toBe(true);
     });
 
     it("resumes a suspended pharmacy, and the gate serves it again", async () => {

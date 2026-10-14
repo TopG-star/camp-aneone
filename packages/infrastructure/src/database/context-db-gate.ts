@@ -127,19 +127,16 @@ export class ContextDbGate {
 
   /** Runs `fn` with the tenant leased for exactly as long as it runs: a sync function until it returns, an async one until it settles. */
   withTenant<T>(registrationId: string, fn: (db: TenantDb) => T): T {
-    const lease = this.lease(registrationId);
-    let result: T;
-    try {
-      result = fn(lease.db);
-    } catch (error) {
-      lease.release();
-      throw error;
-    }
-    if (isPromiseLike(result)) {
-      return Promise.resolve(result).finally(() => lease.release()) as T;
-    }
-    lease.release();
-    return result;
+    return runLeased(this.lease(registrationId), fn);
+  }
+
+  /**
+   * Called when a registration stops being servable (an operator suspends it): its cached handle leaves the cache now. It closes at once
+   * when nothing uses it, otherwise at the last release. The gate would also notice at the next lease attempt, but a file nobody tries
+   * again must not stay open.
+   */
+  detach(registrationId: string): void {
+    this.evict(registrationId);
   }
 
   /** Creates the tenant's file and closes it again: use `lease` or `withTenant` to open it. */
@@ -237,6 +234,22 @@ export class ContextDbGate {
     entry.closed = true;
     entry.conn.close();
   }
+}
+
+/** Runs `fn` on a held lease and releases it when `fn` is done: a sync function when it returns or throws, an async one when it settles. */
+export function runLeased<T>(lease: TenantLease, fn: (db: TenantDb) => T): T {
+  let result: T;
+  try {
+    result = fn(lease.db);
+  } catch (error) {
+    lease.release();
+    throw error;
+  }
+  if (isPromiseLike(result)) {
+    return Promise.resolve(result).finally(() => lease.release()) as T;
+  }
+  lease.release();
+  return result;
 }
 
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {

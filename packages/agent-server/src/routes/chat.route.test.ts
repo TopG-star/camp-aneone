@@ -64,11 +64,13 @@ function buildApp(
   { conversationRepo, modelGateway, modelGatewayFor, tenantActionsFor, ...deps }: TestDeps,
   userId = "user-A",
   context: { active?: ActiveContext; db: ContextDb } | null = null,
+  holdContext?: <T>(fn: () => T) => T,
 ): express.Express {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     req.userId = userId;
+    if (holdContext) req.holdContext = holdContext;
     if (context) {
       req.activeContext = context.active;
       req.contextDb = context.db;
@@ -150,6 +152,25 @@ describe("POST /api/chat", () => {
   });
 
   // ── Successful request ─────────────────────────────────────
+
+  it("holds the request's context for the whole turn, the writes included", async () => {
+    const appends = () => (conversationRepo.append as ReturnType<typeof vi.fn>).mock.calls.length;
+    const seen = { holds: 0, appendsAtStart: -1, appendsAtEnd: -1 };
+    const holdContext = <T,>(fn: () => T): T => {
+      seen.holds += 1;
+      seen.appendsAtStart = appends();
+      const result = fn();
+      void Promise.resolve(result).then(() => {
+        seen.appendsAtEnd = appends();
+      });
+      return result;
+    };
+    const held = buildApp({ conversationRepo, logger }, "user-A", null, holdContext);
+    await request(held).post("/api/chat").send({ message: "Hello Oneon" }).expect(200);
+    expect(seen.holds).toBe(1);
+    expect(seen.appendsAtStart).toBe(0);
+    expect(seen.appendsAtEnd).toBeGreaterThanOrEqual(2); // the user turn and the assistant turn
+  });
 
   it("returns 200 with response for valid message", async () => {
     const res = await request(app)

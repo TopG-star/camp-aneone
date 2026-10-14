@@ -197,6 +197,8 @@ export interface NewestBackupCopy {
   /** Set for a pharmacy. */
   registrationId?: string;
   newestAt: Date | null;
+  /** Pharmacies only: when it was enrolled or last moved to active, whichever is later. A pharmacy with no copy is measured from here. */
+  activeSince?: Date;
 }
 
 const DAY_FOLDER = /^\d{4}-\d{2}-\d{2}$/;
@@ -206,7 +208,7 @@ const DAY_FOLDER = /^\d{4}-\d{2}-\d{2}$/;
  * sealed files in completed day folders (`<day>/`, never `<day>.partial/`) and in `pre-migration/<run>/`. Only reads; nothing is
  * opened or removed. A pharmacy the nightly run skips still has its pre-migration copy counted here.
  */
-export function newestBackupCopies(deps: { outDir: string; registrations: Pick<TenantRegistrationRepository, "listActive"> }): NewestBackupCopy[] {
+export function newestBackupCopies(deps: { outDir: string; registrations: Pick<TenantRegistrationRepository, "listActive" | "activeSince"> }): NewestBackupCopy[] {
   const newest = new Map<string, number>();
   const scan = (folder: string): void => {
     for (const entry of readdirSync(folder, { withFileTypes: true })) {
@@ -231,6 +233,7 @@ export function newestBackupCopies(deps: { outDir: string; registrations: Pick<T
       context: "tenant" as const,
       registrationId: reg.id,
       newestAt: copy(reg.fileName.replace(/\.db$/, "")),
+      activeSince: deps.registrations.activeSince(reg.id) ?? new Date(reg.enrolledAt),
     })),
   ];
 }

@@ -110,6 +110,34 @@ describe("ContextDbGate leases", () => {
     expect(rawDb(db).open).toBe(false);
   });
 
+  it("detach closes an unleased handle at once, with no later lease attempt", () => {
+    const { gate, register } = setup(4);
+    const a = register();
+    const db = gate.withTenant(a, (d) => d);
+    expect(rawDb(db).open).toBe(true);
+    gate.detach(a);
+    expect(rawDb(db).open).toBe(false);
+  });
+
+  it("detach on a leased handle closes it at the last release, with no lease attempt in between", () => {
+    const { gate, control, register } = setup(4);
+    const a = register();
+    const one = gate.lease(a);
+    const two = gate.lease(a);
+    control.prepare("UPDATE tenant_registrations SET status = 'suspended_by_operator' WHERE id = ?").run(a);
+    gate.detach(a);
+    expect(rawDb(one.db).open).toBe(true);
+    one.release();
+    expect(rawDb(two.db).open).toBe(true);
+    two.release();
+    expect(rawDb(two.db).open).toBe(false);
+  });
+
+  it("detach of a registration with no open handle does nothing", () => {
+    const { gate, register } = setup(4);
+    expect(() => gate.detach(register())).not.toThrow();
+  });
+
   it("close() closes everything at once: leased, cached and suspended-while-leased", () => {
     const { gate, control, register } = setup(1);
     const cached = gate.withTenant(register(), (d) => d);

@@ -165,6 +165,19 @@ describe("tenant registration and operator repositories", () => {
     ]);
   });
 
+  it("activeSince is the enrolment time, then the time of the last move to active", () => {
+    const { repo, clock, identityId } = setup();
+    const reg = repo.create(input(identityId));
+    expect(repo.activeSince(reg.id)).toEqual(new Date("2026-10-08T12:00:00.000Z"));
+    clock.now = new Date("2026-10-09T12:00:00.000Z");
+    repo.transitionStatus(reg.id, "active", "suspended_by_operator", identityId, "operator_suspend");
+    expect(repo.activeSince(reg.id)).toEqual(new Date("2026-10-08T12:00:00.000Z")); // suspending is not a move to active
+    clock.now = new Date("2026-10-10T12:00:00.000Z");
+    repo.transitionStatus(reg.id, "suspended_by_operator", "active", identityId, "operator_resume");
+    expect(repo.activeSince(reg.id)).toEqual(new Date("2026-10-10T12:00:00.000Z"));
+    expect(repo.activeSince("nope")).toBeNull();
+  });
+
   it("a pending Oneon key becomes current; retiring the others gives them seven days", () => {
     const { control, repo, clock, identityId } = setup();
     const reg = repo.create(input(identityId));

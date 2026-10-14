@@ -373,14 +373,17 @@ export interface BackupSchedulerDeps {
   backupAll: () => Promise<unknown>;
   restoreTest: (file: string) => Promise<RestoreCheck>;
   /** When given, each tick ends by checking every context's newest copy against BACKUP_STALE_AFTER_HOURS. */
-  newestCopies?: () => Array<{ context: "control" | "personal" | "tenant"; registrationId?: string; newestAt: Date | null }>;
+  newestCopies?: () => Array<{ context: "control" | "personal" | "tenant"; registrationId?: string; newestAt: Date | null; activeSince?: Date }>;
   logger: Logger;
   now?: () => Date;
   /** How often to look at the clock. The jobs themselves run once per day and once per month. */
   checkIntervalMs?: number;
 }
 
-/** A context whose newest restorable copy is older than this (or missing) raises `alert: "backup_stale"` on every hourly tick. */
+/**
+ * A context whose newest restorable copy is older than this raises `alert: "backup_stale"` on every hourly tick. A pharmacy with no copy
+ * at all is measured from when it was enrolled or last became active, so a new or just-resumed one is not alerted before its first night.
+ */
 export const BACKUP_STALE_AFTER_HOURS = 26;
 
 const DAY_FOLDER = /^\d{4}-\d{2}-\d{2}$/;
@@ -436,7 +439,8 @@ export class BackupScheduler {
       const nowMs = this.now().getTime();
       for (const copy of newestCopies()) {
         const ageHours = copy.newestAt === null ? null : (nowMs - copy.newestAt.getTime()) / (60 * 60 * 1000);
-        if (ageHours !== null && ageHours <= BACKUP_STALE_AFTER_HOURS) continue;
+        const measuredFrom = copy.newestAt ?? copy.activeSince;
+        if (measuredFrom !== undefined && (nowMs - measuredFrom.getTime()) / (60 * 60 * 1000) <= BACKUP_STALE_AFTER_HOURS) continue;
         logger.error("Backup is stale", {
           alert: "backup_stale",
           context: copy.context,

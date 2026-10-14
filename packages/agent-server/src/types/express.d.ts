@@ -15,6 +15,12 @@ declare global {
       activeContext?: import("@oneon/domain").ActiveContext;
       /** Set by resolveActiveContext: the active context's database, valid for this request only */
       contextDb?: import("@oneon/domain").ContextDb;
+      /**
+       * Set by resolveActiveContext: runs `fn` holding the context's database open until it is done (a tenant file is leased again, for the
+       * handler's own run). A handler that keeps using `contextDb` after an await goes through it, because the request's own lease ends
+       * when the client disconnects. A tenant lease that cannot be taken (the pharmacy was just suspended) throws.
+       */
+      holdContext?: <T>(fn: () => T) => T;
     }
   }
 }

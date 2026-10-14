@@ -5,6 +5,7 @@ import {
   ImpressoRxUnauthorizedError,
   ImpressoRxUnreachableError,
   ensureIdentityAnchor,
+  runLeased,
   type IdentityRepository,
   type ImpressoRxClient,
   type Membership,
@@ -221,20 +222,28 @@ export function resolveActiveContext(deps: ActiveContextDeps): RequestHandler {
           res.status(403).json(UNAVAILABLE);
           return;
         }
+        // Listening starts before the first await: a client that goes away during the snapshot check must not leave a lease held.
+        let lease: TenantLease | null = null;
+        let ended = false;
+        const release = () => {
+          if (ended) return;
+          ended = true;
+          lease?.release();
+        };
+        res.once("finish", release);
+        res.once("close", release);
         const fresh = await deps.snapshots.ensureFresh({ sessionId: req.sessionId, membership });
         if (!fresh.ok) {
           res.status(403).json(fresh.refusal);
           return;
         }
-        const lease = deps.gate.lease(membership.tenantRegistrationId);
-        let released = false;
-        const release = () => {
-          if (released) return;
-          released = true;
-          lease.release();
-        };
-        res.once("finish", release);
-        res.once("close", release);
+        lease = deps.gate.lease(membership.tenantRegistrationId);
+        if (ended) {
+          lease.release(); // the client is gone: nothing will read the answer
+          return;
+        }
+        const registrationId = membership.tenantRegistrationId;
+        req.holdContext = (fn) => runLeased(deps.gate.lease(registrationId), () => fn());
         const db = lease.db;
         // The file's foreign keys reference users(id), so the identity needs its anchor row before it writes here.
         ensureIdentityAnchor(db, identityId);
@@ -249,6 +258,7 @@ export function resolveActiveContext(deps: ActiveContextDeps): RequestHandler {
       }
       req.activeContext = { kind: "personal", identityId };
       req.contextDb = deps.gate.openPersonal();
+      req.holdContext = (fn) => fn(); // the personal handle is never closed by the gate
       next();
     } catch (error) {
       // Operators need the cause (gate refusal, locked file, a bug); the client only ever sees context_unavailable.

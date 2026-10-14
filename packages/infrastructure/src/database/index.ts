@@ -1,5 +1,5 @@
 export { createDatabase, runMigrations, latestMigrationVersion, hasPendingMigrations, acquireStorageLock } from "./connection.js";
-export { ContextDbGate, TenantRefusedError, rawDb, ensureIdentityAnchor, type TenantLease } from "./context-db-gate.js";
+export { ContextDbGate, TenantRefusedError, rawDb, ensureIdentityAnchor, runLeased, type TenantLease } from "./context-db-gate.js";
 export { forEachTenant, DEFAULT_JOB_BUDGET_MS, type ForEachTenantDeps, type ForEachTenantResult } from "./for-each-tenant.js";
 export { migrateAll } from "./migrate-all.js";
 export { backupAll, newestBackupCopies, restoreTest, restoreTestOwned, backupScratchDir, sweepBackupLeftovers, decryptBackup, type BackupResult, type BackupAllResult, type SkippedTenant, type NewestBackupCopy, type RestoreTestResult, type PreMigrationBackup } from "./backup.js";

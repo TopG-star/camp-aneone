@@ -120,7 +120,7 @@ describe("the request's tenant handle is leased for the length of the request", 
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  function setup() {
+  function setup(ensureFresh: () => Promise<{ ok: true }> = async () => ({ ok: true })) {
     vi.useFakeTimers();
     const dir = mkdtempSync(join(tmpdir(), "active-context-lease-"));
     dirs.push(dir);
@@ -148,7 +148,7 @@ describe("the request's tenant handle is leased for the length of the request", 
       },
       memberships: { findById: () => ({ id: "m1", identityId: "i1", tenantRegistrationId: "reg-1", status: "active" }) as never },
       identities: { hasLogin: () => false },
-      snapshots: { ensureFresh: async () => ({ ok: true }), checkLive: async () => ({ ok: false, reason: "launch_required" }) },
+      snapshots: { ensureFresh, checkLive: async () => ({ ok: false, reason: "launch_required" }) },
       logger: logger(),
     });
     const req = { identityId: "i1", userId: "i1", sessionId: "s1", sessionContext: { kind: "tenant", membershipId: "m1" } } as unknown as express.Request;
@@ -171,6 +171,72 @@ describe("the request's tenant handle is leased for the length of the request", 
     res.emit("finish");
     res.emit("close");
     expect(releases).toHaveBeenCalledTimes(1);
+  });
+
+  it("a handler that holds the context keeps its handle across a client disconnect and an LRU eviction, and the handle closes only after the handler finishes", async () => {
+    const { gate, middleware, req, res, releases } = setup();
+    await middleware(req, res, vi.fn());
+    const db = req.contextDb!;
+
+    let proceed!: () => void;
+    const reachedAwait = new Promise<void>((resolve) => {
+      proceed = resolve;
+    });
+    let rowsSeen = -1;
+    const handler = req.holdContext!(async () => {
+      await reachedAwait; // the model call, say
+      rawDb(db).prepare("INSERT INTO users (id, email) VALUES ('late', 'late@anchor.invalid')").run();
+      rowsSeen = (rawDb(db).prepare("SELECT COUNT(*) AS n FROM users WHERE id = 'late'").get() as { n: number }).n;
+    });
+
+    res.emit("close"); // the client is gone: the request's own lease is released
+    expect(releases).toHaveBeenCalledTimes(1);
+    gate.withTenant("reg-2", () => undefined); // with a cache of one, an unheld reg-1 would be evicted and closed here
+    expect(rawDb(db).open).toBe(true);
+
+    proceed();
+    await handler;
+    expect(rowsSeen).toBe(1);
+    // Nothing holds reg-1 any more: the next open of another pharmacy evicts it and closes it at once.
+    gate.withTenant("reg-2", () => undefined);
+    expect(rawDb(db).open).toBe(false);
+  });
+
+  it("releases the handler's own lease when its work throws", async () => {
+    const { gate, middleware, req, res } = setup();
+    await middleware(req, res, vi.fn());
+    const db = req.contextDb!;
+    expect(() =>
+      req.holdContext!(() => {
+        throw new Error("handler failed");
+      }),
+    ).toThrow("handler failed");
+    await expect(req.holdContext!(async () => Promise.reject(new Error("async failed")))).rejects.toThrow("async failed");
+    res.emit("finish");
+    // Neither failed hold left a lease behind: the evicted handle closes at once.
+    gate.withTenant("reg-2", () => undefined);
+    expect(rawDb(db).open).toBe(false);
+  });
+
+  it("a client that goes away during the snapshot check does not leave the lease held", async () => {
+    let finishCheck!: () => void;
+    const { gate, middleware, req, res, releases } = setup(
+      () =>
+        new Promise((resolve) => {
+          finishCheck = () => resolve({ ok: true });
+        }),
+    );
+    const next = vi.fn();
+    const running = middleware(req, res, next);
+    res.emit("close"); // gone before the check came back
+    finishCheck();
+    await running;
+    expect(next).not.toHaveBeenCalled();
+    expect(releases).toHaveBeenCalledTimes(1);
+    // Nothing holds reg-1: another pharmacy's open evicts it and closes it at once.
+    const db = gate.withTenant("reg-1", (d) => d);
+    gate.withTenant("reg-2", () => undefined);
+    expect(rawDb(db).open).toBe(false);
   });
 
   it("releases on close when the client goes away before the response finishes", async () => {

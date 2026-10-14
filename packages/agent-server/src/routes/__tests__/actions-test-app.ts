@@ -41,7 +41,7 @@ export interface ActionsTestApp {
   legacyRepo: LegacyActionRepository;
 }
 
-export function buildActionsTestApp(options: { createDelayMs?: number } = {}): ActionsTestApp {
+export function buildActionsTestApp(options: { createDelayMs?: number; holdContext?: <T>(fn: () => T) => T } = {}): ActionsTestApp {
   const warnings: WarnEntry[] = [];
   const testLogger: Logger = {
     ...logger,
@@ -113,6 +113,7 @@ export function buildActionsTestApp(options: { createDelayMs?: number } = {}): A
     req.userId = (req.headers["x-test-user"] as string) ?? "user-A";
     req.activeContext = { kind: "personal", identityId: req.userId };
     req.contextDb = asPersonal(db);
+    if (options.holdContext) req.holdContext = options.holdContext;
     next();
   });
   const module = { orchestrator, registry, instanceRepo, configRepo, legacyRepo } as unknown as ActionsModule;

@@ -56,6 +56,9 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
     });
   };
 
+  /** Runs the handler's awaited work holding the request's context open (see Request.holdContext). */
+  const hold = <T>(req: Request, work: () => Promise<T>): Promise<T> => (req.holdContext ? req.holdContext(work) : work());
+
   const fail = (res: Response, error: unknown, context: Record<string, unknown>) => {
     if (error instanceof ActionOperationError) {
       const status = error.code === "not_found" ? 404 : error.code === "not_allowed" ? 403 : 409;
@@ -184,9 +187,12 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
         return;
       }
       try {
-        // Execution never depends on this request's connection (spec §10.2).
-        const instance = await run[op](s, req.params.id, req.body ?? {});
-        res.json(view(s, instance));
+        // Execution never depends on this request's connection (spec §10.2), nor does the handle it writes to: the handler holds the
+        // context itself, because the request's own lease ends if the client disconnects.
+        await hold(req, async () => {
+          const instance = await run[op](s, req.params.id, req.body ?? {});
+          res.json(view(s, instance));
+        });
       } catch (error) {
         fail(res, error, { route: op, actionId: req.params.id });
       }
@@ -196,12 +202,14 @@ export function createActionsRouter(deps: ActionsRouteDeps): Router {
   router.post("/:id/retry", async (req, res) => {
     const s = scoped(req);
     try {
-      const outcome: RequestOutcome = await s.actions.orchestrator.retry(s.actor!, req.params.id, s.session);
-      if (outcome.kind === "refused") {
-        res.status(422).json({ error: "Retry refused", issues: outcome.issues });
-        return;
-      }
-      res.json(view(s, outcome.instance));
+      await hold(req, async () => {
+        const outcome: RequestOutcome = await s.actions.orchestrator.retry(s.actor!, req.params.id, s.session);
+        if (outcome.kind === "refused") {
+          res.status(422).json({ error: "Retry refused", issues: outcome.issues });
+          return;
+        }
+        res.json(view(s, outcome.instance));
+      });
     } catch (error) {
       fail(res, error, { route: "retry", actionId: req.params.id });
     }

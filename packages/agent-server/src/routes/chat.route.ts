@@ -99,7 +99,10 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
       now: new Date(),
     });
 
-    sendChatMessage(
+    // The turn keeps writing to the request's handle after its awaits (the model call, then the assistant turn and the audit rows), so
+    // it holds the context itself: the request's own lease ends if the client disconnects.
+    const runTurn = (): Promise<void> =>
+      sendChatMessage(
       {
         conversationRepo: conversationsFor(req),
         logger,
@@ -145,6 +148,14 @@ export function createChatRouter(deps: ChatRouteDeps): Router {
         }
         res.status(500).json({ error: "Internal server error" });
       });
+
+    try {
+      void (req.holdContext ? req.holdContext(runTurn) : runTurn());
+    } catch (error) {
+      // The pharmacy could not be held again (it was suspended meanwhile): nothing ran.
+      logger.error("Chat route: could not hold the context", { error: error instanceof Error ? error.message : String(error) });
+      res.status(500).json({ error: "Internal server error" });
+    }
   });
 
   return router;

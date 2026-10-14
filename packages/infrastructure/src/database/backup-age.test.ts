@@ -9,6 +9,7 @@ const registrations = {
     { id: "reg-1", fileName: "aaaa.db" },
     { id: "reg-2", fileName: "bbbb.db" },
   ],
+  activeSince: (id: string) => new Date(id === "reg-1" ? "2026-09-01T00:00:00Z" : "2026-10-09T00:00:00Z"),
 } as never;
 
 describe("newestBackupCopies", () => {
@@ -66,6 +67,14 @@ describe("newestBackupCopies", () => {
     put("2026-10-08", "aaaa.db.enc.part", "2026-10-08T01:00:00Z");
     put("notes", "aaaa.db.enc", "2026-10-08T01:00:00Z");
     expect(ofContext(newestBackupCopies({ outDir, registrations }), "tenant", "reg-1").newestAt).toBeNull();
+  });
+
+  it("tells when each pharmacy became active, so a pharmacy with no copy can be told from a new one", () => {
+    const { outDir, ofContext } = setup();
+    const copies = newestBackupCopies({ outDir, registrations });
+    expect(ofContext(copies, "tenant", "reg-1").activeSince).toEqual(new Date("2026-09-01T00:00:00Z"));
+    expect(ofContext(copies, "tenant", "reg-2").activeSince).toEqual(new Date("2026-10-09T00:00:00Z"));
+    expect(ofContext(copies, "control").activeSince).toBeUndefined();
   });
 
   it("reports none everywhere when the backup folder does not exist", () => {

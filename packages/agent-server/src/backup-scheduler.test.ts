@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Logger } from "@oneon/domain";
-import { newestBackupCopies } from "@oneon/infrastructure";
+import { SqliteIdentityRepository, TenantRegistrationRepository, newestBackupCopies, openControlDb } from "@oneon/infrastructure";
 import { BACKUP_STALE_AFTER_HOURS, BackupScheduler } from "./background-loop.js";
 
 function logger() {
@@ -180,7 +180,7 @@ describe("BackupScheduler age alerts", () => {
   });
   afterEach(() => rmSync(outDir, { recursive: true, force: true }));
 
-  type Copy = { context: "control" | "personal" | "tenant"; registrationId?: string; newestAt: Date | null };
+  type Copy = { context: "control" | "personal" | "tenant"; registrationId?: string; newestAt: Date | null; activeSince?: Date };
   const alertsOf = (log: ReturnType<typeof logger>, kind: string) =>
     log.error.mock.calls.filter((c) => (c[1] as { alert?: string } | undefined)?.alert === kind).map((c) => c[1] as Record<string, unknown>);
   function run(copies: () => Copy[], log = logger()) {
@@ -206,9 +206,88 @@ describe("BackupScheduler age alerts", () => {
   });
 
   it("raises backup_stale with ageHours \"none\" for a pharmacy with no copy at all", async () => {
-    const { scheduler, log } = run(() => [{ context: "tenant", registrationId: "reg-1", newestAt: null }]);
+    const { scheduler, log } = run(() => [{ context: "tenant", registrationId: "reg-1", newestAt: null, activeSince: hoursAgo(40) }]);
     await scheduler.tick();
     expect(alertsOf(log, "backup_stale")).toEqual([{ alert: "backup_stale", context: "tenant", registrationId: "reg-1", ageHours: "none" }]);
+  });
+
+  it("does not alert for a pharmacy with no copy that became active within 26 hours, and does once 26 hours have passed", async () => {
+    const { scheduler, log } = run(() => [
+      { context: "tenant", registrationId: "reg-new", newestAt: null, activeSince: hoursAgo(2) },
+      { context: "tenant", registrationId: "reg-edge", newestAt: null, activeSince: hoursAgo(BACKUP_STALE_AFTER_HOURS) },
+      { context: "tenant", registrationId: "reg-old", newestAt: null, activeSince: hoursAgo(26.5) },
+    ]);
+    await scheduler.tick();
+    expect(alertsOf(log, "backup_stale")).toEqual([{ alert: "backup_stale", context: "tenant", registrationId: "reg-old", ageHours: "none" }]);
+  });
+
+  it("a pharmacy with an old copy is stale whatever its activeSince says", async () => {
+    const { scheduler, log } = run(() => [{ context: "tenant", registrationId: "reg-1", newestAt: hoursAgo(30), activeSince: hoursAgo(1) }]);
+    await scheduler.tick();
+    expect(alertsOf(log, "backup_stale")).toEqual([{ alert: "backup_stale", context: "tenant", registrationId: "reg-1", ageHours: 30 }]);
+  });
+
+  describe("against real registrations", () => {
+    const dirs: string[] = [];
+    afterEach(() => {
+      for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    });
+    function pharmacies() {
+      const dir = mkdtempSync(join(tmpdir(), "scheduler-age-reg-"));
+      dirs.push(dir);
+      const control = openControlDb(join(dir, "control.db"));
+      const operator = new SqliteIdentityRepository(control).createWithLogin({ kind: "google", subject: "op" }).id;
+      const clock = { at: hoursAgo(100) };
+      const registrations = new TenantRegistrationRepository(control, () => clock.at);
+      const jwk = { kty: "OKP", crv: "Ed25519", x: "x" } as never;
+      const sealed = { wrappedKey: "w", ciphertext: "c" } as never;
+      const enrol = (slug: string) =>
+        registrations.create({
+          tenantSlug: slug, displayName: slug, origin: "https://x.example", deploymentKeyId: `d-${slug}`, deploymentPublicKeyJwk: jwk,
+          oneonKeyId: `o-${slug}`, oneonPublicKeyJwk: jwk, oneonPrivateKeySealed: sealed, impressorxTenantId: `irx-${slug}`, enrolledBy: operator,
+        });
+      return { control, registrations, clock, enrol, operator };
+    }
+    const day = (extra: string[]) => {
+      for (const name of ["control", "personal", ...extra]) {
+        const file = join(outDir, "2026-10-10", `${name}.db.enc`);
+        writeFileSync(file, "x");
+        utimesSync(file, hoursAgo(1), hoursAgo(1));
+      }
+    };
+
+    it("a new pharmacy is quiet until 26 hours after enrolment", async () => {
+      const { control, registrations, clock, enrol } = pharmacies();
+      clock.at = hoursAgo(2);
+      enrol("acme");
+      day([]);
+      const first = run(() => newestBackupCopies({ outDir, registrations }));
+      await first.scheduler.tick();
+      expect(alertsOf(first.log, "backup_stale")).toEqual([]);
+
+      const later = new Date(NOW.getTime() + 25 * 60 * 60 * 1000); // 27 hours after enrolment, still without a copy
+      const scheduler = new BackupScheduler({
+        outDir, backupAll: vi.fn(async () => {}), restoreTest: vi.fn(async () => ({ ok: true, integrity: "ok", contextMeta: null })),
+        newestCopies: () => newestBackupCopies({ outDir, registrations }), logger: first.log, now: () => later,
+      });
+      await scheduler.tick();
+      expect(alertsOf(first.log, "backup_stale")).toEqual([expect.objectContaining({ alert: "backup_stale", context: "tenant", ageHours: "none" })]);
+      control.close();
+    });
+
+    it("a pharmacy resumed after a long suspension is quiet for 26 hours from the resume", async () => {
+      const { control, registrations, clock, enrol, operator } = pharmacies();
+      const reg = enrol("acme"); // enrolled 100 hours ago
+      clock.at = hoursAgo(60);
+      registrations.transitionStatus(reg.id, "active", "suspended_by_operator", operator, "operator_suspend");
+      clock.at = hoursAgo(2);
+      registrations.transitionStatus(reg.id, "suspended_by_operator", "active", operator, "operator_resume");
+      day([]); // control and personal fresh; this pharmacy has no copy
+      const { scheduler, log } = run(() => newestBackupCopies({ outDir, registrations }));
+      await scheduler.tick();
+      expect(alertsOf(log, "backup_stale")).toEqual([]);
+      control.close();
+    });
   });
 
   it("does the same for control.db and the personal file", async () => {
@@ -256,7 +335,7 @@ describe("BackupScheduler age alerts", () => {
   });
 
   it("a skipped pharmacy whose only copy is a pre-migration backup: quiet while that copy is fresh, stale once it ages", async () => {
-    const registrations = { listActive: () => [{ id: "reg-skipped", fileName: "skipped.db" }] } as never;
+    const registrations = { listActive: () => [{ id: "reg-skipped", fileName: "skipped.db" }], activeSince: () => hoursAgo(500) } as never;
     const stamp = (folder: string, name: string, at: Date) => {
       mkdirSync(join(outDir, folder), { recursive: true });
       const file = join(outDir, folder, name);

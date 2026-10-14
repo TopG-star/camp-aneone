@@ -217,6 +217,24 @@ export class TenantRegistrationRepository {
   }
 
   /**
+   * When the registration last became servable: the later of its enrolment and its newest move to `active` (a resume or a
+   * re-enrolment). Null when there is no such registration.
+   */
+  activeSince(id: string): Date | null {
+    const row = this.db
+      .prepare(
+        `SELECT MAX(at) AS at FROM (
+           SELECT enrolled_at AS at FROM tenant_registrations WHERE id = ?
+           UNION ALL
+           SELECT created_at AS at FROM tenant_registration_events
+            WHERE tenant_registration_id = ? AND event = 'status_changed' AND json_extract(detail_json, '$.to') = 'active'
+         )`,
+      )
+      .get(id, id) as { at: string | null };
+    return row.at === null ? null : new Date(row.at);
+  }
+
+  /**
    * Moves a registration from `from` to `to` and records the event, only if it is in `from` now (checked and changed in one
    * transaction). "unknown" when there is no such registration, "conflict" when it is in another status.
    */
