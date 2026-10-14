@@ -204,9 +204,19 @@ describe("architecture", { timeout: TIMEOUT_MS }, () => {
     const reads = new RegExp(
       [`${REQ}[^;\\n]*${ID}`, `${ID}[^;\\n]*${REQ}`, String.raw`\{[^}]*${ID}[^}]*\}\s*=\s*${REQ}`].join("|"),
     );
+    // Exempt: the operator-only platform registration routes (rotate-key, suspend, resume). They sit behind the platform-operator
+    // guard, act on the registration the operator names in the path, and never select the request's active context. Only this
+    // exact statement is exempt, only in that file; anything else there that reads an id from the request still fails.
+    const EXEMPT = [{ path: "agent-server/src/routes/platform.route.ts", statement: "const registrationId = String(req.params.id);" }];
+    const withoutExempt = (f: { path: string; text: string }) =>
+      EXEMPT.filter((e) => e.path === f.path).reduce((text, e) => text.split(e.statement).join(""), f.text);
+    for (const e of EXEMPT) {
+      // A stale exemption is removed, not left to cover something new.
+      expect(sources.find((f) => f.path === e.path)?.text.includes(e.statement), `${e.path} no longer contains the exempt statement`).toBe(true);
+    }
     const offenders = sources
       .filter((f) => f.path.startsWith("agent-server/src/routes/") && !isTest(f.path))
-      .filter((f) => reads.test(f.text))
+      .filter((f) => reads.test(withoutExempt(f)))
       .map((f) => f.path);
     expect(offenders).toEqual([]);
   });
