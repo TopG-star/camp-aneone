@@ -254,7 +254,7 @@ Re-enrolment is refused in these cases:
 
 The 502 refusals come after the code has been used, so the admin must issue a new one.
 
-Every registration holds its ImpressoRx tenant id, and re-enrolment always compares the id in the reply with the stored one. A control database with a registration that has no id (one enrolled before ImpressoRx sent it, on a development database) cannot be upgraded: control migration 007 refuses, and the server does not start, with a message naming each such registration (`<registration id> (<slug>)`). Nothing is changed by the refused migration. Give each named registration its id by hand (`UPDATE tenant_registrations SET impressorx_tenant_id = '<the pharmacy's Tenant.id from ImpressoRx>' WHERE id = '<registration id>'`, with the server stopped and a fresh backup), or create the control database again. After the migration the database itself refuses a registration without an id.
+Every registration holds its ImpressoRx tenant id, and re-enrolment always compares the id in the reply with the stored one. A control database with a registration that has no id (one enrolled before ImpressoRx sent it, on a development database) cannot be upgraded: control migration 007 refuses, and the server does not start, with a message naming each such registration (`<registration id> (<slug>)`). Nothing is changed by the refused migration. Such a database predates the id (no production registration does) and must be created again. After the migration the database itself refuses a registration without an id.
 
 Moving a pharmacy to a new origin is not possible from the console. It remains a manual procedure on `control.db`, done with the server stopped and a fresh backup.
 

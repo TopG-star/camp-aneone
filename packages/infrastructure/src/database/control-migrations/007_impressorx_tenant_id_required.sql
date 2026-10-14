@@ -3,8 +3,8 @@
 -- cheaply, so the rule is enforced here, at migration time, and by the triggers below (and in code).
 --
 -- A control file holding a registration without the id refuses this migration, and so the server refuses to start, naming every such
--- registration. Nothing is changed: the migration's transaction rolls back. Such a registration must be given its id by hand, or the
--- control file created again, before this release can start.
+-- registration. Nothing is changed: the migration's transaction rolls back. Such a control file predates the id (no production
+-- registration does) and must be created again (owner decision D1, option b).
 CREATE TEMP TABLE migration_007_missing_ids (registrations TEXT);
 CREATE TEMP TRIGGER migration_007_refuse BEFORE INSERT ON migration_007_missing_ids WHEN NEW.registrations IS NOT NULL
 BEGIN
