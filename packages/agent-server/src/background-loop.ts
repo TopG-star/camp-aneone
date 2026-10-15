@@ -373,7 +373,7 @@ export interface BackupSchedulerDeps {
   backupAll: () => Promise<unknown>;
   /** Owner decisions D2 and D6: when given, each tick also takes this hour's sealed copy if the hour has none, then runs pruneHourly. */
   backupHourly?: () => Promise<unknown>;
-  /** The 48-copy retention (pruneHourlyBackups), run after each successful hourly copy only. Returns what it removed. */
+  /** The per-file 48-copy retention and the .partial sweep (pruneHourlyBackups), run after each successful hourly copy only. Returns what it removed. */
   pruneHourly?: () => string[];
   restoreTest: (file: string) => Promise<RestoreCheck>;
   /** When given, each tick ends by checking every context's newest copy against BACKUP_STALE_AFTER_HOURS. */

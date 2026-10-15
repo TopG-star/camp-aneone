@@ -1,6 +1,6 @@
 # ADR-015: Backup Strategy
 
-## Status: Accepted, with open questions
+## Status: Accepted
 
 ## Date: 2026-10-14
 
@@ -19,7 +19,7 @@ Accepted:
 3. **Suspended pharmacies stay backed up.** A pharmacy suspended by the operator is in the daily set, the hourly set, and the stale check. Startup migrates suspended files too, with the sealed pre-migration copy first, so a release that adds a migration does not leave a suspended file behind and refused by backups. A removed pharmacy is not backed up.
 4. **Alerts.** `backup_stale` is logged at error, every hour until fixed, when the newest restorable copy of `control`, `personal` or a pharmacy is older than 26 hours or missing. A pharmacy with no copy is measured from the later of its enrolment and the last time it became active. `tenant_file_missing` is logged at error every night when an active or suspended pharmacy's file is not on disk. A pharmacy the gate refuses to open is skipped, listed in `skipped.json`, and the day completes without it.
 5. **Never delete the newest copy of any file.** This holds for whoever deletes (by hand, by the hourly retention, or by a later B-retention) and for `control`, `personal` and every pharmacy, including a skipped pharmacy's last good copy under `pre-migration/` or in an old hourly folder.
-6. **Automatic retention of hourly copies only (owner decision D6).** After each successful hourly copy, Oneon keeps the 48 most recent hourly copies and deletes older hourly ones. Daily snapshots and everything under `pre-migration/` are never deleted by Oneon; the operator prunes them. The code counts the 48 most recent complete hourly folders and protects the newest copy of any file inside them. Whether D6 meant 48 per file or 48 per folder is open (below).
+6. **Automatic retention of hourly copies only (owner decisions D6 and Q3).** After each successful hourly copy, each file keeps its own 48 newest hourly copies and its older hourly copies are deleted. A hourly folder is deleted only when it holds no copy that must be kept; otherwise only the copies beyond 48 inside it are deleted. Daily snapshots, everything under `pre-migration/` and the newest copy of any file are never deleted by Oneon; the operator prunes dailies and pre-migration copies.
 7. **Litestream is deferred** until it regains client-side encryption. The daily snapshots are the independent second copy: a separately sealed set written by the nightly job, which the hourly retention never touches. They are not independent of the disk: until a copy has been synced off-site, hourly and daily copies sit on the same disk as the databases, and losing that disk loses them too.
 8. **Restore.** A monthly test restores one pharmacy (rotating) into a temporary folder, runs `PRAGMA integrity_check`, and requires `context_meta` kind `tenant` with the `tenant_id` of the registration that owns the file. `restore-backup` decrypts one file at a time.
 
@@ -30,18 +30,18 @@ Accepted:
 - If the VPS disk is lost, the window is back to the last off-site sync, not the last copy. Off-site sync is the operator's job (DEPLOY.md gives an `rclone` example); Oneon does not do it.
 - A pre-migration copy is taken before each migration, so a file can be restored to its state before that migration.
 
-## Open questions awaiting the owner
+## Former open questions, accepted by the owner (2026-10-15)
 
-These touch deletion, so they wait for the owner (ADR-016). Nothing is built to resolve them.
+These touch deletion, so they went to the owner (ADR-016). Gerry chose option a on each:
 
-1. **Retention per file or per folder.** D6 said the most recent 48 hourly copies per file. The code keeps 48 hourly folders and keeps any file that is the newest copy of itself. The two differ, for example, for a pharmacy that was skipped for some hours: it has fewer than 48 copies among the last 48 folders, and a per-file count would keep more folders for it. The review of the built work raised this as I3.
-2. **Leftover hourly `.partial` folders.** Retention never deletes a `.partial` folder, and a `.partial` folder does not count toward the 48. The ledger records that leftover hourly `.partial` folders are never deleted. Should Oneon delete such leftovers once a newer complete hour exists?
-3. **`rclone copy` versus `rclone sync` off-site.** DEPLOY.md's example uses `rclone sync`, which mirrors deletions, so the hourly copies that retention deletes are deleted off-site as well. `rclone copy` keeps them, and the off-site store then grows without limit unless someone prunes it. Which one is right is a deletion policy for the second copy.
+1. **Retention per file (Q3).** Each file keeps its own 48 newest hourly copies; a folder is deleted only when it holds no copy that must be kept; dailies, pre-migration copies and the newest copy of any file are never deleted. Built in `pruneHourlyBackups` (`HOURLY_BACKUPS_KEPT`). A folder that holds no copy at all is deleted once it is older than the 48 newest complete folders.
+2. **Leftover hourly `.partial` folders (Q4).** An hourly `.partial` folder whose newest write is more than 2 h old is deleted automatically (`HOURLY_PARTIAL_MAX_AGE_MS`), by the same pass. Daily `.partial` folders are not touched.
+3. **`rclone copy` off-site (Q5).** DEPLOY.md uses `rclone copy` (add-only), not `rclone sync`, and excludes `.partial` folders and `.part` files. Off-site copies are pruned by the operator there, never by Oneon.
 
 ## Consequences
 
 - A backup is only as recoverable as `BACKUP_ENCRYPTION_KEY`. DEPLOY.md tells the operator to keep a copy of the key somewhere other than the VPS. Without the key, no backups are made; once any pharmacy is registered, the server refuses to start without it and enrolment is refused.
-- Disk use grows by about 48 hourly copies of every pharmacy and `control`, plus a daily folder per day and pre-migration folders, which the operator prunes until a later B-retention exists.
+- Disk use grows by about 48 hourly copies of every pharmacy and `control`, plus a daily folder per day and pre-migration folders, which the operator prunes until a later B-retention exists. The off-site store only grows (`rclone copy`); the operator prunes it.
 - Alerts are log lines (`alert: "backup_stale"`, `alert: "tenant_file_missing"`). No outside channel exists, so nobody is told unless someone reads the logs (ADR-013 B-25-4).
 - Only one pharmacy per month is restore-tested. A copy of another pharmacy may be unreadable without anyone noticing.
 - Not built: B-retention (deleting daily and pre-migration copies on the file's own schedule, spec section 8.7).

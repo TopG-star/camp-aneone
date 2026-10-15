@@ -77,8 +77,11 @@ export function backupHour(date: Date): string {
   return `${date.toISOString().slice(0, 13)}Z`;
 }
 
-/** Owner decision D6: hourly copies beyond the 48 most recent complete hourly folders are deleted (never a file's newest copy). */
+/** Owner decisions D6 and Q3: each file keeps its own 48 newest hourly copies; older hourly copies are deleted (never a file's newest copy). */
 export const HOURLY_BACKUPS_KEPT = 48;
+
+/** Owner decision Q4: an hourly `.partial` folder whose last write is more than this old is a leftover of a run that died, and is deleted. */
+export const HOURLY_PARTIAL_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 
 /** The folder for the backups taken just before a migration run: `<outDir>/pre-migration/<yyyy-mm-ddThh-mm-ssZ>`. */
 export function preMigrationFolder(outDir: string, now: Date): string {
@@ -282,38 +285,71 @@ export function newestBackupCopies(deps: { outDir: string; registrations: Pick<T
 }
 
 /**
- * Owner decision D6, run after each successful hourly backup. Hourly folders beyond the HOURLY_BACKUPS_KEPT most recent complete ones
- * are deleted, with one exception: the newest copy of any file is never deleted. A file whose newest copy (across every daily, hourly
- * and pre-migration copy) lies in such an old folder stays, with the folder and its `skipped.json`; for example a pharmacy skipped or
- * refused since that hour. A daily folder, anything under `pre-migration/` and an unfinished `.partial` folder are never touched, and a
- * `.partial` folder does not count toward the 48. Returns what was removed: each folder removed whole, and each file removed alone.
+ * Owner decisions D6, Q3 and Q4, run after each successful hourly backup. Hourly retention counts per file:
+ * - each file (control, each pharmacy) keeps its own HOURLY_BACKUPS_KEPT newest copies among the complete hourly folders, by folder hour,
+ *   so a pharmacy skipped for some hours still keeps 48; its older hourly copies are deleted;
+ * - the newest copy of any file, across every daily, hourly and pre-migration copy, is never deleted;
+ * - a complete hourly folder is deleted whole (with its `skipped.json`) only when it holds no copy that must be kept, and, if it holds no
+ *   copy at all, only once it is older than the 48 newest complete folders; otherwise only the copies beyond 48 inside it are deleted;
+ * - an hourly `.partial` folder whose newest write (the folder or anything in it) is more than HOURLY_PARTIAL_MAX_AGE_MS old is deleted;
+ * - daily folders (and their `.partial` folders) and anything under `pre-migration/` are never touched.
+ * Returns what was removed: each folder removed whole, and each file removed alone.
  */
-export function pruneHourlyBackups(deps: { outDir: string }): string[] {
+export function pruneHourlyBackups(deps: { outDir: string; now?: () => Date }): string[] {
   const hourly = join(deps.outDir, "hourly");
+  const now = (deps.now ?? (() => new Date()))().getTime();
+  const removed: string[] = [];
+
+  // Q4: leftovers of an hourly run that never finished.
+  for (const name of subfolders(hourly).filter((n) => n.endsWith(PARTIAL_SUFFIX) && HOUR_FOLDER.test(n.slice(0, -PARTIAL_SUFFIX.length)))) {
+    const folder = join(hourly, name);
+    const lastWrite = Math.max(statSync(folder).mtimeMs, ...readdirSync(folder).map((entry) => statSync(join(folder, entry)).mtimeMs));
+    if (now - lastWrite > HOURLY_PARTIAL_MAX_AGE_MS) {
+      rmSync(folder, { recursive: true, force: true });
+      removed.push(folder);
+    }
+  }
+
   const complete = subfolders(hourly)
     .filter((name) => HOUR_FOLDER.test(name))
-    .sort();
-  const old = new Set(complete.slice(0, Math.max(0, complete.length - HOURLY_BACKUPS_KEPT)).map((name) => join(hourly, name)));
-  if (old.size === 0) return [];
+    .sort()
+    .map((name) => join(hourly, name));
+  if (complete.length === 0) return removed;
 
-  // The newest copy of each file name. On a tie a copy outside the old folders wins, so the one that stays is never one being removed.
+  // The newest copy of each file name anywhere (on a tie, the first found). That copy is never deleted.
   const newest = new Map<string, { folder: string; at: number }>();
   for (const copy of restorableCopies(deps.outDir)) {
     const current = newest.get(copy.name);
-    if (!current || copy.at > current.at || (copy.at === current.at && old.has(current.folder) && !old.has(copy.folder))) newest.set(copy.name, copy);
+    if (!current || copy.at > current.at) newest.set(copy.name, copy);
   }
-  const removed: string[] = [];
-  for (const folder of old) {
-    const files = readdirSync(folder).filter((name) => name.endsWith(EXTENSION));
-    const doomed = files.filter((name) => newest.get(name)?.folder !== folder);
-    if (doomed.length === files.length) {
+
+  // Q3: per file, its hourly copies newest first; the first 48 are kept.
+  const copiesOf = new Map<string, string[]>();
+  for (const folder of [...complete].reverse()) {
+    for (const name of readdirSync(folder).filter((n) => n.endsWith(EXTENSION))) copiesOf.set(name, [...(copiesOf.get(name) ?? []), folder]);
+  }
+  const doomed = new Set<string>();
+  for (const [name, folders] of copiesOf) {
+    for (const folder of folders.slice(HOURLY_BACKUPS_KEPT)) {
+      const top = newest.get(name);
+      if (top && top.folder === folder) continue; // a file's newest copy is never deleted
+      doomed.add(join(folder, name));
+    }
+  }
+
+  const beyondNewestFolders = new Set(complete.slice(0, Math.max(0, complete.length - HOURLY_BACKUPS_KEPT)));
+  for (const folder of complete) {
+    const copies = readdirSync(folder).filter((n) => n.endsWith(EXTENSION)).map((n) => join(folder, n));
+    const going = copies.filter((c) => doomed.has(c));
+    const wholeFolder = copies.length === 0 ? beyondNewestFolders.has(folder) : going.length === copies.length;
+    if (wholeFolder) {
       rmSync(folder, { recursive: true, force: true });
       removed.push(folder);
       continue;
     }
-    for (const name of doomed) {
-      rmSync(join(folder, name), { force: true });
-      removed.push(join(folder, name));
+    for (const copy of going) {
+      rmSync(copy, { force: true });
+      removed.push(copy);
     }
   }
   return removed;
