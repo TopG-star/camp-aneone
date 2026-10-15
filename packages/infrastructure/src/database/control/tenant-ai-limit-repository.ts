@@ -37,6 +37,15 @@ export type TenantLimitChange =
   | { ok: true }
   | { ok: false; reason: "limit_changed" | "prerequisites_missing" | "live_check_required"; current: TenantLimitClass };
 
+/** A lowering authorised from the cached snapshot whose re-check is still pending, as the daily pass lists it. */
+export interface PendingRecheck {
+  versionId: string;
+  membershipId: string;
+  registrationId: string;
+  maxClass: TenantLimitClass;
+  createdAt: string;
+}
+
 /** A lowering authorised from the cached snapshot whose re-check has now been made. */
 export interface ResolvedRecheck {
   versionId: string;
@@ -148,6 +157,18 @@ export class TenantAiLimitRepository {
    * the person still had the permission (`stillPermitted`, from the snapshot ImpressoRx has just delivered), and answers those lowerings.
    * Each is resolved once. The limit itself is never changed here: a lowered class stays.
    */
+  /** The lowerings from the cached snapshot still pending that were made before `before`, oldest first. Reads only. */
+  overdueRechecks(before: Date): PendingRecheck[] {
+    const rows = this.db
+      .prepare(
+        `SELECT r.version_id, r.membership_id, r.created_at, v.tenant_registration_id, v.max_class FROM tenant_ai_limit_rechecks r
+         JOIN tenant_ai_limit_versions v ON v.id = r.version_id
+         WHERE r.rechecked_at IS NULL AND r.created_at < ? ORDER BY r.created_at, r.rowid`,
+      )
+      .all(before.toISOString()) as Array<{ version_id: string; membership_id: string; created_at: string; tenant_registration_id: string; max_class: TenantLimitClass }>;
+    return rows.map((r) => ({ versionId: r.version_id, membershipId: r.membership_id, registrationId: r.tenant_registration_id, maxClass: r.max_class, createdAt: r.created_at }));
+  }
+
   resolveRechecks(membershipId: string, stillPermitted: boolean): ResolvedRecheck[] {
     return this.db
       .transaction((): ResolvedRecheck[] => {

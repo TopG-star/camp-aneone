@@ -90,7 +90,8 @@ describe("tenant AI limit routes (spec 9.4)", () => {
     const viewerMembership = memberships.upsertFromHandoff({ identityId: viewer.id, tenantRegistrationId: registration.id, externalUserId: "staff-viewer", role: "Staff" });
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
     const limits = new TenantAiLimitRepository(control, () => new Date(NOW));
-    // As the container wires it: a snapshot from ImpressoRx is applied, then resolves the membership's pending re-checks (spec 9.4).
+    // As the container wires it: a snapshot from ImpressoRx is applied, then resolves the membership's pending re-checks, and a local
+    // revoke of the membership's access resolves them as lost (spec 9.4).
     const recheck = createAiLimitRecheck({ limits, logger });
     const client = createImpressoRxClient({
       control,
@@ -98,8 +99,9 @@ describe("tenant AI limit routes (spec 9.4)", () => {
       enrolment,
       onSnapshot: (id, snapshot) => {
         memberships.applySnapshot(id, snapshot);
-        recheck(id, snapshot.permissions);
+        recheck.afterSnapshot(id, snapshot.permissions, memberships.findById(id)?.status === "active");
       },
+      onAccessRevoked: (id, reason) => recheck.accessEnded(id, reason),
       fetchImpl,
       logger,
       sleep: async () => undefined,
@@ -647,7 +649,7 @@ describe("tenant AI limit routes (spec 9.4)", () => {
           expect(alerts(s)).toEqual([
             [
               expect.any(String),
-              { alert: "ai_limit_lowered_without_permission", membershipId: s.adminMembership.id, registrationId: s.registration.id, versionId, maxClass: "D0" },
+              { alert: "ai_limit_lowered_without_permission", membershipId: s.adminMembership.id, registrationId: s.registration.id, versionId, maxClass: "D0", trigger: "snapshot" },
             ],
           ]);
           expect(s.limits.current(s.registration.id)).toBe("D0");
@@ -686,6 +688,46 @@ describe("tenant AI limit routes (spec 9.4)", () => {
           s.fake.snapshots.set("staff-admin", { ...ADMIN_SNAPSHOT, permissions: ["jobs.read"] });
           await put(s, "D0");
           expect(alerts(s)).toHaveLength(1);
+        });
+
+        // Owner decision 2026-10-15 (Q2): these resolve a pending lowering as permission lost, with the same alert.
+        const lostOutcome = (s: S) => s.control.prepare("SELECT outcome FROM tenant_ai_limit_rechecks").all();
+
+        it("a remote 401 that suspends the membership resolves it as lost", async () => {
+          const s = await setup();
+          await lowerFromCache(s);
+          for (const grant of s.fake.grants.values()) if (grant.userId === "staff-admin") grant.status = "revoked";
+
+          const res = await put(s, "D0");
+
+          expect(res.body).toMatchObject({ error: "membership_suspended" });
+          expect(alerts(s)).toEqual([[expect.any(String), expect.objectContaining({ alert: "ai_limit_lowered_without_permission", membershipId: s.adminMembership.id, trigger: "membership_suspended" })]]);
+          expect(lostOutcome(s)).toEqual([{ outcome: "permission_lost" }]);
+          expect(s.limits.current(s.registration.id)).toBe("D0");
+        });
+
+        it("a snapshot that leads to suspension resolves it as lost, even while it still lists settings.oneon, and never as confirmed first", async () => {
+          const s = await setup();
+          await lowerFromCache(s);
+          s.fake.snapshots.set("staff-admin", { ...ADMIN_SNAPSHOT, tenantStatus: "Suspended" });
+
+          const res = await put(s, "D0");
+
+          expect(res.body).toMatchObject({ error: "membership_suspended" });
+          expect(alerts(s)).toHaveLength(1);
+          expect(s.logger.info).not.toHaveBeenCalledWith(expect.stringMatching(/confirmed/i), expect.anything());
+          expect(lostOutcome(s)).toEqual([{ outcome: "permission_lost" }]);
+        });
+
+        it("a local revoke of the person's grant resolves it as lost", async () => {
+          const s = await setup();
+          await lowerFromCache(s);
+          const grant = s.client.listGrantsFor(s.admin.id).find((g) => g.status === "active")!;
+
+          await s.client.revokeGrantFor(s.admin.id, grant.id);
+
+          expect(alerts(s)).toEqual([[expect.any(String), expect.objectContaining({ membershipId: s.adminMembership.id, trigger: "revoked_by_person" })]]);
+          expect(lostOutcome(s)).toEqual([{ outcome: "permission_lost" }]);
         });
 
         it("a lowering made with the live check is never re-checked", async () => {

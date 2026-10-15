@@ -88,6 +88,11 @@ export interface ImpressoRxClientDeps {
   enrolment: Pick<EnrolmentService, "oneonSigningKeys">;
   /** Called after every successful exchange and after me(), so the membership snapshot stays fresh (spec 4.6). */
   onSnapshot: (membershipId: string, snapshot: MembershipSnapshot) => void;
+  /**
+   * Called after a membership's access is revoked here: every grant of the membership (revokeForMembership, as on suspension) or one
+   * the person gives up (revokeGrantFor). `reason` is the revoke reason. It must not throw.
+   */
+  onAccessRevoked?: (membershipId: string, reason: string) => void;
   fetchImpl?: FetchLike;
   clock?: () => Date;
   logger?: Logger;
@@ -199,6 +204,7 @@ export class ImpressoRxClient {
   /** Revokes every grant of the membership locally (nothing is sent), e.g. after ImpressoRx refuses it. */
   revokeForMembership(membershipId: string, reason: string): void {
     for (const id of this.deps.grants.revokeForMembership(membershipId, reason)) this.dropTokens(id);
+    this.deps.onAccessRevoked?.(membershipId, reason);
   }
 
   /**
@@ -238,6 +244,7 @@ export class ImpressoRxClient {
     if (!record || record.identityId !== identityId) return null;
     this.deps.grants.revoke(grantId, "revoked_by_person");
     this.dropTokens(grantId);
+    this.deps.onAccessRevoked?.(record.membershipId, "revoked_by_person");
     return { remote: await this.revokeRemotely(grantId) };
   }
 
@@ -675,6 +682,7 @@ export function createImpressoRxClient(opts: {
   grantMasterKeyB64: string;
   enrolment: Pick<EnrolmentService, "oneonSigningKeys">;
   onSnapshot: (membershipId: string, snapshot: MembershipSnapshot) => void;
+  onAccessRevoked?: (membershipId: string, reason: string) => void;
   fetchImpl?: FetchLike;
   logger?: Logger;
   clock?: () => Date;
@@ -686,6 +694,7 @@ export function createImpressoRxClient(opts: {
     grants: new GrantStore(opts.control, opts.grantMasterKeyB64, opts.clock),
     enrolment: opts.enrolment,
     onSnapshot: opts.onSnapshot,
+    onAccessRevoked: opts.onAccessRevoked,
     fetchImpl: opts.fetchImpl,
     logger: opts.logger,
     clock: opts.clock,

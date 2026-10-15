@@ -220,7 +220,7 @@ export function createContainer(env: Env): AppContainer {
   const memberships = new MembershipRepository(control);
   const handoffJti = new UsedHandoffJti(control);
   const tenantAiLimits = new TenantAiLimitRepository(control);
-  // Spec 9.4: every snapshot ImpressoRx delivers also re-checks the membership's AI limit lowerings made from its cached snapshot.
+  // Spec 9.4: every snapshot ImpressoRx delivers, and the end of a membership's access, re-checks its lowerings from the cached snapshot.
   const recheckAiLimit = createAiLimitRecheck({ limits: tenantAiLimits, logger: new StructuredLogger("tenant-settings", env.LOG_LEVEL) });
   const impressorx = env.ONEON_GRANT_MASTER_KEY
     ? createImpressoRxClient({
@@ -229,8 +229,10 @@ export function createContainer(env: Env): AppContainer {
         enrolment,
         onSnapshot: (membershipId, snapshot) => {
           memberships.applySnapshot(membershipId, snapshot);
-          recheckAiLimit(membershipId, snapshot.permissions);
+          recheckAiLimit.afterSnapshot(membershipId, snapshot.permissions, memberships.findById(membershipId)?.status === "active");
         },
+        // A remote 401 that suspends or revokes the membership revokes its grants here, as does a local revoke: a pending lowering is lost.
+        onAccessRevoked: (membershipId, reason) => recheckAiLimit.accessEnded(membershipId, reason),
         logger,
       })
     : null;

@@ -302,4 +302,26 @@ describe("tenant AI limit repository (spec 9.4)", () => {
       expect(repo.resolveRechecks("m1", true)).toEqual([]);
     });
   });
+
+  describe("overdueRechecks (the daily pass, spec 9.4)", () => {
+    const lowerFromCache = (repo: TenantAiLimitRepository, membershipId: string, registrationId = "r1") =>
+      repo.change({ registrationId, maxClass: "D0", setBy: "admin", liveCheckRef: "cached", cachedSnapshot: { membershipId } }, () => null);
+
+    it("lists the lowerings still pending that were made before the cutoff, oldest first, and nothing it resolves", () => {
+      const { repo, advance } = setup();
+      lowerFromCache(repo, "m1"); // 10:00
+      advance(60 * 60 * 1000);
+      lowerFromCache(repo, "m2", "r2"); // 11:00
+      advance(60 * 60 * 1000);
+      lowerFromCache(repo, "m3", "r2"); // 12:00, resolved below
+      repo.resolveRechecks("m3", true);
+
+      expect(repo.overdueRechecks(new Date("2026-10-08T10:00:00.000Z"))).toEqual([]);
+      expect(repo.overdueRechecks(new Date("2026-10-08T10:00:00.001Z"))).toEqual([
+        { versionId: repo.history("r1")[0]!.id, membershipId: "m1", registrationId: "r1", maxClass: "D0", createdAt: "2026-10-08T10:00:00.000Z" },
+      ]);
+      expect(repo.overdueRechecks(new Date("2026-10-09T00:00:00.000Z")).map((r) => r.membershipId)).toEqual(["m1", "m2"]);
+      expect(repo.overdueRechecks(new Date("2026-10-09T00:00:00.000Z"))).toHaveLength(2); // listing resolves nothing
+    });
+  });
 });

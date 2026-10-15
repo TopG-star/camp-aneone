@@ -14,6 +14,7 @@ import { createContainer } from "./container.js";
 import { registerRoutes } from "./routes/index.js";
 import { BackgroundLoop, BackupScheduler, DailyJob, PeriodicJob } from "./background-loop.js";
 import { checkLinks, deploymentKeyRefreshJob, writeRollups } from "./tenant-jobs.js";
+import { overdueRecheckJob } from "./ai-limit-recheck.js";
 import { prepareStorage } from "./storage-startup.js";
 import { runActionRecovery, runActionStartupTasks, runTenantActionRecovery } from "./actions-wiring.js";
 import {
@@ -378,6 +379,8 @@ if (backupKey) {
       logger: jobLogger,
     }),
     new DailyJob({ name: "Link check", run: async () => void (await checkLinks({ ...jobDeps, logger: jobLogger })), logger: jobLogger }),
+    // Spec 9.4: an alert for any AI limit lowering from the cached snapshot still not re-checked after 24 h.
+    overdueRecheckJob(container.tenantAiLimits, new StructuredLogger("tenant-settings", env.LOG_LEVEL)),
   );
   // Spec §7.4: recovery runs every cycle, so a pharmacy's actions are swept and expired on the loop's interval, not only at boot.
   if (backgroundLoop) {
