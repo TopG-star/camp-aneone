@@ -864,7 +864,7 @@ Every ruling below is recorded as it was made, with the status it has today. Thi
 - **Basis:** Review of item 4: A to H met as written, with three Important findings. I1 a suspended file behind a new tenant migration was refused by backups (startup migrated active files only), so D5's intent failed. I2 an async suspend or resume handler had try/finally but no catch (Express 4 drops the rejection: the request hangs, and Node 15 or later can crash). I3 hourly retention is per folder, but D6 said per file. The controller judged I1 and I2 not owner areas (error handling; a schema migration with a backup first, nothing deleted).
 - **Assumption:** Not recorded.
 - **Cost if wrong:** A suspended pharmacy's file is migrated while not served.
-- **Status:** Accepted. Commits 943077f..c321ee4. I3 is not fixed; it waits for the owner, with leftover hourly `.partial` folders (M2) and `rclone sync` versus `copy` (M3): ADR-015.
+- **Status:** Accepted. Commits 943077f..c321ee4. I3 (retention per file), leftover hourly `.partial` folders (M2) and `rclone sync` versus `copy` (M3) were decided by the owner on 2026-10-15 (Q3 to Q5) and built: ADR-015.
 - **Decided by:** controller ruling
 
 ## ImpressoRx-side rulings (index)
