@@ -9,6 +9,7 @@ export * from "./assemble.js";
 // `decide` and `DecideInput` collide with the action-policy exports in src/index.ts, so the barrel exposes them under boundary-specific names.
 export {
   decide as decideModelCall,
+  lowestOfLayers,
   HISTORY_CLASS,
   USER_MESSAGE_CLASS,
   type DecideInput as ModelCallDecideInput,

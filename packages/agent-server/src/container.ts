@@ -5,7 +5,6 @@ import type {
   ClassificationFeedbackRepository,
   DeadlineRepository,
   NotificationRepository,
-  ConversationRepository,
   PreferenceRepository,
   PushSubscriptionRepository,
   BankStatementRepository,
@@ -26,14 +25,31 @@ import type {
 } from "@oneon/domain";
 
 import {
-  createDatabase,
-  runMigrations,
+  openControlDb,
+  type ControlDb,
+  PlatformOperatorRepository,
+  TenantRegistrationRepository,
+  EnrolmentService,
+  MembershipRepository,
+  TenantAiLimitRepository,
+  UsedHandoffJti,
+  createImpressoRxClient,
+  type ImpressoRxClient,
+  ContextDbGate,
+  rawDb,
+  backupScratchDir,
+  migrateTenantFile,
+  backfillIdentities,
+  ensureIdentityForUser,
+  ensureIdentityAnchor,
+  SqliteIdentityRepository,
+  LinkIntentRepository,
+  type IdentityRepository,
   SqliteInboundItemRepository,
   SqliteClassificationRepository,
   SqliteClassificationFeedbackRepository,
   SqliteDeadlineRepository,
   SqliteNotificationRepository,
-  SqliteConversationRepository,
   SqlitePreferenceRepository,
   SqlitePushSubscriptionRepository,
   SqliteBankStatementRepository,
@@ -67,7 +83,11 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type { BackgroundLoop } from "./background-loop.js";
-import { createActionsModule, type ActionsModule } from "./actions-wiring.js";
+import { createActionsFor, type ActionsModule } from "./actions-wiring.js";
+import { activeMembershipLookup } from "./context-wiring.js";
+import { createAiLimitRecheck } from "./ai-limit-recheck.js";
+import { createSnapshotRefresher, type SnapshotRefresher } from "./middleware/active-context.js";
+import { createTenantDelegation } from "./tenant-delegation.js";
 import { createModelWiring } from "./model-wiring.js";
 import type { AiDataChoiceRepository, ModelAuditRepository, ModelGateway, ModelRouting, ProviderId, ProviderOverride } from "@oneon/application";
 
@@ -84,13 +104,43 @@ export interface AppContainer {
   classificationFeedbackRepo: ClassificationFeedbackRepository;
   deadlineRepo: DeadlineRepository;
   notificationRepo: NotificationRepository;
-  conversationRepo: ConversationRepository;
   preferenceRepo: PreferenceRepository;
   pushSubscriptionRepo: PushSubscriptionRepository;
   bankStatementRepo: BankStatementRepository;
   bankStatementParseRepo: BankStatementParseRepository;
   bankStatementParserRegistry: BankStatementParserRegistry;
   userRepo: UserRepository | null;
+  identityRepo: IdentityRepository;
+  /** Link intents (spec §4.5), bound to a secret the browser keeps. */
+  linkIntents: LinkIntentRepository;
+  platformOperators: PlatformOperatorRepository;
+  tenantRegistrations: TenantRegistrationRepository;
+  enrolment: EnrolmentService;
+  memberships: MembershipRepository;
+  /** Each pharmacy's AI data limit (spec 9.4); the model gateway reads it on every call. */
+  tenantAiLimits: TenantAiLimitRepository;
+  handoffJti: UsedHandoffJti;
+  /** The sole holder of delegation grants; null until ONEON_GRANT_MASTER_KEY is set. */
+  impressorx: ImpressoRxClient | null;
+  /** Keeps memberships' snapshots fresh and checks an approver live. One per process, so a membership's refresh is single-flight across its users. */
+  snapshots: SnapshotRefresher;
+  /** The personal database handle (the same one the personal repositories were built from). */
+  openPersonal: () => import("@oneon/domain").PersonalDb;
+  /** Runs `fn` with a tenant's database leased from the gate for exactly as long as it runs (refuses when the registration is not active). */
+  withTenant: <T>(registrationId: string, fn: (db: import("@oneon/domain").TenantDb) => T) => T;
+  /** Opens a tenant's database and holds it until `release()` (a request's handle: the LRU never closes it meanwhile). */
+  leaseTenant: (registrationId: string) => import("@oneon/infrastructure").TenantLease;
+  /** Tells the gate a registration stopped being servable, so its open file closes now or at the last release. */
+  detachTenant: (registrationId: string) => void;
+  /** Creates a new tenant's database file (enrolment only). */
+  createTenantFile: (registrationId: string, tenantId: string) => void;
+  /** Migrates one pharmacy's file if a migration is pending, with a sealed copy first (Resume and re-enrolment, owner decision D5). */
+  migrateTenantFile: (registration: { id: string; tenantId: string; fileName: string }) => Promise<void>;
+  /** What the nightly backup reads: the gate that hands out every context file's handle, and the control database. */
+  backupSources: { gate: ContextDbGate; control: ControlDb };
+  ensureIdentity: (user: { id: string; email: string }) => void;
+  /** Makes sure an identity has its row in the personal database (linking a Google login to an existing identity needs it). */
+  ensurePersonalUser: (user: { id: string; email: string }) => void;
   userProfileRepo: UserProfileRepository;
   oauthTokenRepo: OAuthTokenRepository | null;
   personalMemoryNoteRepo: PersonalMemoryNoteRepository;
@@ -98,6 +148,8 @@ export interface AppContainer {
 
   // ── External Ports ────────────────────────────────────────
   modelGateway: ModelGateway | null;
+  /** The gateway for a request's handle: its model calls are audited in that handle's file. Tenant requests must use this, never `modelGateway`. */
+  modelGatewayFor: (db: import("@oneon/domain").ContextDb) => ModelGateway | null;
   /** Gives the model gateway the registered tools' names and descriptions, so Oneon's own words are not mistaken for restored values. */
   setModelToolVocabulary: (tools: Array<{ name: string; description: string }>) => void;
   modelRouting: ModelRouting | null;
@@ -125,6 +177,8 @@ export interface AppContainer {
 
   // ── Actions (spec: Action Spec framework) ─────────────────
   actions: ActionsModule;
+  /** The actions module for a request's handle (memoized per handle). Tenant requests must use this, never `actions`. */
+  actionsFor: (db: import("@oneon/domain").ContextDb) => ActionsModule;
   notificationWriter: NotificationWriter;
 
   // ── Background Loop (mutable, set after creation) ─────────
@@ -142,11 +196,56 @@ export function createContainer(env: Env): AppContainer {
 
   // ── Database ──────────────────────────────────────────────
   mkdirSync(dirname(env.DATABASE_PATH), { recursive: true });
-  const db = createDatabase(env.DATABASE_PATH);
-  runMigrations(db);
+  mkdirSync(dirname(env.CONTROL_DATABASE_PATH), { recursive: true });
+  const control = openControlDb(env.CONTROL_DATABASE_PATH);
+  const gate = new ContextDbGate({
+    control,
+    personalPath: env.DATABASE_PATH,
+    tenantDir: env.TENANT_DATA_DIR,
+  });
+  const personal = gate.openPersonal();
+  const db = rawDb(personal);
+  const backfilled = backfillIdentities(personal, control);
+  if (backfilled > 0) logger.info("Identities backfilled", { count: backfilled });
+  // A merge re-owns rows in the pharmacy files, so the repository opens them through the gate.
+  const identityRepo = new SqliteIdentityRepository(control, (registrationId, fn) => gate.withTenant(registrationId, fn));
+  const linkIntents = new LinkIntentRepository(control);
+  const platformOperators = new PlatformOperatorRepository(control);
+  const tenantRegistrations = new TenantRegistrationRepository(control);
+  const enrolment = new EnrolmentService({
+    repo: tenantRegistrations,
+    oneonOrigin: env.PUBLIC_URL,
+    masterKeyB64: env.ONEON_SIGNING_KEY_MASTER_KEY,
+  });
+  const memberships = new MembershipRepository(control);
+  const handoffJti = new UsedHandoffJti(control);
+  const tenantAiLimits = new TenantAiLimitRepository(control);
+  // Spec 9.4: every snapshot ImpressoRx delivers, and the end of a membership's access, re-checks its lowerings from the cached snapshot.
+  const recheckAiLimit = createAiLimitRecheck({ limits: tenantAiLimits, logger: new StructuredLogger("tenant-settings", env.LOG_LEVEL) });
+  const impressorx = env.ONEON_GRANT_MASTER_KEY
+    ? createImpressoRxClient({
+        control,
+        grantMasterKeyB64: env.ONEON_GRANT_MASTER_KEY,
+        enrolment,
+        onSnapshot: (membershipId, snapshot) => {
+          memberships.applySnapshot(membershipId, snapshot);
+          recheckAiLimit.afterSnapshot(membershipId, snapshot.permissions, memberships.findById(membershipId)?.status === "active");
+        },
+        // A remote 401 that suspends or revokes the membership revokes its grants here, as does a local revoke: a pending lowering is lost.
+        onAccessRevoked: (membershipId, reason) => recheckAiLimit.accessEnded(membershipId, reason),
+        logger,
+      })
+    : null;
+  if (!impressorx) logger.warn("ImpressoRx hand-off: disabled (missing ONEON_GRANT_MASTER_KEY)");
+  const snapshots = createSnapshotRefresher({
+    memberships,
+    registrations: tenantRegistrations,
+    client: impressorx,
+    logger: new StructuredLogger("active-context", env.LOG_LEVEL),
+  });
   logger.info("Database ready", { path: env.DATABASE_PATH });
 
-  const modelWiring = createModelWiring(env, { db, logger });
+  const modelWiring = createModelWiring(env, { context: personal, logger, registrations: tenantRegistrations, tenantLimits: tenantAiLimits });
 
   // ── Repositories ──────────────────────────────────────────
   const inboundItemRepo = new SqliteInboundItemRepository(db);
@@ -155,7 +254,6 @@ export function createContainer(env: Env): AppContainer {
     new SqliteClassificationFeedbackRepository(db);
   const deadlineRepo = new SqliteDeadlineRepository(db);
   const notificationRepo = new SqliteNotificationRepository(db);
-  const conversationRepo = new SqliteConversationRepository(db);
   const preferenceRepo = new SqlitePreferenceRepository(db);
   const pushSubscriptionRepo = new SqlitePushSubscriptionRepository(db);
   const bankStatementRepo = new SqliteBankStatementRepository(db);
@@ -382,8 +480,15 @@ export function createContainer(env: Env): AppContainer {
     },
   };
 
-  const actions = createActionsModule({
-    db,
+  const activeMemberships = activeMembershipLookup(tenantRegistrations, memberships);
+  const actionsFor = createActionsFor({
+    memberships: activeMemberships,
+    delegation: createTenantDelegation({
+      client: impressorx,
+      memberships: activeMemberships,
+      snapshots,
+      logger: new StructuredLogger("tenant-delegation", env.LOG_LEVEL),
+    }),
     publicUrl: env.PUBLIC_URL,
     calendarId: env.CALENDAR_ID,
     calendarCacheTtlMs: env.CALENDAR_CACHE_TTL_MS,
@@ -396,6 +501,7 @@ export function createContainer(env: Env): AppContainer {
     createGoogleTokenProvider,
     logger,
   });
+  const actions = actionsFor(personal);
 
   // ── Power Automate status ─────────────────────────────────
   if (env.PA_OUTLOOK_WEBHOOK_SECRET) {
@@ -414,6 +520,7 @@ export function createContainer(env: Env): AppContainer {
   function shutdown(): void {
     logger.info("Shutting down...");
     db.close();
+    control.close();
     logger.info("Database connection closed");
   }
 
@@ -425,13 +532,45 @@ export function createContainer(env: Env): AppContainer {
     classificationFeedbackRepo,
     deadlineRepo,
     notificationRepo,
-    conversationRepo,
     preferenceRepo,
     pushSubscriptionRepo,
     bankStatementRepo,
     bankStatementParseRepo,
     bankStatementParserRegistry,
     userRepo,
+    identityRepo,
+    linkIntents,
+    platformOperators,
+    tenantRegistrations,
+    enrolment,
+    memberships,
+    tenantAiLimits,
+    handoffJti,
+    impressorx,
+    snapshots,
+    openPersonal: () => personal,
+    withTenant: (registrationId, fn) => gate.withTenant(registrationId, fn),
+    leaseTenant: (registrationId) => gate.lease(registrationId),
+    detachTenant: (registrationId) => gate.detach(registrationId),
+    createTenantFile: (registrationId, tenantId) => void gate.createTenantFile(registrationId, tenantId),
+    // The same sealed pre-migration copy as at startup. The key is always set once a registration exists (prepareStorage refuses otherwise).
+    migrateTenantFile: (registration) =>
+      migrateTenantFile(
+        {
+          gate,
+          backup: env.BACKUP_ENCRYPTION_KEY
+            ? { outDir: env.BACKUP_DIR, keyB64: env.BACKUP_ENCRYPTION_KEY, now: () => new Date(), scratchDir: backupScratchDir(env.CONTROL_DATABASE_PATH) }
+            : undefined,
+        },
+        registration,
+      ),
+    backupSources: { gate, control },
+    ensureIdentity: (user) => void ensureIdentityForUser(control, user),
+    ensurePersonalUser: (user) => {
+      // Without the OAuth key there is no user repository: the anchor row (the same one tenant files use) is what the foreign keys need.
+      if (userRepo) userRepo.upsert(user);
+      else ensureIdentityAnchor(personal, user.id);
+    },
     userProfileRepo,
     oauthTokenRepo,
     personalMemoryNoteRepo,
@@ -440,6 +579,7 @@ export function createContainer(env: Env): AppContainer {
     getEligibleUsers,
     createGoogleTokenProvider,
     modelGateway: modelWiring.gateway,
+    modelGatewayFor: modelWiring.gatewayFor,
     setModelToolVocabulary: modelWiring.setToolVocabulary,
     modelRouting: modelWiring.routing,
     aiDataChoices: modelWiring.choices,
@@ -453,6 +593,7 @@ export function createContainer(env: Env): AppContainer {
     notificationPort,
     transactionRunner,
     actions,
+    actionsFor,
     notificationWriter,
     backgroundLoop: null,
     logger,

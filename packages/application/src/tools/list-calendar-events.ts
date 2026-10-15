@@ -28,6 +28,7 @@ export function createListCalendarEventsTool(
   return {
     name: "list_calendar_events",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "List Google Calendar events within a time range. Returns event titles, times, attendees, and locations.",
     inputSchema: listCalendarEventsSchema,

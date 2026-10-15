@@ -37,6 +37,7 @@ export function createListNotificationsTool(
   return {
     name: "list_notifications",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "List notifications. By default returns only unread notifications. Set all=true to include read ones.",
     inputSchema: listNotificationsSchema,

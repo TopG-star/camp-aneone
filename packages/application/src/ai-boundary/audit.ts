@@ -13,6 +13,9 @@ export interface ModelDecisionRecord {
   identityId: string;
   tenantId: string | null;
   membershipId: string | null;
+  /** The conversation and the turn (the id of the user message row that started it) this call belongs to; null for a call that is not a chat turn. */
+  conversationId: string | null;
+  turnId: string | null;
   purpose: string;
   channel: string | null;
   provider: string;

@@ -1,3 +1,5 @@
+import { PERSONAL_CONTEXT_MESSAGE, PERSONAL_CONTEXT_REQUIRED, isContextRefusal } from "./context";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 export class ApiError extends Error {
@@ -19,6 +21,14 @@ async function readErrorMessage(res: Response): Promise<string> {
 
   if (shouldAttemptJson(contentType)) {
     const body = await res.json().catch(() => ({}));
+    // A hand-off session is told by the server that Personal is not on offer for it; a Google session in a pharmacy can just switch.
+    if (body.error === PERSONAL_CONTEXT_REQUIRED) {
+      return typeof body.message === "string" && body.message.trim().length > 0 ? body.message : PERSONAL_CONTEXT_MESSAGE;
+    }
+    // A context that cannot open explains itself to the person (the code alone is not a message).
+    if (typeof body.message === "string" && body.message.trim().length > 0 && (isContextRefusal(body.error) || body.error === "context_unavailable")) {
+      return body.message;
+    }
     if (typeof body.error === "string" && body.error.trim().length > 0) {
       const issues: string[] = Array.isArray(body.issues)
         ? body.issues.filter((i: unknown): i is string => typeof i === "string")
@@ -93,7 +103,11 @@ export async function apiFetch<T>(
   const res = await fetch(url, { ...init, headers, credentials: "include" });
 
   if (!res.ok) {
-    if (options?.redirectOnAuth !== false || res.status === 401) {
+    // A pharmacy that cannot open (stale details, switched off), or a personal-only route reached from one, is shown to
+    // the person; signing in again would not help.
+    const refusalCode = res.status === 403 ? ((await res.clone().json().catch(() => null)) as { error?: unknown } | null)?.error : undefined;
+    const contextRefusal = isContextRefusal(refusalCode) || refusalCode === PERSONAL_CONTEXT_REQUIRED;
+    if (!contextRefusal && (options?.redirectOnAuth !== false || res.status === 401)) {
       maybeRedirectToSignIn(res.status);
     }
     const message = await readErrorMessage(res);

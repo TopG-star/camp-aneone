@@ -6,7 +6,9 @@ import {
 } from "./run-intent-loop.js";
 import { z } from "zod";
 import type { Logger } from "@oneon/domain";
-import { createToolRegistry, type ToolRegistry, type ToolExecutionResult } from "../tools/tool-registry.js";
+import { createToolRegistry, type TenantToolScope, type ToolRegistry, type ToolExecutionResult } from "../tools/tool-registry.js";
+import { createActionRegistry } from "../actions/registry.js";
+import { InMemoryActionRepo } from "../actions/__tests__/in-memory-repos.js";
 import type { ModelTurn } from "../ai-boundary/gateway.js";
 import { answered, blocked, denied, stubGateway } from "../ai-boundary/__tests__/stub-gateway.js";
 
@@ -62,6 +64,7 @@ function createMockToolRegistry(
       return result;
     }),
     list: vi.fn(() => []),
+    listFor: vi.fn(() => []),
     get: vi.fn(),
     has: vi.fn((name: string) => name in results),
   };
@@ -575,9 +578,9 @@ describe("runIntentLoop", () => {
     );
   });
 
-  it("overwrites AI-supplied userId/turnId/turnExcerpt with the server values", async () => {
+  it("overwrites AI-supplied userId/turnId/turnExcerpt/modelCallId with the server values", async () => {
     const extractor = createMockExtractor([
-      [{ tool: "list_deadlines", parameters: { userId: "evil", turnId: "evil", turnExcerpt: "evil", from: "x" } }],
+      [{ tool: "list_deadlines", parameters: { userId: "evil", turnId: "evil", turnExcerpt: "evil", modelCallId: "evil", from: "x" } }],
       [{ tool: "none", parameters: {} }],
     ]);
     const registry = createMockToolRegistry({
@@ -594,12 +597,13 @@ describe("runIntentLoop", () => {
       userId: "user-123",
       turnId: "t1",
       turnExcerpt: "What are my deadlines?",
+      modelCallId: "c",
     });
   });
 
   it("drops AI-supplied identity keys when the server supplies none", async () => {
     const extractor = createMockExtractor([
-      [{ tool: "list_deadlines", parameters: { userId: "evil", turnId: "evil", turnExcerpt: "evil", from: "x" } }],
+      [{ tool: "list_deadlines", parameters: { userId: "evil", turnId: "evil", turnExcerpt: "evil", modelCallId: "evil", from: "x" } }],
       [{ tool: "none", parameters: {} }],
     ]);
     const registry = createMockToolRegistry({
@@ -611,7 +615,7 @@ describe("runIntentLoop", () => {
       defaultInput(),
     );
 
-    expect(registry.execute).toHaveBeenCalledWith("list_deadlines", { from: "x" });
+    expect(registry.execute).toHaveBeenCalledWith("list_deadlines", { from: "x", modelCallId: "c" });
   });
 
   // ── Context Assembly ─────────────────────────────────────
@@ -626,5 +630,39 @@ describe("runIntentLoop", () => {
     expect(gateway.requests[0].purpose).toBe("intent_extraction");
     expect(gateway.requests[0].parts.some((p) => p.kind === "record" && p.source.startsWith("tool:"))).toBe(false);
     expect(gateway.requests[1].parts.some((p) => p.kind === "record" && p.source === "tool:list_deadlines")).toBe(true);
+  });
+});
+
+describe("runIntentLoop in a tenant context", () => {
+  const logger = createMockLogger();
+  const tenantScope: TenantToolScope = { identityId: "i1", tenantId: "t1", membershipId: "m1", actions: { instanceRepo: new InMemoryActionRepo(() => NOW), registry: createActionRegistry([]) } };
+  const intents = (tool: string) => [[{ tool, parameters: {} }], [{ tool: "none", parameters: {} }]];
+
+  it("runs tools with the tenant context and its scope", async () => {
+    const registry = createMockToolRegistry({ show_my_access: makeToolResult("show_my_access", "ok") });
+
+    await runIntentLoop({ modelTurn: createMockExtractor(intents("show_my_access")), toolRegistry: registry, logger, tenantScope }, defaultInput({ userId: "i1" }));
+
+    expect(registry.execute).toHaveBeenCalledWith("show_my_access", { userId: "i1", modelCallId: "c" }, "tenant", tenantScope);
+  });
+
+  it("records a tool outside the context as a failed call, without a result", async () => {
+    const result = await runIntentLoop(
+      { modelTurn: createMockExtractor(intents("list_inbox")), toolRegistry: registryWith("list_inbox"), logger, tenantScope },
+      defaultInput(),
+    );
+
+    expect(result.toolCalls).toEqual([expect.objectContaining({ tool: "list_inbox", result: null, error: "tool_not_in_context" })]);
+    expect(result.stopped).toBe("none_intent");
+  });
+
+  it("stops asking a tool that keeps being refused", async () => {
+    const result = await runIntentLoop(
+      { modelTurn: createMockExtractor([[{ tool: "list_inbox", parameters: { n: 1 } }], [{ tool: "list_inbox", parameters: { n: 2 } }], [{ tool: "list_inbox", parameters: { n: 3 } }]]), toolRegistry: registryWith("list_inbox"), logger, tenantScope },
+      defaultInput(),
+    );
+
+    expect(result.toolCalls).toHaveLength(2);
+    expect(result.stopped).toBe("all_tools_failed");
   });
 });

@@ -1,5 +1,8 @@
 import {
   ActionNotFoundError,
+  DelegationRevokedError,
+  DelegationUnreachableError,
+  ExternalCallError,
   TransitionConflictError,
   maxRisk,
   type ActionCapabilities,
@@ -8,12 +11,14 @@ import {
   type JsonObject,
 } from "@oneon/domain";
 import { decide, isStricter } from "../policy/index.js";
-import type { AnyActionDefinition, ExecutionOutcome, PreconditionResult, Resolved } from "../definition.js";
+import type { AnyActionDefinition, ExecutionOutcome, ImpressoRxCalls, PreconditionResult, Resolved } from "../definition.js";
 import { fromExternalError } from "../definitions/outcomes.js";
 import {
+  HOUR,
   POLICY,
   SYSTEM,
   actorForInstance,
+  approvalAgeLimitHours,
   consequencesDiffer,
   decisionOf,
   effectivePolicyFor,
@@ -21,15 +26,14 @@ import {
   quietly,
   withTimeout,
 } from "./shared.js";
-import type { OrchestratorDeps } from "./types.js";
+import type { OrchestratorDeps, RequestSession } from "./types.js";
 
 export function createAdvance(deps: OrchestratorDeps) {
-  return async function advance(ownerId: string, actionId: string): Promise<ActionInstance> {
+  return async function advance(ownerId: string, actionId: string, session?: RequestSession): Promise<ActionInstance> {
     let instance = deps.repo.findById(ownerId, actionId);
     if (!instance) throw new ActionNotFoundError(actionId);
     const def = deps.registry.get(instance.actionType);
     const caps = deps.capabilities(instance.userId);
-    const actor = actorForInstance(instance);
 
     for (let step = 0; step < 10; step++) {
       const before = instance.status;
@@ -39,10 +43,10 @@ export function createAdvance(deps: OrchestratorDeps) {
             instance = move(deps, instance, "validating", SYSTEM);
             break;
           case "validating":
-            instance = await validate(deps, instance, def, caps, actor);
+            instance = await validate(deps, instance, def, caps, actorForInstance(instance, deps.memberships));
             break;
           case "approved":
-            instance = await executeApproved(deps, instance, def, caps, actor);
+            instance = await executeApproved(deps, instance, def, caps, actorForInstance(instance, deps.memberships), session);
             break;
           case "verifying":
             instance = await verify(deps, instance, def, caps);
@@ -53,6 +57,17 @@ export function createAdvance(deps: OrchestratorDeps) {
       } catch (error) {
         // Someone else (a person or the sweeper) moved the action first; their transition stands.
         if (error instanceof TransitionConflictError) return deps.repo.findById(ownerId, actionId)!;
+        if (error instanceof DelegationRevokedError) {
+          try {
+            instance = move(deps, instance, "failed", SYSTEM, {}, {
+              error: { code: "delegation_revoked", message: "The person's access to this pharmacy has ended.", stage: "recheck" },
+            });
+          } catch (moveError) {
+            if (moveError instanceof TransitionConflictError) return deps.repo.findById(ownerId, actionId)!;
+            throw moveError;
+          }
+          continue;
+        }
         throw error;
       }
       if (instance.status === before) return instance;
@@ -133,8 +148,22 @@ async function executeApproved(
   def: AnyActionDefinition,
   caps: ActionCapabilities,
   actor: ActorContext,
+  session?: RequestSession,
 ): Promise<ActionInstance> {
   const now = deps.clock();
+
+  // Spec §7.6: an approval only lasts so long. This comes first, so a stale approval never reaches ImpressoRx. An approval whose
+  // time cannot be found cannot be shown to be fresh.
+  const ageLimit = instance.scope === "tenant" ? approvalAgeLimitHours(instance, effectivePolicyFor(deps, instance.scope, instance.ownerId, def).policy) : null;
+  if (ageLimit !== null) {
+    const approvedAt = deps.repo.approvedAt(instance.id);
+    if (approvedAt === null || now.getTime() - Date.parse(approvedAt) > ageLimit * HOUR) {
+      return move(deps, instance, "failed", SYSTEM, { approvedAt, maxApprovalAgeHours: ageLimit }, {
+        error: { code: "approval_stale", message: "This approval is too old to act on. Ask for it again.", stage: "recheck" },
+      });
+    }
+  }
+
   const ctx = { input: instance.input, actor, readers: caps.readers, now };
 
   let checks: PreconditionResult[];
@@ -194,6 +223,29 @@ async function executeApproved(
     });
   }
 
+  // Spec §9.2: before the executor runs, the person's access is exchanged for a token. That exchange is ImpressoRx's live check. It
+  // happens before the move to `executing` (a status the action cannot leave for `approved`), so an unreachable ImpressoRx can wait.
+  let impressorx: ImpressoRxCalls | undefined;
+  if (instance.scope === "tenant") {
+    try {
+      if (!deps.delegation) throw new DelegationRevokedError();
+      impressorx = await deps.delegation.open(instance, session);
+    } catch (error) {
+      if (error instanceof DelegationRevokedError) throw error; // advance fails the action as delegation_revoked
+      if (error instanceof DelegationUnreachableError) return waitForImpressorx(deps, instance);
+      if (error instanceof ExternalCallError) {
+        // Any other refusal is permanent (a 404 or 400 is not going to change, nor is an action that never got a grant): nothing ran,
+        // and nothing is retried.
+        deps.logger.warn("ImpressoRx access could not be opened, and will not be retried", { actionId: instance.id, code: error.code, message: error.message });
+        return move(deps, instance, "failed", SYSTEM, { outcome: "definite_failure", code: error.code }, {
+          error: { code: error.code, message: error.message, stage: "recheck" },
+        });
+      }
+      deps.logger.warn("ImpressoRx access could not be opened; the sweeper will retry", { actionId: instance.id, error: String(error) });
+      return instance;
+    }
+  }
+
   const executorRequestId = instance.id.replace(/-/g, "");
   const executing = move(deps, instance, "executing", SYSTEM, { checks } as unknown as JsonObject, {
     executionStartedAt: now.toISOString(),
@@ -213,6 +265,7 @@ async function executeApproved(
         actor,
         executorRequestId,
         writers: caps.writers,
+        impressorx,
         signal: abort.signal,
         heartbeat: () => deps.repo.recordHeartbeat(executing.id, deps.clock().toISOString()),
         now,
@@ -242,6 +295,17 @@ async function executeApproved(
   return move(deps, executing, "failed", SYSTEM, { outcome: "definite_failure", code: outcome.code }, {
     error: { code: outcome.code, message: outcome.message, stage: "execution" },
   });
+}
+
+/**
+ * Spec §9.2: ImpressoRx cannot be reached, which says nothing about the person's access. The action stays approved, an event says why,
+ * and the sweeper tries again, until the approval is too old (§7.6). The heartbeat paces the sweeper: the next attempt comes one
+ * recovery threshold after this one.
+ */
+function waitForImpressorx(deps: OrchestratorDeps, instance: ActionInstance): ActionInstance {
+  deps.repo.recordNote({ actionId: instance.id, expectedStatus: "approved", actor: SYSTEM, data: { retry: "impressorx_unreachable" } });
+  deps.repo.recordHeartbeat(instance.id, deps.clock().toISOString());
+  return deps.repo.findById(instance.ownerId, instance.id)!;
 }
 
 async function verify(

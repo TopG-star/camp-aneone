@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import request from "supertest";
 import { personalActor } from "@oneon/domain";
+import { TenantRefusedError } from "@oneon/infrastructure";
 import { buildActionsTestApp } from "./__tests__/actions-test-app.js";
 
 const reminderDeadline = { id: "d1", userId: "user-A", inboundItemId: "i1", dueDate: "2026-10-07T17:00:00Z", description: "Submit Q4", confidence: 0.9, status: "open" as const, createdAt: "", updatedAt: "" };
@@ -69,6 +70,54 @@ describe("operations", () => {
     const a = await proposeReminder(t);
     await request(t.app).post(`/api/actions/${a.id}/reject`);
     expect((await request(t.app).post(`/api/actions/${a.id}/retry`)).status).toBe(403);
+  });
+
+  it("holds the request's context for the whole of an operation, the execution and the view included", async () => {
+    const seen: Array<{ statusAtStart: string; statusAtEnd?: string }> = [];
+    let t!: ReturnType<typeof buildActionsTestApp>;
+    let id = "";
+    const holdContext = <T,>(fn: () => T): T => {
+      const entry = { statusAtStart: t.instanceRepo.findById("user-A", id)!.status } as { statusAtStart: string; statusAtEnd?: string };
+      seen.push(entry);
+      const result = fn();
+      void Promise.resolve(result).then(() => {
+        entry.statusAtEnd = t.instanceRepo.findById("user-A", id)!.status;
+      });
+      return result;
+    };
+    t = buildActionsTestApp({ holdContext });
+    id = (await proposeReminder(t)).id;
+    await request(t.app).post(`/api/actions/${id}/approve`).expect(200);
+    expect(seen).toEqual([{ statusAtStart: "awaiting_approval", statusAtEnd: "completed" }]);
+    seen.length = 0;
+    await request(t.app).post(`/api/actions/${id}/undo`).expect(200);
+    expect(seen).toEqual([{ statusAtStart: "completed", statusAtEnd: "rolled_back" }]);
+  });
+
+  it("answers 403 context_unavailable, as the middleware does, when the context can no longer be held (re-review N2)", async () => {
+    const t = buildActionsTestApp({
+      holdContext: () => {
+        throw new TenantRefusedError("tenant_unavailable");
+      },
+    });
+    const a = await proposeReminder(t);
+    const res = await request(t.app).post(`/api/actions/${a.id}/approve`);
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "context_unavailable" });
+    expect(t.instanceRepo.findById("user-A", a.id)!.status).toBe("awaiting_approval");
+  });
+
+  it("holds the request's context for a retry too", async () => {
+    let holds = 0;
+    const t = buildActionsTestApp({
+      holdContext: (fn) => {
+        holds += 1;
+        return fn();
+      },
+    });
+    const a = await proposeReminder(t);
+    await request(t.app).post(`/api/actions/${a.id}/retry`); // refused by policy (403), but the work ran inside the hold
+    expect(holds).toBe(1);
   });
 
   it("keeps executing after the client disconnects", async () => {
@@ -183,7 +232,7 @@ describe("GET /api/actions details", () => {
       {
         id: "ghost-1", scope: "personal", ownerId: "user-A", userId: "user-A", tenantId: null, locationIds: [],
         actionType: "ghost_type", definitionVersion: "1", initiator: "user", initiatorUserId: "user-A",
-        input: {}, evidence: [], idempotencyKey: "ghost-key", retryOf: null, attemptNumber: 1, resourceRef: null,
+        input: {}, evidence: [], idempotencyKey: "ghost-key", retryOf: null, attemptNumber: 1, resourceRef: null, modelCallId: null,
       },
       { kind: "system" },
     );
@@ -239,5 +288,51 @@ describe("GET /api/actions/legacy paging", () => {
     const spy = vi.spyOn(t.legacyRepo, "listForUser");
     expect((await request(t.app).get("/api/actions/legacy?limit=200")).status).toBe(200);
     expect(spy).toHaveBeenCalledWith("user-A", { limit: 100, offset: 0 });
+  });
+});
+
+describe("tenant context", () => {
+  async function tenantApp() {
+    const { default: express } = await import("express");
+    const { tenantActor } = await import("@oneon/domain");
+    const { createActionsRouter } = await import("./actions.route.js");
+    const handle = { kind: "tenant", tenantId: "t-a", raw: {}, __brand: "TenantDb" } as never;
+    const seen: unknown[] = [];
+    const list = vi.fn(() => []);
+    const module = {
+      registry: { has: () => false },
+      instanceRepo: { list, count: () => 0 },
+      get legacyRepo(): never {
+        throw new Error("personal legacy repository touched");
+      },
+    };
+    const app = express();
+    app.use((req, _res, next) => {
+      req.activeContext = { kind: "tenant", identityId: "i1", membershipId: "m1", tenantId: "t-a", registrationId: "r1" };
+      req.contextDb = handle;
+      next();
+    });
+    app.use(
+      "/api/actions",
+      createActionsRouter({
+        actionsFor: (db) => (seen.push(db), module as never),
+        actorFor: (ctx) => (ctx.kind === "tenant" ? tenantActor({ identityId: ctx.identityId, tenantId: ctx.tenantId, role: "owner", permissions: [], locationIds: [] }) : null),
+        logger: { info() {}, warn() {}, error() {}, debug() {} },
+      }),
+    );
+    return { app, seen, handle, list };
+  }
+
+  it("lists from the request's own handle, owned by the registry tenant id", async () => {
+    const t = await tenantApp();
+    const res = await request(t.app).get("/api/actions");
+    expect(res.status).toBe(200);
+    expect(t.seen).toEqual([t.handle]);
+    expect(t.list).toHaveBeenCalledWith("t-a", expect.anything());
+  });
+
+  it("has no legacy log in a pharmacy context", async () => {
+    const t = await tenantApp();
+    expect((await request(t.app).get("/api/actions/legacy")).status).toBe(404);
   });
 });

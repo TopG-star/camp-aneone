@@ -37,6 +37,7 @@ export function createListGitHubNotificationsTool(
   return {
     name: "list_github_notifications",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "List GitHub notifications. By default returns unread notifications only. Set 'all' to true for all notifications.",
     inputSchema: listGitHubNotificationsSchema,

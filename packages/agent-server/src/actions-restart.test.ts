@@ -1,3 +1,4 @@
+import type { PersonalDb } from "@oneon/domain";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,11 +60,12 @@ function boot(dbPath: string, google: ReturnType<typeof googleCalendar>, now: Da
   runMigrations(db);
   opened.push(db);
   const clock = () => now;
-  const instances = new SqliteActionInstanceRepository(db, clock);
+  const instances = new SqliteActionInstanceRepository(asPersonal(db), clock);
   const orchestrator = createActionOrchestrator({
     registry: createActionRegistry([createCalendarEventDefinition]),
     repo: instances,
-    configRepo: new SqliteActionConfigRepository(db),
+    configRepo: new SqliteActionConfigRepository(asPersonal(db)),
+    memberships: { activeFor: () => null },
     capabilities: () => ({
       readers: {
         calendar: google.reader,
@@ -80,7 +82,7 @@ function boot(dbPath: string, google: ReturnType<typeof googleCalendar>, now: Da
     newId: () => randomUUID(),
   });
   const users = new SqliteUserRepository(db);
-  const actions = { orchestrator, legacyRepo: new SqliteLegacyActionRepository(db) } as unknown as ActionsModule;
+  const actions = { orchestrator, legacyRepo: new SqliteLegacyActionRepository(asPersonal(db)) } as unknown as ActionsModule;
   return { db, orchestrator, users, actions, instances };
 }
 
@@ -170,3 +172,7 @@ describe("restart around an in-flight calendar write", () => {
     expect(second.instances.findById("user-A", inFlight.id)!.status).toBe("executing");
   });
 });
+
+function asPersonal(raw: unknown): PersonalDb {
+  return { kind: "personal", raw, __brand: "PersonalDb" };
+}

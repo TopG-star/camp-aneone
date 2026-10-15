@@ -3,9 +3,9 @@ import type { OutputBlockReason } from "../answer-check.js";
 import type { GatewayResult, ModelGateway } from "../gateway.js";
 import type { DataClass, ModelRequest } from "../types.js";
 
-export const answered = (json: unknown, text = JSON.stringify(json)): GatewayResult => ({ kind: "answered", text, json, withheld: [], decisionId: "d" });
-export const denied = (reason: DenyReason, secretIn?: SecretLocation): GatewayResult => ({ kind: "denied", reason, ...(secretIn ? { secretIn } : {}), withheld: [], decisionId: "d" });
-export const blocked = (reason: OutputBlockReason): GatewayResult => ({ kind: "blocked", reason, withheld: [], decisionId: "d" });
+export const answered = (json: unknown, text = JSON.stringify(json)): GatewayResult => ({ kind: "answered", text, json, withheld: [], decisionId: "d", callId: "c" });
+export const denied = (reason: DenyReason, secretIn?: SecretLocation): GatewayResult => ({ kind: "denied", reason, ...(secretIn ? { secretIn } : {}), withheld: [], decisionId: "d", callId: "c" });
+export const blocked = (reason: OutputBlockReason): GatewayResult => ({ kind: "blocked", reason, withheld: [], decisionId: "d", callId: "c" });
 
 export function stubGateway(opts: { limit?: DataClass | null; respond?: (req: ModelRequest) => GatewayResult } = {}) {
   const requests: ModelRequest[] = [];

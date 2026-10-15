@@ -32,3 +32,24 @@ export class ExternalCallError extends Error {
     this.name = "ExternalCallError";
   }
 }
+
+/** The person an action runs for no longer has an active membership at its pharmacy. */
+export class DelegationRevokedError extends Error {
+  readonly code = "delegation_revoked";
+  constructor() {
+    super("delegation_revoked");
+    this.name = "DelegationRevokedError";
+  }
+}
+
+/**
+ * ImpressoRx could not be reached (network, timeout, 5xx, 503) while Oneon needed it for a tenant action. Never a revocation.
+ * Before the executor runs the action stays approved and the sweeper retries it; once the executor has begun, the outcome is unknown.
+ */
+export class DelegationUnreachableError extends Error {
+  readonly code = "impressorx_unreachable";
+  constructor() {
+    super("impressorx_unreachable");
+    this.name = "DelegationUnreachableError";
+  }
+}

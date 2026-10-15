@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Logger } from "@oneon/domain";
-import type { ToolRegistry } from "../tools/tool-registry.js";
+import type { TenantToolScope, ToolRegistry } from "../tools/tool-registry.js";
 import type { GatewayResult, ModelTurn } from "../ai-boundary/gateway.js";
 import type { DenyReason, SecretLocation } from "../ai-boundary/decide.js";
 import {
@@ -43,6 +43,8 @@ export interface RunIntentLoopDeps {
   modelTurn: ModelTurn;
   toolRegistry: ToolRegistry;
   logger: Logger;
+  /** Set when the turn runs in a tenant context: every tool call then names that context and carries this scope. Absent means personal. */
+  tenantScope?: TenantToolScope;
 }
 
 export interface RunIntentLoopInput {
@@ -79,7 +81,7 @@ export async function runIntentLoop(
   deps: RunIntentLoopDeps,
   input: RunIntentLoopInput
 ): Promise<RunIntentLoopResult> {
-  const { modelTurn, toolRegistry, logger } = deps;
+  const { modelTurn, toolRegistry, logger, tenantScope } = deps;
   const { userMessage, history, toolDefinitions, stats, now, timezone, persona, userId, turnId } = input;
 
   const allToolCalls: ToolCallRecord[] = [];
@@ -120,6 +122,8 @@ export async function runIntentLoop(
       stopped = "extraction_error";
       return { toolCalls: allToolCalls, rounds: round, stopped };
     }
+    // The call that produced this round's intents; an action they propose is linked to it.
+    const callId = result.callId;
     const rawIntents = result.json;
 
     // Refinement #2: Zod-validate intent output
@@ -185,13 +189,18 @@ export async function runIntentLoop(
       const startTime = performance.now();
       try {
         // Identity comes from the server only: drop any AI-supplied reserved keys first.
-        const { userId: _u, turnId: _t, turnExcerpt: _e, ...aiParams } = intent.parameters;
+        const { userId: _u, turnId: _t, turnExcerpt: _e, modelCallId: _m, ...aiParams } = intent.parameters;
         const executionParameters = {
           ...aiParams,
           ...(userId ? { userId } : {}),
           ...(turnId ? { turnId, turnExcerpt: userMessage.slice(0, 280) } : {}),
+          modelCallId: callId,
         };
-        const result = await toolRegistry.execute(intent.tool, executionParameters);
+        const result = tenantScope
+          ? await toolRegistry.execute(intent.tool, executionParameters, "tenant", tenantScope)
+          : await toolRegistry.execute(intent.tool, executionParameters);
+        // A tool outside the context ran nothing; it is a failed call like any other, so the model is told and the failure count applies.
+        if ("ok" in result) throw new Error(result.error);
         const durationMs =
           Math.round((performance.now() - startTime) * 100) / 100;
 

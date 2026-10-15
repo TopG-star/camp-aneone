@@ -44,6 +44,7 @@ export function createDailyBriefingTool(deps: DailyBriefingDeps): ToolDefinition
   return {
     name: "daily_briefing",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "Generate today's morning briefing: calendar events, urgent items, upcoming deadlines, and pending actions awaiting approval.",
     inputSchema: dailyBriefingSchema,

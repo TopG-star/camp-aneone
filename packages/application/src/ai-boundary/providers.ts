@@ -1,4 +1,4 @@
-import { PROVIDER_IDS, classRank, isDataClass, lowerClass, type DataClass, type ProviderId } from "./types.js";
+import { PROVIDER_IDS, classRank, isDataClass, type DataClass, type ProviderId } from "./types.js";
 
 export interface ProviderEntry {
   id: ProviderId;
@@ -6,6 +6,12 @@ export interface ProviderEntry {
   /** The most this provider may ever receive, per context (spec §6.2). Raised only after a vendor review. */
   limits: { personal: DataClass; tenant: DataClass };
   review: "unreviewed" | "reviewed";
+  /**
+   * The signed data processing agreement with this provider for pharmacy data (spec 9.4). Pharmacy data goes above D1 only to a provider
+   * that is reviewed and holds one of these (the gateway caps every other provider at D1 in a tenant context), and a pharmacy's limit
+   * may be raised to D2 only while a configured provider is so cleared. Absent until signed.
+   */
+  tenantDpa?: { signedOn: string; reference: string } | null;
 }
 
 /** Oneon's AI processors. Changed only in code, by the platform (spec §2.7). */
@@ -57,13 +63,43 @@ export function parseProviderOverrides(
   return result;
 }
 
+/**
+ * Which layer sets a provider's limit (spec 9.4): its registry limit for the context; in a tenant context, the D1 hold on a provider that
+ * is not reviewed with a tenant DPA (`not_cleared`); a platform override that lowers it further; or a suspended or unknown provider.
+ */
+export type ProviderLimitCap = "registry" | "not_cleared" | "override" | "suspended" | "unknown";
+
+/**
+ * The provider layer of the limit and the layer that sets it. `providerLimit` is its `limit`, so the gateway and the pharmacy's admin
+ * screen read one computation. When the D1 hold and the registry limit are both D1, the hold is named: it is the one a review lifts.
+ */
+export function explainProviderLimit(
+  entry: ProviderEntry | undefined,
+  contextKind: "personal" | "tenant",
+  override?: ProviderOverride,
+): { limit: DataClass | "suspended" | "unknown"; cap: ProviderLimitCap } {
+  if (!entry) return { limit: "unknown", cap: "unknown" };
+  if (override?.kind === "suspended") return { limit: "suspended", cap: "suspended" };
+  let limit = entry.limits[contextKind];
+  let cap: ProviderLimitCap = "registry";
+  // Spec 9.4: pharmacy data goes above D1 only to a provider that is fully reviewed and has a signed DPA recorded, whatever its registry
+  // limit. Applied here, on every call and for every provider (shadow included), so it holds however the routing is changed.
+  const cleared = entry.review === "reviewed" && !!entry.tenantDpa;
+  if (contextKind === "tenant" && !cleared && classRank(limit) >= classRank("D1")) {
+    limit = "D1";
+    cap = "not_cleared";
+  }
+  if (override?.kind === "limit" && classRank(override.max) < classRank(limit)) {
+    limit = override.max;
+    cap = "override";
+  }
+  return { limit, cap };
+}
+
 export function providerLimit(
   entry: ProviderEntry | undefined,
   contextKind: "personal" | "tenant",
   override?: ProviderOverride,
 ): DataClass | "suspended" | "unknown" {
-  if (!entry) return "unknown";
-  if (override?.kind === "suspended") return "suspended";
-  const base = entry.limits[contextKind];
-  return override?.kind === "limit" ? lowerClass(base, override.max) : base;
+  return explainProviderLimit(entry, contextKind, override).limit;
 }

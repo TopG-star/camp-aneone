@@ -1,11 +1,13 @@
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
+import { TenantMismatchError, type ContextDb } from "@oneon/domain";
 import type {
   ActionConfigHistoryEntry,
   ActionConfigRecord,
   ActionConfigRepository,
   ActionScope,
 } from "@oneon/domain";
+import { rawDb } from "../context-db-gate.js";
 
 interface ConfigRow {
   scope: ActionScope;
@@ -37,12 +39,25 @@ const mapConfig = (r: ConfigRow): ActionConfigRecord => ({
 });
 
 export class SqliteActionConfigRepository implements ActionConfigRepository {
+  private readonly db: Database.Database;
+  private readonly context: ContextDb;
+
   constructor(
-    private readonly db: Database.Database,
+    context: ContextDb,
     private readonly clock: () => Date = () => new Date(),
-  ) {}
+  ) {
+    this.context = context;
+    this.db = rawDb(context);
+  }
+
+  /** These tables carry no tenant column: a tenant file holds only scope tenant with its own tenant id as owner, the personal file only scope personal. */
+  private guard(scope: ActionScope, ownerId: string): void {
+    const ok = this.context.kind === "tenant" ? scope === "tenant" && ownerId === this.context.tenantId : scope === "personal";
+    if (!ok) throw new TenantMismatchError(this.context.kind === "tenant" ? this.context.tenantId : null, "action_definition_configs");
+  }
 
   get(scope: ActionScope, ownerId: string, actionType: string): ActionConfigRecord | null {
+    this.guard(scope, ownerId);
     const row = this.db
       .prepare("SELECT * FROM action_definition_configs WHERE scope = ? AND owner_id = ? AND action_type = ?")
       .get(scope, ownerId, actionType) as ConfigRow | undefined;
@@ -50,6 +65,7 @@ export class SqliteActionConfigRepository implements ActionConfigRepository {
   }
 
   list(scope: ActionScope, ownerId: string): ActionConfigRecord[] {
+    this.guard(scope, ownerId);
     const rows = this.db
       .prepare("SELECT * FROM action_definition_configs WHERE scope = ? AND owner_id = ? ORDER BY action_type")
       .all(scope, ownerId) as ConfigRow[];
@@ -57,6 +73,7 @@ export class SqliteActionConfigRepository implements ActionConfigRepository {
   }
 
   save(input: { scope: ActionScope; ownerId: string; actionType: string; configJson: string; changedBy: string }): ActionConfigRecord {
+    this.guard(input.scope, input.ownerId);
     return this.db.transaction((): ActionConfigRecord => {
       const previous = this.get(input.scope, input.ownerId, input.actionType);
       const now = this.clock().toISOString();
@@ -79,6 +96,7 @@ export class SqliteActionConfigRepository implements ActionConfigRepository {
   }
 
   history(scope: ActionScope, ownerId: string, actionType: string, limit: number): ActionConfigHistoryEntry[] {
+    this.guard(scope, ownerId);
     const rows = this.db
       .prepare(
         `SELECT * FROM action_definition_config_history

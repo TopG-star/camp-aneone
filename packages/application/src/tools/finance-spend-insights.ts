@@ -85,6 +85,7 @@ export function createFinanceSpendInsightsTool(
   return {
     name: "finance_spend_insights",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "Generate finance summaries and anomaly flags from parsed statement transactions.",
     inputSchema: financeSpendInsightsSchema,

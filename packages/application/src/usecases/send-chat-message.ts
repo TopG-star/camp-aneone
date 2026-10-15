@@ -3,13 +3,14 @@ import type {
   ConversationRepository,
   Logger,
 } from "@oneon/domain";
-import type { ToolRegistry } from "../tools/tool-registry.js";
+import type { TenantToolScope, ToolRegistry } from "../tools/tool-registry.js";
 import type { ChatActionRef } from "../actions/chat-action-tools.js";
 import { truncateHistory } from "./truncate-history.js";
 import { runIntentLoop, errorName } from "./run-intent-loop.js";
 import { synthesizeResponse, DATA_WITHHELD_NOTE } from "./synthesize-response.js";
 import type { SecretLocation } from "../ai-boundary/decide.js";
 import type { ModelGateway } from "../ai-boundary/gateway.js";
+import type { ModelContext } from "../ai-boundary/types.js";
 import type {
   ChatContextStats,
   ChatPersonaProfile,
@@ -22,6 +23,8 @@ export interface SendChatMessageDeps {
   logger: Logger;
   modelGateway?: ModelGateway | null;
   toolRegistry?: ToolRegistry | null;
+  /** Set when the chat runs in a tenant context: the model turn and the tools are bound to it. Absent means personal. */
+  tenantScope?: TenantToolScope | null;
   stats?: ChatContextStats | null;
 }
 
@@ -95,19 +98,25 @@ export async function sendChatMessage(
 
   if (canRunLoop) {
     // One turn per message: placeholders stay the same across the intent rounds and the reply.
-    const turn = deps.modelGateway!.beginTurn({ kind: "personal", identityId: userId }, { channel: "web" });
+    const tenantScope = deps.tenantScope ?? undefined;
+    const modelContext: ModelContext = tenantScope
+      ? { kind: "tenant", identityId: tenantScope.identityId, tenantId: tenantScope.tenantId, membershipId: tenantScope.membershipId }
+      : { kind: "personal", identityId: userId };
+    // Every call of the turn is linked in the audit to this conversation and to the user message row that started it.
+    const turn = deps.modelGateway!.beginTurn(modelContext, { channel: "web", conversationId, turnId: userMsg.id });
     const loopResult = await runIntentLoop(
       {
         modelTurn: turn,
         toolRegistry: deps.toolRegistry!,
         logger,
+        ...(tenantScope ? { tenantScope } : {}),
       },
       {
         userMessage: input.message,
         userId,
         turnId: userMsg.id,
         history: truncateHistory(history, TRUNCATE_OPTIONS),
-        toolDefinitions: deps.toolRegistry!.list(),
+        toolDefinitions: deps.toolRegistry!.listFor(modelContext.kind),
         stats: deps.stats ?? defaultStats(),
         now: input.now ?? new Date(),
         timezone: input.timezone ?? "UTC",

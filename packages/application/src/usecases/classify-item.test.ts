@@ -124,7 +124,7 @@ function createMockTransactionRunner(): TransactionRunner {
   return { run: vi.fn().mockImplementation((fn: () => unknown) => fn()) };
 }
 
-const failedResult = (message: string): GatewayResult => ({ kind: "failed", message, withheld: [], decisionId: "d" });
+const failedResult = (message: string): GatewayResult => ({ kind: "failed", message, withheld: [], decisionId: "d", callId: "c" });
 
 /** A stub gateway that records the requests it gets; it answers with LLM_RESULT unless told otherwise. */
 function createGateway(respond: () => GatewayResult = () => answered(LLM_RESULT)) {

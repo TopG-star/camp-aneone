@@ -258,6 +258,7 @@ function createMockParserRegistry(): BankStatementParserRegistry {
 function createDeps(overrides: Partial<DevFinanceRouteDeps> = {}): DevFinanceRouteDeps {
   return {
     userRepo: createMockUserRepo(),
+    ensureIdentity: vi.fn(),
     bankStatementRepo: createMockBankStatementRepo(),
     bankStatementParseRepo: createMockParseRepo(),
     bankStatementParserRegistry: createMockParserRegistry(),
@@ -298,6 +299,7 @@ describe("Dev Finance Route", () => {
     expect(res.body.transactions).toHaveLength(1);
     expect(res.body.parseRuns).toHaveLength(2);
     expect(res.body.parseSummary.transactionsParsed).toBe(1);
+    expect(deps.ensureIdentity).toHaveBeenCalledWith({ id: res.body.user.id, email: "allowed@test.com" });
   });
 
   it("rejects user email not on allowed list", async () => {

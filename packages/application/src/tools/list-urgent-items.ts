@@ -64,6 +64,7 @@ export function createListUrgentItemsTool(
   return {
     name: "list_urgent_items",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "List urgent and high-priority inbox items. Returns items with priority ≤ maxPriority (1 = most urgent, 5 = least).",
     inputSchema: listUrgentItemsSchema,

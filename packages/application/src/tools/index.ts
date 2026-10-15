@@ -7,6 +7,9 @@ export {
   type ToolExecutionResult,
   type ToolExecutionMeta,
   type ToolRegistry,
+  type ToolContextKind,
+  type ToolRefusal,
+  type TenantToolScope,
 } from "./tool-registry.js";
 
 export {
@@ -37,6 +40,13 @@ export {
   type ListPendingActionsDeps,
   type ListPendingActionsInput,
 } from "./list-pending-actions.js";
+
+export {
+  createShowMyAccessTool,
+  showMyAccessSchema,
+  type AccessMembership,
+  type ShowMyAccessDeps,
+} from "./show-my-access.js";
 
 export {
   createListFollowUpsTool,

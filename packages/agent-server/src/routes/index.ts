@@ -15,6 +15,7 @@ import { createInboxRouter } from "./inbox.route.js";
 import { createActionsRouter } from "./actions.route.js";
 import { createActionDefinitionsRouter } from "./action-definitions.route.js";
 import { createAiDataRouter } from "./ai-data.route.js";
+import { createTenantSettingsRouter } from "./tenant-settings.route.js";
 import { createTodayRouter } from "./today.route.js";
 import { createCycleRouter } from "./cycle.route.js";
 import { createStatusRouter } from "./status.route.js";
@@ -23,9 +24,17 @@ import { createIntegrationsRouter } from "./integrations.route.js";
 import { createPushSubscriptionsRouter } from "./push-subscriptions.route.js";
 import { createUsersRouter } from "./users.route.js";
 import { createMemoryRouter } from "./memory.route.js";
+import { createPlatformRouter } from "./platform.route.js";
+import { latestRollups } from "../tenant-jobs.js";
+import { createHandoffRouter } from "./handoff.route.js";
+import { createContextsRouter } from "./contexts.route.js";
+import { createIdentityLinkRouter, createIdentitySessionRouter } from "./identity-link.route.js";
+import { createConnectionsRouter } from "./connections.route.js";
 import { createTokenAuthMiddleware } from "../middleware/auth.js";
 import { createSessionAuthMiddleware } from "../middleware/session-auth.js";
 import { requireUser } from "../middleware/require-user.js";
+import { requirePersonalContext, resolveActiveContext } from "../middleware/active-context.js";
+import { actorForContext, contextRepos } from "../context-wiring.js";
 import {
   LocalDocMemoryProvider,
   StructuredLogger,
@@ -56,6 +65,7 @@ import {
   createSummarizeFinanceSpendTool,
   createFinanceSpendInsightsTool,
   createSearchPersonalMemoryTool,
+  createShowMyAccessTool,
   createChatActionTools,
 } from "@oneon/application";
 
@@ -76,15 +86,58 @@ export function registerRoutes(app: Express, container: AppContainer): void {
 
   const sessionAuth = createSessionAuthMiddleware(
     env.NEXTAUTH_SECRET,
-    (email) => container.userRepo?.findByEmail(email) ?? null,
+    container.identityRepo,
     container.userRepo
       ? (user) => container.userRepo!.upsert(user)
+      : undefined,
+    new StructuredLogger("session-auth", env.LOG_LEVEL),
+    container.impressorx
+      ? {
+          memberships: container.memberships,
+          identities: container.identityRepo,
+          hasActiveSession: (sessionId, identityId, membershipId) =>
+            container.impressorx!.hasAttendedGrant(sessionId, identityId, membershipId),
+        }
       : undefined,
   );
   const tokenAuth = createTokenAuthMiddleware(env.API_TOKEN);
 
-  // Browser routes: session cookie + require userId
-  const userAuth: RequestHandler[] = [sessionAuth, requireUser];
+  // Browser routes: session cookie + require userId. The default chain is personal-only: a hand-off (tenant) session
+  // gets 403 personal_context_required, so a route added later cannot reach personal data by accident.
+  const userAuth: RequestHandler[] = [sessionAuth, requireUser, requirePersonalContext];
+
+  // One refresher (built with the container) for the middleware, the picker's validate call and the approval's live check, so a
+  // membership's refresh is single-flight across the first two. The live check always asks ImpressoRx itself.
+  const activeContextLogger = new StructuredLogger("active-context", env.LOG_LEVEL);
+  const snapshots = container.snapshots;
+
+  // Context-aware routes: the one active context is resolved from the session and its database opened for the request.
+  // Only routes that read their repositories from contextRepos(req.contextDb) may use this chain.
+  const contextAuth: RequestHandler[] = [
+    sessionAuth,
+    requireUser,
+    resolveActiveContext({
+      gate: { openPersonal: container.openPersonal, lease: container.leaseTenant },
+      memberships: container.memberships,
+      identities: container.identityRepo,
+      snapshots,
+      logger: activeContextLogger,
+    }),
+  ];
+
+  // The context picker: session only, because it must work even when the current context cannot open.
+  app.use(
+    "/api/contexts",
+    sessionAuth,
+    requireUser,
+    createContextsRouter({
+      memberships: container.memberships,
+      registrations: container.tenantRegistrations,
+      identities: container.identityRepo,
+      snapshots,
+      logger: activeContextLogger,
+    }),
+  );
 
   // System routes: Bearer token only (admin scripts, CI triggers)
   const systemAuth: RequestHandler[] = [tokenAuth];
@@ -224,6 +277,8 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       instanceRepo: container.actions.instanceRepo,
       registry: container.actions.registry,
     }));
+    // Tenant only: the membership comes from the request's active context, which the chat route puts in the tool scope.
+    toolRegistry.register(createShowMyAccessTool({ memberships: container.memberships }));
     toolRegistry.register(createListFollowUpsTool({
       classificationRepo: container.classificationRepo,
       inboundItemRepo: container.inboundItemRepo,
@@ -339,16 +394,20 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     app.use(
       "/api/chat",
       chatLimiter,
-      ...userAuth,
+      ...contextAuth,
       createChatRouter({
-        conversationRepo: container.conversationRepo,
+        conversationsFor: (req) => contextRepos(req.contextDb!).conversations,
         logger: chatLogger,
         inboundItemRepo: container.inboundItemRepo,
         classificationRepo: container.classificationRepo,
         deadlineRepo: container.deadlineRepo,
         instanceRepo: container.actions.instanceRepo,
         userProfileRepo: container.userProfileRepo,
-        modelGateway: container.modelGateway,
+        modelGatewayFor: (req) => container.modelGatewayFor(req.contextDb!),
+        tenantActionsFor: (req) => {
+          const { instanceRepo, registry } = container.actionsFor(req.contextDb!);
+          return { instanceRepo, registry };
+        },
         toolRegistry,
       })
     );
@@ -423,6 +482,78 @@ export function registerRoutes(app: Express, container: AppContainer): void {
     memoryLogger.info("Memory routes registered at /api/memory");
   }
 
+  // ── Hand-off redemption (the dashboard's server side, service token) ──
+  app.use(
+    "/api/auth/handoff",
+    ...systemAuth,
+    createHandoffRouter({
+      registrations: container.tenantRegistrations,
+      enrolment: container.enrolment,
+      identities: container.identityRepo,
+      memberships: container.memberships,
+      jti: container.handoffJti,
+      withTenant: container.withTenant,
+      client: container.impressorx,
+      logger: new StructuredLogger("handoff", env.LOG_LEVEL),
+    }),
+  );
+
+  // ── Identity linking (spec §4.5) ──────────────────────────
+  // The link call is the dashboard's server side (service token). Opening an intent and unlinking are the person's own
+  // session, in whichever context it holds, so they are not personal-only (a hand-off session starts a link).
+  const identityLink = {
+    identities: container.identityRepo,
+    intents: container.linkIntents,
+    registrations: container.tenantRegistrations,
+    ensurePersonalUser: container.ensurePersonalUser,
+    // Without the grant master key there are no grants: no hand-off can be proved and none has anything to release.
+    hasAttendedGrant: (sessionId: string, identityId: string, membershipId: string) =>
+      container.impressorx?.hasAttendedGrant(sessionId, identityId, membershipId) ?? false,
+    releaseGrants: (grantIds: string[]) => container.impressorx?.releaseGrants(grantIds) ?? Promise.resolve(),
+    logger: new StructuredLogger("identity-link", env.LOG_LEVEL),
+  };
+  app.use("/api/identity/link", ...systemAuth, createIdentityLinkRouter(identityLink));
+  app.use("/api/identity", sessionAuth, requireUser, createIdentitySessionRouter(identityLink));
+
+  // ── Settings → Connections ────────────────────────────────
+  // The person's own delegated access and the actions waiting for them to reconnect. Session and requireUser only, not
+  // requirePersonalContext: it acts on the session's identity alone, reads each pharmacy file itself through the gate, and a
+  // hand-off session must be able to see and revoke its own access.
+  app.use(
+    "/api/connections",
+    sessionAuth,
+    requireUser,
+    createConnectionsRouter({
+      client: container.impressorx,
+      memberships: container.memberships,
+      registrations: container.tenantRegistrations,
+      withTenant: container.withTenant,
+      actionsFor: container.actionsFor,
+      logger: new StructuredLogger("connections", env.LOG_LEVEL),
+    }),
+  );
+
+  // ── Platform console (operators only) ─────────────────────
+  const platformLogger = new StructuredLogger("platform", env.LOG_LEVEL);
+  app.use(
+    "/api/platform",
+    ...userAuth,
+    createPlatformRouter({
+      operators: container.platformOperators,
+      registrations: container.tenantRegistrations,
+      enrolment: container.enrolment,
+      backupConfigured: Boolean(env.BACKUP_ENCRYPTION_KEY),
+      grantConfigured: Boolean(env.ONEON_GRANT_MASTER_KEY),
+      latestRollups: () => latestRollups(container.backupSources.control),
+      createTenantFile: container.createTenantFile,
+      detachTenant: container.detachTenant,
+      // Enrolment is refused while ONEON_GRANT_MASTER_KEY (and so the client) is missing, so this only no-ops when no grant can exist.
+      revokeGrantsForRegistration: (registrationId, reason) => container.impressorx?.revokeForRegistration(registrationId, reason),
+      migrateTenantFile: container.migrateTenantFile,
+      logger: platformLogger,
+    }),
+  );
+
   // ── Finance Statement Intake (read-only) ────────────────
   if (env.FEATURE_FINANCE_STATEMENT_INTAKE) {
     const financeLogger = new StructuredLogger("finance-statements", env.LOG_LEVEL);
@@ -457,22 +588,18 @@ export function registerRoutes(app: Express, container: AppContainer): void {
   const actionsLogger = new StructuredLogger("actions", env.LOG_LEVEL);
   app.use(
     "/api/actions",
-    ...userAuth,
+    ...contextAuth,
     createActionsRouter({
-      orchestrator: container.actions.orchestrator,
-      registry: container.actions.registry,
-      instanceRepo: container.actions.instanceRepo,
-      configRepo: container.actions.configRepo,
-      legacyRepo: container.actions.legacyRepo,
+      actionsFor: container.actionsFor,
+      actorFor: (ctx) => actorForContext(ctx, container.memberships),
       logger: actionsLogger,
     }),
   );
   app.use(
     "/api/action-definitions",
-    ...userAuth,
+    ...contextAuth,
     createActionDefinitionsRouter({
-      registry: container.actions.registry,
-      configRepo: container.actions.configRepo,
+      actionsFor: container.actionsFor,
       logger: actionsLogger,
     }),
   );
@@ -489,6 +616,20 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       choices: container.aiDataChoices,
       audit: container.modelAudit,
       logger: new StructuredLogger("ai-data", env.LOG_LEVEL),
+    }),
+  );
+  // The pharmacy's own AI data limit: a pharmacy context only, and a change is checked live with ImpressoRx.
+  app.use(
+    "/api/tenant",
+    ...contextAuth,
+    createTenantSettingsRouter({
+      limits: container.tenantAiLimits,
+      memberships: container.memberships,
+      snapshots,
+      configuredProviders: container.modelProviders,
+      overrides: container.modelOverrides,
+      routing: container.modelRouting,
+      logger: new StructuredLogger("tenant-settings", env.LOG_LEVEL),
     }),
   );
 
@@ -568,6 +709,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       "/api/oauth",
       oauthLimiter,
       sessionAuth,
+      requirePersonalContext,
       createOAuthRouter({
         userRepo: container.userRepo,
         oauthTokenRepo: container.oauthTokenRepo,
@@ -601,6 +743,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
         ...systemAuth,
         createDevFinanceRouter({
           userRepo: container.userRepo,
+          ensureIdentity: container.ensureIdentity,
           bankStatementRepo: container.bankStatementRepo,
           bankStatementParseRepo: container.bankStatementParseRepo,
           bankStatementParserRegistry: container.bankStatementParserRegistry,
@@ -619,6 +762,7 @@ export function registerRoutes(app: Express, container: AppContainer): void {
       ...systemAuth,
       createUsersRouter({
         userRepo: container.userRepo,
+        ensureIdentity: container.ensureIdentity,
         logger: usersLogger,
       }),
     );

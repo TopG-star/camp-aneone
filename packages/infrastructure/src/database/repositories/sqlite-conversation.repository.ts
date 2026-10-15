@@ -1,12 +1,14 @@
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import type {
-  ConversationMessage,
-  ConversationRepository,
-} from "@oneon/domain";
+import { assertRowTenant, type ContextDb, type ConversationMessage, type ConversationRepository } from "@oneon/domain";
+import { rawDb } from "../context-db-gate.js";
 
 export class SqliteConversationRepository implements ConversationRepository {
-  constructor(private readonly db: Database.Database) {}
+  private readonly db: Database.Database;
+
+  constructor(private readonly context: ContextDb) {
+    this.db = rawDb(context);
+  }
 
   append(
     message: Omit<ConversationMessage, "id" | "createdAt">
@@ -15,15 +17,15 @@ export class SqliteConversationRepository implements ConversationRepository {
 
     this.db
       .prepare(
-        `INSERT INTO conversations (id, conversation_id, role, content, tool_calls, user_id)
-         VALUES (?, ?, ?, ?, ?, ?)`
+        `INSERT INTO conversations (id, conversation_id, role, content, tool_calls, user_id, tenant_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(id, message.conversationId, message.role, message.content, message.toolCalls, message.userId);
+      .run(id, message.conversationId, message.role, message.content, message.toolCalls, message.userId, this.tenantId());
 
     const row = this.db
       .prepare("SELECT * FROM conversations WHERE id = ?")
       .get(id) as RawConversation;
-    return mapRow(row);
+    return this.mapRow(row);
   }
 
   findRecentByConversation(conversationId: string, limit: number, userId?: string): ConversationMessage[] {
@@ -36,14 +38,14 @@ export class SqliteConversationRepository implements ConversationRepository {
     params.push(limit);
     const rows = this.db
       .prepare(
-        `SELECT id, conversation_id, role, content, tool_calls, user_id, created_at FROM (
+        `SELECT id, conversation_id, role, content, tool_calls, user_id, tenant_id, created_at FROM (
           SELECT *, _rowid_ AS rn FROM conversations
           WHERE conversation_id = ?${whereExtra}
           ORDER BY created_at DESC, rn DESC LIMIT ?
         ) ORDER BY created_at ASC, rn ASC`
       )
       .all(...params) as RawConversation[];
-    return rows.map(mapRow);
+    return rows.map((row) => this.mapRow(row));
   }
 
   countByConversation(conversationId: string): number {
@@ -51,6 +53,15 @@ export class SqliteConversationRepository implements ConversationRepository {
       .prepare("SELECT COUNT(*) as count FROM conversations WHERE conversation_id = ?")
       .get(conversationId) as { count: number };
     return row.count;
+  }
+
+  private tenantId(): string | null {
+    return this.context.kind === "tenant" ? this.context.tenantId : null;
+  }
+
+  private mapRow(row: RawConversation): ConversationMessage {
+    assertRowTenant(this.context, row.tenant_id, "conversations");
+    return mapRowUnchecked(row);
   }
 
   count(userId?: string): number {
@@ -76,10 +87,11 @@ interface RawConversation {
   content: string;
   tool_calls: string | null;
   user_id: string | null;
+  tenant_id: string | null;
   created_at: string;
 }
 
-function mapRow(row: RawConversation): ConversationMessage {
+function mapRowUnchecked(row: RawConversation): ConversationMessage {
   return {
     id: row.id,
     userId: row.user_id,

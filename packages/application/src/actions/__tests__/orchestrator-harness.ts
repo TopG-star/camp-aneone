@@ -4,7 +4,7 @@ import { personalActor, type ActionCapabilities, type Logger } from "@oneon/doma
 import { createActionRegistry } from "../registry.js";
 import { createActionOrchestrator } from "../orchestrator/index.js";
 import type { ActionDefinition, AnyActionDefinition } from "../definition.js";
-import type { ActionRequest } from "../orchestrator/types.js";
+import type { ActionRequest, OrchestratorDeps } from "../orchestrator/types.js";
 import { InMemoryActionRepo, InMemoryConfigRepo } from "./in-memory-repos.js";
 import { fakeReaders, fakeWriters } from "./fakes.js";
 
@@ -57,7 +57,11 @@ export function probeDefinition(overrides: Partial<ActionDefinition<any, any>> =
 
 export function harness(
   definitions: AnyActionDefinition[] = [probeDefinition()],
-  options: { capabilities?: () => ActionCapabilities } = {},
+  options: {
+    capabilities?: () => ActionCapabilities;
+    memberships?: OrchestratorDeps["memberships"];
+    delegation?: OrchestratorDeps["delegation"];
+  } = {},
 ) {
   let now = new Date("2026-10-01T12:00:00.000Z");
   const clock = () => now;
@@ -72,6 +76,8 @@ export function harness(
     registry: createActionRegistry(definitions),
     repo,
     configRepo,
+    memberships: options.memberships ?? { activeFor: () => null },
+    delegation: options.delegation,
     capabilities: options.capabilities ?? (() => ({ readers: fakeReaders(), writers: fakeWriters() })),
     notifier,
     logger: silentLogger,

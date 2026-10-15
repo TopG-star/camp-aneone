@@ -28,3 +28,59 @@ describe("model audit key", () => {
     expect(() => loadEnv()).not.toThrow();
   });
 });
+
+describe("control database and master keys", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  function baseEnv() {
+    vi.stubEnv("NEXTAUTH_SECRET", "s");
+    vi.stubEnv("ALLOWED_EMAILS", "a@test.com");
+    vi.stubEnv("API_TOKEN", "t");
+  }
+
+  it("defaults the control paths and leaves the master keys unset", () => {
+    baseEnv();
+    const env = loadEnv();
+    expect(env.CONTROL_DATABASE_PATH).toBe("./data/control.db");
+    expect(env.TENANT_DATA_DIR).toBe("./data/tenants");
+    expect(env.ONEON_GRANT_MASTER_KEY).toBeUndefined();
+    expect(env.ONEON_SIGNING_KEY_MASTER_KEY).toBeUndefined();
+  });
+
+  it("accepts base64 of 32 bytes and rejects anything else", () => {
+    baseEnv();
+    vi.stubEnv("ONEON_GRANT_MASTER_KEY", Buffer.alloc(32, 1).toString("base64"));
+    vi.stubEnv("ONEON_SIGNING_KEY_MASTER_KEY", Buffer.alloc(32, 2).toString("base64"));
+    expect(() => loadEnv()).not.toThrow();
+    vi.stubEnv("ONEON_GRANT_MASTER_KEY", Buffer.alloc(16, 1).toString("base64"));
+    expect(() => loadEnv()).toThrow(/ONEON_GRANT_MASTER_KEY/);
+    vi.stubEnv("ONEON_GRANT_MASTER_KEY", Buffer.alloc(32, 1).toString("base64"));
+    vi.stubEnv("ONEON_SIGNING_KEY_MASTER_KEY", "not base64!!");
+    expect(() => loadEnv()).toThrow(/ONEON_SIGNING_KEY_MASTER_KEY/);
+  });
+});
+
+describe("backup settings", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  function baseEnv() {
+    vi.stubEnv("NEXTAUTH_SECRET", "s");
+    vi.stubEnv("ALLOWED_EMAILS", "a@test.com");
+    vi.stubEnv("API_TOKEN", "t");
+  }
+
+  it("defaults BACKUP_DIR and leaves the key unset", () => {
+    baseEnv();
+    const env = loadEnv();
+    expect(env.BACKUP_DIR).toBe("./data/backups");
+    expect(env.BACKUP_ENCRYPTION_KEY).toBeUndefined();
+  });
+
+  it("accepts base64 of 32 bytes for BACKUP_ENCRYPTION_KEY and rejects anything else", () => {
+    baseEnv();
+    vi.stubEnv("BACKUP_ENCRYPTION_KEY", Buffer.alloc(32, 3).toString("base64"));
+    expect(() => loadEnv()).not.toThrow();
+    vi.stubEnv("BACKUP_ENCRYPTION_KEY", Buffer.alloc(16, 3).toString("base64"));
+    expect(() => loadEnv()).toThrow(/BACKUP_ENCRYPTION_KEY/);
+  });
+});

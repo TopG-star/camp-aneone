@@ -21,6 +21,17 @@ describe("describeActionError", () => {
     expect(describeActionError({ ...error, message: "raw" } as never, type)).toBe(text);
   });
 
+  it.each([
+    [{ code: "approval_stale", stage: "recheck" }, "This approval is too old to act on. Ask for it again."],
+    [{ code: "delegation_revoked", stage: "recheck" }, "Your access to this pharmacy has ended, so Oneon didn't run this. Open Oneon from ImpressoRx to reconnect, then try again."],
+    [{ code: "delegation_revoked", stage: "execution" }, "Your access to this pharmacy has ended, so Oneon didn't run this. Open Oneon from ImpressoRx to reconnect, then try again."],
+    [{ code: "no_action_grant", stage: "recheck" }, "Oneon couldn't keep access to finish this on its own. Retry while you're signed in."],
+    [{ code: "impressorx_refused", stage: "execution" }, "ImpressoRx refused the change, so nothing was changed."],
+    [{ code: "impressorx_unreachable", stage: "execution" }, "Oneon couldn't reach ImpressoRx to confirm the change. Oneon is checking whether it went through."],
+  ])("explains the pharmacy connection failure %o in plain text", (error, text) => {
+    expect(describeActionError({ ...error, message: "raw" } as never, "inventory_transfer")).toBe(text);
+  });
+
   it("says what is left to fix by hand when undo is refused (spec §10.6)", () => {
     expect(describeActionError({ code: "changed_since", message: "Undo refused: changed_since", stage: "undo" }, "create_calendar_event")).toBe(
       "Someone changed this event after Oneon created it, so Oneon left it alone. Delete it in Google Calendar if you still want it gone.",

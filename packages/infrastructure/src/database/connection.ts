@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,17 +22,50 @@ export function createDatabase(dbPath: string): Database.Database {
   const db = new Database(dbPath);
 
   // Enable WAL mode for better concurrent read performance
-  db.pragma("journal_mode = WAL");
-  // Enforce foreign key constraints
-  db.pragma("foreign_keys = ON");
-  // Improve write performance (data safe with WAL)
-  db.pragma("synchronous = NORMAL");
-  // Store temp tables in memory
-  db.pragma("temp_store = MEMORY");
-  // 64MB mmap for read performance
-  db.pragma("mmap_size = 67108864");
+  try {
+    db.pragma("journal_mode = WAL");
+    // Enforce foreign key constraints
+    db.pragma("foreign_keys = ON");
+    // Improve write performance (data safe with WAL)
+    db.pragma("synchronous = NORMAL");
+    // Store temp tables in memory
+    db.pragma("temp_store = MEMORY");
+    // 64MB mmap for read performance
+    db.pragma("mmap_size = 67108864");
+  } catch (error) {
+    // A file that is not a database fails here; do not leak the open handle.
+    db.close();
+    throw error;
+  }
 
   return db;
+}
+
+/**
+ * Takes the storage-preparation lock: a dedicated SQLite file held under `BEGIN EXCLUSIVE` with `locking_mode=EXCLUSIVE`. It is an
+ * OS file lock, so the kernel releases it when the process dies (SIGKILL, OOM) and a file left on disk never blocks a restart.
+ * This handle opens only the lock file, never a context database. Throws at once (busy timeout 0) when another process holds it.
+ * Returns the release function.
+ */
+export function acquireStorageLock(lockPath: string): () => void {
+  const db = new Database(lockPath, { timeout: 0 });
+  try {
+    db.pragma("locking_mode = EXCLUSIVE");
+    db.exec("BEGIN EXCLUSIVE");
+  } catch (error) {
+    db.close();
+    if ((error as { code?: string }).code === "SQLITE_BUSY") {
+      throw new Error(`Another Oneon process is preparing storage (lock held on ${lockPath}). Wait for it to finish, then start again.`);
+    }
+    throw error;
+  }
+  return () => {
+    try {
+      db.exec("ROLLBACK");
+    } finally {
+      db.close();
+    }
+  };
 }
 
 function hasTable(db: Database.Database, tableName: string): boolean {
@@ -222,7 +255,39 @@ function canBackfillAfterError(
   return version === 4 && /duplicate column name:\s*conversation_id/i.test(message);
 }
 
-export function runMigrations(db: Database.Database): void {
+/** The highest personal migration number: the schema version every context file must be at. */
+export function latestMigrationVersion(): number {
+  return Math.max(
+    ...readdirSync(getMigrationsDir())
+      .map((file) => /^(\d+)_.+\.sql$/.exec(file))
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map((m) => Number(m[1])),
+  );
+}
+
+/** True when the directory holds a migration this file has not recorded (a file without `schema_migrations` has all of them pending). */
+export function hasPendingMigrations(db: Database.Database, migrationsDir?: string): boolean {
+  const onDisk = readdirSync(migrationsDir ?? getMigrationsDir())
+    .map((file) => /^(\d+)_.+\.sql$/.exec(file))
+    .filter((m): m is RegExpExecArray => m !== null)
+    .map((m) => Number(m[1]));
+  if (!hasTable(db, "schema_migrations")) return onDisk.length > 0;
+  const applied = new Set((db.prepare("SELECT version FROM schema_migrations").all() as Array<{ version: number }>).map((r) => r.version));
+  return onDisk.some((version) => !applied.has(version));
+}
+
+// A custom directory holds its own sequence: files named NNN_name.sql, applied in order.
+function discoverMigrations(
+  dir: string,
+): Array<{ version: number; name: string; file: string; transactional?: boolean }> {
+  return readdirSync(dir)
+    .map((file) => ({ file, match: /^(\d+)_(.+)\.sql$/.exec(file) }))
+    .filter((entry) => entry.match !== null)
+    .map((entry) => ({ version: Number(entry.match![1]), name: entry.match![2]!, file: entry.file }))
+    .sort((a, b) => a.version - b.version);
+}
+
+export function runMigrations(db: Database.Database, migrationsDir?: string): void {
   // Ensure schema_migrations table exists
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -239,7 +304,7 @@ export function runMigrations(db: Database.Database): void {
       .map((row) => (row as { version: number }).version)
   );
 
-  const migrations = [
+  const personalMigrations = [
     { version: 1, name: "initial_schema", file: "001_initial_schema.sql" },
     { version: 2, name: "add_thread_id_labels", file: "002_add_thread_id_labels.sql" },
     { version: 3, name: "add_classify_attempts", file: "003_add_classify_attempts.sql" },
@@ -255,16 +320,21 @@ export function runMigrations(db: Database.Database): void {
     { version: 13, name: "personal_memory", file: "013_personal_memory.sql" },
     { version: 14, name: "action_spec_framework", file: "014_action_spec_framework.sql" },
     { version: 15, name: "ai_data_boundary", file: "015_ai_data_boundary.sql" },
+    { version: 16, name: "context_meta_and_tenant_id", file: "016_context_meta_and_tenant_id.sql" },
+    { version: 17, name: "link_ids", file: "017_link_ids.sql" },
   ];
 
-  const migrationsDir = getMigrationsDir();
+  const custom = migrationsDir !== undefined;
+  const dir = migrationsDir ?? getMigrationsDir();
+  const migrations = custom ? discoverMigrations(dir) : personalMigrations;
 
   for (const migration of migrations) {
     if (applied.has(migration.version)) {
       continue;
     }
 
-    if (migrationAlreadyAppliedInSchema(db, migration.version)) {
+    // Legacy-schema backfill only describes the personal database.
+    if (!custom && migrationAlreadyAppliedInSchema(db, migration.version)) {
       recordMigration(db, migration.version, migration.name);
       applied.add(migration.version);
       console.log(
@@ -273,7 +343,7 @@ export function runMigrations(db: Database.Database): void {
       continue;
     }
 
-    const sql = readFileSync(join(migrationsDir, migration.file), "utf-8");
+    const sql = readFileSync(join(dir, migration.file), "utf-8");
 
     try {
       if (migration.transactional === false) {
@@ -286,7 +356,7 @@ export function runMigrations(db: Database.Database): void {
         })();
       }
     } catch (error) {
-      if (!canBackfillAfterError(db, migration.version, error)) {
+      if (custom || !canBackfillAfterError(db, migration.version, error)) {
         throw error;
       }
 

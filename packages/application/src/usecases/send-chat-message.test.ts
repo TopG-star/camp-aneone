@@ -6,8 +6,13 @@ import type {
   Logger,
 } from "@oneon/domain";
 import { sendChatMessage, type SendChatMessageDeps } from "./send-chat-message.js";
-import { createToolRegistry, type ToolRegistry, type ToolExecutionResult } from "../tools/tool-registry.js";
-import { createModelGateway, type GatewayResult } from "../ai-boundary/gateway.js";
+import { createToolRegistry, type TenantToolScope, type ToolRegistry, type ToolExecutionResult } from "../tools/tool-registry.js";
+import { createShowMyAccessTool } from "../tools/show-my-access.js";
+import { createListPendingActionsTool } from "../tools/list-pending-actions.js";
+import { createActionRegistry } from "../actions/registry.js";
+import { InMemoryActionRepo } from "../actions/__tests__/in-memory-repos.js";
+import type { ModelContext } from "../ai-boundary/types.js";
+import { createModelGateway, type GatewayResult, type ModelGateway } from "../ai-boundary/gateway.js";
 import { Fingerprinter } from "../ai-boundary/fingerprints.js";
 import { InMemoryChoices, InMemoryModelAudit } from "../ai-boundary/__tests__/in-memory-audit.js";
 import { FakeProvider } from "../ai-boundary/__tests__/fake-provider.js";
@@ -91,6 +96,13 @@ function createMockToolRegistry(
       return result;
     }),
     list: vi.fn(() =>
+      Object.keys(results).map((name) => ({
+        name,
+        version: "1.0.0",
+        description: `${name} tool`,
+      }))
+    ),
+    listFor: vi.fn(() =>
       Object.keys(results).map((name) => ({
         name,
         version: "1.0.0",
@@ -353,7 +365,7 @@ describe("sendChatMessage", () => {
         [{ tool: "list_deadlines", parameters: {} }],
         [{ tool: "none", parameters: {} }],
       ],
-      { kind: "failed", message: "Model call failed", withheld: [], decisionId: "d" },
+      { kind: "failed", message: "Model call failed", withheld: [], decisionId: "d", callId: "c" },
     );
     const registry = createMockToolRegistry({
       list_deadlines: makeToolResult("list_deadlines", "Found 2 deadlines"),
@@ -426,7 +438,7 @@ describe("sendChatMessage", () => {
     );
 
     expect(beginTurn).toHaveBeenCalledTimes(1);
-    expect(beginTurn).toHaveBeenCalledWith({ kind: "personal", identityId: "user-A" }, { channel: "web" });
+    expect(beginTurn).toHaveBeenCalledWith({ kind: "personal", identityId: "user-A" }, { channel: "web", conversationId: "user:user-A", turnId: "msg-001" });
   });
 
   it("returns concatenated summaries when the chat reply is denied", async () => {
@@ -820,5 +832,102 @@ ${call.user}`).not.toMatch(/sk-ant|api03/);
 
     expect(result.actions).toEqual([action]);
     expect(result.response).toContain("Waiting for your approval");
+  });
+});
+
+describe("sendChatMessage in a tenant context", () => {
+  const membership = { identityId: "i1", status: "active", role: "WarehouseStaff", permissions: ["inventory.view"], locationIds: ["loc-1"], snapshotAt: "2026-10-08T09:00:00.000Z" };
+  const actionRegistry = createActionRegistry([]);
+  const tenantActions = new InMemoryActionRepo(() => NOW);
+  const tenantScope: TenantToolScope = { identityId: "i1", tenantId: "t1", membershipId: "m1", actions: { instanceRepo: tenantActions, registry: actionRegistry } };
+  const personalTool = vi.fn(() => ({ data: [{ id: "mail-1" }], summary: "Found 1 email." }));
+
+  function tenantRegistry() {
+    const registry = createToolRegistry();
+    registry.register({
+      name: "list_inbox",
+      version: "1",
+      description: "personal inbox",
+      contexts: ["personal"],
+      inputSchema: z.object({}).passthrough(),
+      output: { fields: { id: { class: "D1" } }, summaryClass: "D1" },
+      execute: personalTool,
+    });
+    registry.register(createListPendingActionsTool({ instanceRepo: new InMemoryActionRepo(() => NOW), registry: actionRegistry }));
+    registry.register(createShowMyAccessTool({ memberships: { findById: () => membership } }));
+    return registry;
+  }
+
+  function script(intents: Array<Array<{ tool: string; parameters: Record<string, unknown> }>>, reply: GatewayResult = denied("required_part_withheld")) {
+    const inner = createMockExtractor(intents, reply);
+    const beginTurn = vi.fn((ctx: ModelContext, opts?: { channel?: string }) => inner.beginTurn(ctx, opts));
+    return { gateway: { beginTurn } satisfies ModelGateway, beginTurn, requests: inner.requests };
+  }
+
+  let conversationRepo: ConversationRepository;
+  let logger: Logger;
+  beforeEach(() => {
+    conversationRepo = createMockConversationRepo();
+    logger = createMockLogger();
+    personalTool.mockClear();
+  });
+
+  it("begins the turn with the tenant model context and offers only the tenant's tools", async () => {
+    const { gateway, beginTurn, requests } = script([[{ tool: "none", parameters: {} }]]);
+
+    await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: tenantRegistry(), tenantScope },
+      { message: "what can I do here?", now: NOW, userId: "i1" },
+    );
+
+    expect(beginTurn).toHaveBeenCalledWith({ kind: "tenant", identityId: "i1", tenantId: "t1", membershipId: "m1" }, { channel: "web", conversationId: "user:i1", turnId: "msg-001" });
+    const catalog = requests[0].parts.find((p) => p.kind === "tool_catalog");
+    expect(catalog).toMatchObject({ tools: [{ name: "list_pending_actions" }, { name: "show_my_access" }] });
+    expect(JSON.stringify(requests[0])).not.toContain("list_inbox");
+  });
+
+  it("runs show_my_access against the request's membership and sends its D1 fields on", async () => {
+    const { gateway, requests } = script(
+      [[{ tool: "show_my_access", parameters: {} }], [{ tool: "none", parameters: {} }]],
+      answered({ answer: "You are warehouse staff.", usedTools: ["show_my_access"] }),
+    );
+
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: tenantRegistry(), tenantScope },
+      { message: "what is my role?", now: NOW, userId: "i1" },
+    );
+
+    expect(result.response).toBe("You are warehouse staff.");
+    const reply = requests.find((r) => r.purpose === "chat_reply")!;
+    expect(JSON.stringify(reply.parts)).toContain("WarehouseStaff");
+  });
+
+  it("refuses a personal tool the model names in a tenant context, without running it", async () => {
+    const { gateway, requests } = script([[{ tool: "list_inbox", parameters: {} }], [{ tool: "none", parameters: {} }]]);
+
+    const result = await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: tenantRegistry(), tenantScope },
+      { message: "read my mail", now: NOW, userId: "i1" },
+    );
+
+    expect(personalTool).not.toHaveBeenCalled();
+    expect(result.actions).toEqual([]);
+    const reply = requests.find((r) => r.purpose === "chat_reply")!;
+    expect(JSON.stringify(reply.parts)).toContain("tool_not_in_context");
+  });
+
+  it("a personal chat never offers or runs a tenant-only tool", async () => {
+    const { gateway, beginTurn, requests } = script([[{ tool: "show_my_access", parameters: {} }], [{ tool: "none", parameters: {} }]]);
+
+    await sendChatMessage(
+      { conversationRepo, logger, modelGateway: gateway, toolRegistry: tenantRegistry() },
+      { message: "what is my role?", now: NOW, userId: "i1" },
+    );
+
+    expect(beginTurn).toHaveBeenCalledWith({ kind: "personal", identityId: "i1" }, { channel: "web", conversationId: "user:i1", turnId: "msg-001" });
+    const catalog = requests[0].parts.find((p) => p.kind === "tool_catalog");
+    expect(catalog).toMatchObject({ tools: [{ name: "list_inbox" }, { name: "list_pending_actions" }] });
+    const reply = requests.find((r) => r.purpose === "chat_reply")!;
+    expect(JSON.stringify(reply.parts)).not.toContain("WarehouseStaff");
   });
 });

@@ -1,5 +1,10 @@
 import { z } from "zod";
 
+const base64Key32 = z.string().refine(
+  (v) => /^[A-Za-z0-9+/]+={0,2}$/.test(v) && Buffer.from(v, "base64").length === 32,
+  { message: "must be base64 of exactly 32 bytes. Generate with: openssl rand -base64 32" },
+);
+
 const envSchema = z.object({
   // ── Core ──────────────────────────────────────────────────
   NODE_ENV: z
@@ -56,6 +61,14 @@ const envSchema = z.object({
 
   // ── Database ──────────────────────────────────────────────
   DATABASE_PATH: z.string().default("./data/oneon.db"),
+  CONTROL_DATABASE_PATH: z.string().default("./data/control.db"),
+  TENANT_DATA_DIR: z.string().default("./data/tenants"),
+  /** Where Oneon writes its encrypted backups (spec 8.7). The operator syncs this folder off-site and prunes it. */
+  BACKUP_DIR: z.string().default("./data/backups"),
+  /** Required once any tenant registration exists. A static schema cannot know that, so startup checks it (storage-startup.ts). */
+  BACKUP_ENCRYPTION_KEY: base64Key32.optional(),
+  ONEON_GRANT_MASTER_KEY: base64Key32.optional(),
+  ONEON_SIGNING_KEY_MASTER_KEY: base64Key32.optional(),
 
   // ── Gmail ─────────────────────────────────────────────────
   GMAIL_POLL_INTERVAL_MS: z.coerce.number().default(180000),

@@ -39,6 +39,7 @@ export function createListGitHubPRsTool(
   return {
     name: "list_github_prs",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "List GitHub pull requests. Supports filtering by state, author, and repository. When repo is specified, queries that repo directly; otherwise searches across all repos.",
     inputSchema: listGitHubPRsSchema,

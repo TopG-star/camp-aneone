@@ -128,6 +128,8 @@ cd camp-aneone
 ./deploy.sh
 ```
 
+> **Upgrading to the release that adds pharmacies (Step B-core):** set `BACKUP_ENCRYPTION_KEY` in `.env` (`openssl rand -base64 32`, with a copy kept off the VPS) *before* you deploy it. Its first start migrates `oneon.db` and creates `control.db`, and Oneon backs a file up before migrating it only when the key is set. Without the key that first migration runs with no backup of its own (the server only warns), and the copy `deploy.sh` takes is a plain file copy, which can catch the file mid-write.
+
 To restart without rebuilding:
 ```bash
 ./deploy.sh --no-build
@@ -143,24 +145,144 @@ docker compose logs -f dashboard
 docker compose logs -f cloudflared
 ```
 
-### Manual database backup
-```bash
-mkdir -p backups
-docker run --rm \
-  -v camp-aneone_db-data:/data:ro \
-  -v $(pwd)/backups:/backup \
-  alpine:3.20 cp /data/oneon.db /backup/manual_$(date +%Y%m%d).db
-```
+### Backups
+
+Oneon writes its own backups; do not copy the database files by hand (a plain `cp` can copy a file in the middle of a write).
+
+- **What:** SQLite's online backup API, one sealed file per database: `control`, `personal` and one per pharmacy that is active or suspended by an operator (a suspended pharmacy stays backed up; a removed one does not). They are written to `BACKUP_DIR` (default `./data/backups`, which is `/app/data/backups` in the container, inside the `db-data` volume).
+- **When:** once per calendar day (a `yyyy-mm-dd` folder), and before every migration that is pending (`pre-migration/<timestamp>/`). A day is written into `yyyy-mm-dd.partial/` and renamed to `yyyy-mm-dd` only when every file succeeded, so a day folder always means a complete day. If a file fails, or the server dies part-way, no day folder exists and the next hourly check starts the day again (a leftover `.partial` folder is replaced); sync and prune only `yyyy-mm-dd`, `hourly/yyyy-mm-ddThhZ` and `pre-migration` folders. At startup Oneon migrates `control`, `personal` and the file of every active or suspended pharmacy (never a removed one), so a suspended pharmacy stays backed up after a release that adds a migration. If the backup before a migration fails, that file is not migrated: a pharmacy is refused service and logged at error level while the others are served; a failure for `control` or `personal` stops the server from starting.
+- **Hourly copies:** every hour Oneon also takes a sealed copy of `control` and of each active or suspended pharmacy, in addition to the daily snapshot, which is unchanged. The personal file stays daily only. An hour's copies go into `hourly/yyyy-mm-ddThhZ/` (UTC, for example `hourly/2026-10-10T03Z/`) by exactly the daily rules: written into `hourly/yyyy-mm-ddThhZ.partial/` and renamed when every file succeeded, a skipped pharmacy listed in its `skipped.json`, a failed hour retried at the next hourly check. A failed hourly copy is logged at error ("Hourly backup failed").
+- **Hourly retention (per file):** after each successful hourly copy Oneon keeps, for each file (`control` and each pharmacy), its own 48 newest hourly copies, so about two days of hourly copies are kept, and a pharmacy that was skipped for some hours still keeps 48. Older hourly copies are deleted. An hourly folder is deleted whole (with its `skipped.json`) only when it holds no copy that must be kept; otherwise only the copies beyond 48 inside it are deleted. It never deletes the newest copy of any file, a daily folder, or anything under `pre-migration/`. A leftover `hourly/yyyy-mm-ddThhZ.partial/` folder (a run that died) is deleted once its last write is more than 2 hours old; a daily `.partial` folder is never deleted by Oneon. What it removed is logged ("Old hourly backups pruned").
+- **Skipped pharmacies:** a pharmacy the server refuses to open (for example `tenant_schema_behind` after its pre-migration backup failed, so it was not migrated) does not hold the day back. The day completes without it; the pharmacy is listed in `yyyy-mm-dd/skipped.json` (`[{registrationId, code}]`, absent when nothing was skipped) and logged at error ("backup skipped") on every nightly run until it is fixed. Its last good copy is its backup under `pre-migration/<timestamp>/`. Any other failure (a backup, seal or write error, or an unexpected error opening a file) still keeps the day in `.partial` and is retried hourly.
+- **Missing pharmacy file:** an active or suspended pharmacy whose file is not on disk is skipped the same way (listed in `skipped.json` with `code: "tenant_file_missing"`), and logged at error with `alert: "tenant_file_missing"` ("backup skipped: the tenant file is missing") on every nightly run until it is fixed. This is not a schema problem: the file has to be restored from a backup (see Restore).
+- **Backup age:** after every hourly check Oneon looks at the newest restorable copy of `control`, `personal` and each active or suspended pharmacy: a sealed file in a finished `yyyy-mm-dd/` or `hourly/yyyy-mm-ddThhZ/` folder or under `pre-migration/`, by the time it was written (never a `.partial` folder or a `.part` file). Any whose newest copy is older than 26 hours is logged at error with `alert: "backup_stale"` (`context`, `registrationId` for a pharmacy, `ageHours` or `"none"`), every hour until a fresh copy exists. A pharmacy with no copy at all is measured from the later of its enrolment and the last time it became active (a resume or re-enrolment), so a new pharmacy, or a resumed one that has no copy yet, is not alerted before its first backup, and is once 26 hours pass without one (`ageHours: "none"`). A suspended pharmacy keeps being backed up every hour and every night, so a resumed one normally has a recent copy and is measured from it like any other. A skipped pharmacy therefore keeps alerting once its `pre-migration/` copy is more than 26 hours old.
+- **Encryption:** AES-256-GCM under `BACKUP_ENCRYPTION_KEY` (base64 of 32 bytes: `openssl rand -base64 32`). Without it no backups are made and the server warns at startup; once any pharmacy is registered the server refuses to start without it, so enrolling a pharmacy is refused (HTTP 503, naming `BACKUP_ENCRYPTION_KEY`) until the key is set and the server restarted. Keep a copy of the key somewhere other than the VPS: a backup is only as recoverable as its key. Each file is bound to its own folder and file name (`<day>/<name>.db.enc`, or `<yyyy-mm-ddThhZ>/<name>.db.enc` for an hourly copy), so sync the folder as it is. If a file was renamed or moved anyway (for example fetched from off-site into another folder), restore it with `--as` (below).
+- **Restore test:** once a month Oneon restores one pharmacy (rotating) from the latest backup into a temporary folder, runs `PRAGMA integrity_check`, reads `context_meta`, and deletes the copy. The test passes only if `context_meta` says kind `tenant` with the tenant id of the registration that owns the file; a file with no owning registration, a different tenant id or no `context_meta` fails. A failure is logged at error level ("Monthly restore test failed"); watch the logs for it.
+- **Startup lock:** while the server prepares storage (opening and migrating `control.db`, backing up, migrating the other files) it holds an operating-system lock on `storage.lock`, beside `control.db`. If a second Oneon process starts meanwhile it stops with "Another Oneon process is preparing storage". The system releases the lock when a process dies, so a crash or kill never leaves it stuck: there is no lock file to delete by hand. Backups and restore tests keep their plaintext scratch in `backup-scratch/`, beside `control.db` (on the data volume, never in `BACKUP_DIR` or the system's temporary folder); startup removes what an interrupted backup left there, and `.part` files in `BACKUP_DIR`.
+- **Off-site:** the folder only protects against mistakes until it leaves the VPS. Sync `BACKUP_DIR` off-site with the tool of your choice, for example `rclone` to Cloudflare R2 or to a Hetzner Storage Box:
+  ```bash
+  docker run --rm -v camp-aneone_db-data:/data:ro -v ~/.config/rclone:/config/rclone rclone/rclone \
+    copy /data/backups r2:camp-aneone-backups --exclude "**.partial/**" --exclude "*.part"
+  ```
+  Use `rclone copy`, not `rclone sync`: `copy` only adds, so nothing Oneon deletes locally (old hourly copies, leftover `.partial` folders) is deleted off-site. The off-site copies are therefore never pruned by Oneon: prune them yourself, there, by the same rules as below (never the newest copy of any file). Until a copy has been copied off-site, the hourly and the daily copies live on the same disk as the databases: losing that disk loses them too, so copy at least as often as you need (hourly, to keep the hourly copies' benefit).
+- **Pruning daily and pre-migration folders is yours:** Oneon deletes only hourly copies (see Hourly retention), so the daily and `pre-migration` folders grow. Prune old ones yourself (for example keep 30 daily folders). A later release (B-retention) will delete each backup on the same schedule as its file, and must enforce the rule below. Whoever deletes a backup, by hand, by the hourly retention or in B-retention, must never delete the newest copy of any file: `control`, `personal` and every pharmacy. That includes a skipped pharmacy's last good copy under `pre-migration/` or in an old hourly folder (it may be the only one). Check `backup_stale` before and after pruning.
 
 ### Restore database from backup
+
+Restore one file at a time: stop the server, decrypt, replace the file, start. Run the decrypt step from a checkout of the repository (the container image does not carry the script), with `BACKUP_ENCRYPTION_KEY` in the checkout's `.env` or the environment. Relative `<file>` and `--out` paths are taken from the directory you typed the command in, not from the package folder.
+
 ```bash
 docker compose down
+
+# Decrypt to a new file. It refuses to overwrite an existing file unless you add --force.
+pnpm --filter @oneon/agent-server restore-backup /path/to/backups/2026-10-10/personal.db.enc --out /tmp/oneon.db
+
+# If the file was renamed or moved, name where it was written: <day>/<file name>.
+# pnpm --filter @oneon/agent-server restore-backup ./fetched/copy.enc --as 2026-10-10/personal.db.enc --out /tmp/oneon.db
+
+# An hourly copy restores the same way (control or a pharmacy; personal has daily copies only):
+# pnpm --filter @oneon/agent-server restore-backup /path/to/backups/hourly/2026-10-10T03Z/control.db.enc --out /tmp/control.db
+# and, when it was fetched elsewhere: --as 2026-10-10T03Z/control.db.enc
+
+# Replace the live file with it (personal -> oneon.db, control -> control.db, a pharmacy -> tenants/<its file name>).
+# Remove the old file's -wal and -shm files at the same time.
 docker run --rm \
   -v camp-aneone_db-data:/data \
-  -v $(pwd)/backups:/backup \
-  alpine:3.20 cp /backup/<backup_file>.db /data/oneon.db
+  -v /tmp:/restore \
+  alpine:3.20 sh -c 'rm -f /data/oneon.db-wal /data/oneon.db-shm && cp /restore/oneon.db /data/oneon.db'
+
 docker compose up -d
 ```
+
+The decrypted file is plaintext: delete it when you are done, and do not leave it in `BACKUP_DIR`. The file you restore carries its own schema version; the server migrates it when it starts (with a backup first).
+
+## Pharmacies (ImpressoRx)
+
+Oneon serves a pharmacy only after a platform operator has enrolled that pharmacy's ImpressoRx deployment.
+
+### Keys
+
+Set these in `.env` before you enrol the first pharmacy. Each is base64 of 32 bytes (`openssl rand -base64 32`):
+
+| Key | What it seals | If it is lost |
+|---|---|---|
+| `BACKUP_ENCRYPTION_KEY` | backups (see Backups) | no backup can be restored |
+| `ONEON_SIGNING_KEY_MASTER_KEY` | Oneon's private signing key for each pharmacy | every pharmacy registration stops working; each must be enrolled again |
+| `ONEON_GRANT_MASTER_KEY` | the delegation grants ImpressoRx issues at each hand-off | every grant is unusable; staff open Oneon from ImpressoRx again |
+
+Keep a copy of each key somewhere other than the VPS. Nothing can decrypt what a lost key sealed. Enrolment is refused with HTTP 503, naming each missing key, until all three are set and the server has been restarted. `CONTROL_DATABASE_PATH` (default `./data/control.db`) and `TENANT_DATA_DIR` (default `./data/tenants`) must stay on the data volume.
+
+### Becoming the first platform operator
+
+1. Sign in to the dashboard with Google once. That creates your Oneon identity.
+2. Find your identity id (replace the email with yours):
+   ```bash
+   docker compose exec agent-server node -e "const db = require('better-sqlite3')(process.env.CONTROL_DATABASE_PATH || './data/control.db', { fileMustExist: true }); console.log(db.prepare('SELECT identity_id, kind, email FROM login_identities WHERE lower(email) = lower(?)').all(process.argv[1]))" you@example.com
+   ```
+3. Grant operator to that id. The command backs up `control.db` first if a migration is pending, and it refuses a control database that does not exist (it never creates an empty one):
+   ```bash
+   docker compose exec agent-server node --input-type=module -e "const { grantOperator, grantOperatorPaths } = await import('/app/packages/agent-server/dist/grant-operator.js'); await grantOperator({ ...grantOperatorPaths(process.env), keyB64: process.env.BACKUP_ENCRYPTION_KEY || undefined, identityId: process.argv[1] }); console.log('Granted platform operator')" <identity-id>
+   ```
+   From a checkout of the repository (local development), the same step is `pnpm --filter @oneon/agent-server grant-operator <identity-id>`, run from the repository root. A relative `CONTROL_DATABASE_PATH` is taken from the folder you typed the command in.
+
+### Enrolling a pharmacy
+
+1. The pharmacy's ImpressoRx admin opens **Settings → Oneon** and presses **Enable**. ImpressoRx shows a one-time enrolment code that is valid for 10 minutes.
+2. Check the deployment's HTTPS origin against the tenant registry, out of band. Enrolment trusts whichever deployment answers at that origin and holds the code.
+3. In the dashboard, open **/platform/enrol** and enter the origin, the tenant slug and the code. A successful enrolment creates the pharmacy's registration and its database file.
+
+   The deployment's signed reply names its ImpressoRx tenant id, ImpressoRx's `Tenant.id`. That id is made once per pharmacy database and never reused, and Oneon stores it as the pharmacy's permanent identity. The slug is only a name: a pharmacy deleted and set up again can come back under the same slug, but not with the same id. Enrolment is refused with 502 if the reply names no tenant id (the ImpressoRx release is too old: update it first), and with 409 if another registration already holds that id (for example, a copy of an enrolled pharmacy's database). Both refusals come after the code has been used: see "Refusals after the code is used" below.
+4. **/platform** lists every pharmacy with its status, its ImpressoRx tenant id and its latest daily rollup (counts only).
+
+### Suspending a pharmacy
+
+**Suspend**, on **/platform**, stops Oneon serving a pharmacy at once. Its staff cannot open it in Oneon, and nightly jobs skip it. Its file is still backed up, and it stays in the `backup_stale` check (see Backups). Nothing changes in ImpressoRx. **Resume** undoes a suspension, and reports success only for a pharmacy Oneon can serve. While the pharmacy is still suspended it first migrates the pharmacy's file if this release brought a migration (with a sealed copy under `pre-migration/` first, as at startup), then refreshes the pharmacy's deployment keys from ImpressoRx (verified with the keys Oneon already holds), and only then serves it again. If either step fails the pharmacy stays suspended, the answer names the step (`migration`, HTTP 500, or `deployment_keys`, HTTP 502), and a `resume_refused` event and a warning ("Pharmacy resume refused") record why; fix the cause and press **Resume** again, or re-enrol the pharmacy if its keys cannot be refreshed. Re-enrolment migrates the file the same way before the code is used, and is refused with the code still valid if that fails. One operation per pharmacy runs at a time: Suspend, Resume, enrolment and re-enrolment are refused with 409 while another one is in progress for the same pharmacy. Each change is recorded as a `status_changed` event on the registration and as a log line ("Pharmacy suspended by operator", "Pharmacy resumed by operator").
+
+A pharmacy whose admin pressed **Remove** in ImpressoRx, or whose keys are lost, still shows as active, but every exchange with it fails. Lost keys means a lost `ONEON_SIGNING_KEY_MASTER_KEY`, or a deployment key Oneon could not refresh within its 7-day overlap. To reconnect it:
+
+1. **Suspend** it on **/platform**.
+2. The pharmacy's ImpressoRx admin opens **Settings → Oneon**. If Oneon is still enabled there, the admin presses **Remove**. The admin then presses **Enable**, which issues a fresh enrolment code.
+3. Enrol it again on **/platform/enrol** with the same origin, the same tenant slug and the new code.
+
+Re-enrolment runs the full two-sided enrolment proof. On success, Oneon:
+
+- retires every old key at once (with no 7-day overlap) and stores the new keys;
+- revokes every grant of the pharmacy;
+- sets the pharmacy active again.
+
+Its database file, tenant id and memberships are kept. Each staff member reconnects by opening Oneon from ImpressoRx, as usual.
+
+Re-enrolment is refused in these cases:
+
+- with 409 while the pharmacy is active;
+- with 409 at any origin other than the one the pharmacy was enrolled at;
+- with 502 if the deployment's signed reply names a different tenant slug;
+- with 502 if the reply names a different ImpressoRx tenant id from the one stored at enrolment. The pharmacy at that origin was set up again or its database was replaced, so it is not the pharmacy this registration belongs to, and the registration and its data stay with the original. Re-enrolment never moves a registration to a different pharmacy;
+- with 409 if the pharmacy stopped being suspended (another operator resumed it) while the deployment was answering.
+
+The 502 refusals and the last 409 come after the code has been used.
+
+### Refusals after the code is used
+
+Once the deployment has accepted the code, ImpressoRx shows Oneon as connected on its side, whatever Oneon then decides. While it does, ImpressoRx issues no new code: pressing **Enable** alone does nothing. Every refusal after that point says so: the pharmacy's ImpressoRx admin must press **Remove**, then **Enable**, to issue a new code. Oneon stores nothing in these cases, and it does not undo the connection at ImpressoRx itself.
+
+- **502**: the deployment's answer was wrong: another slug, another ImpressoRx tenant id, or no tenant id. For another tenant id, a new code is refused the same way while that deployment holds a different pharmacy; the admin should still press **Remove** there.
+- **409**: a race or a conflict. Another registration holds the pharmacy's ImpressoRx tenant id; or, while the deployment was answering, the slug or the tenant id was taken by another registration, or the pharmacy stopped being suspended.
+- **500**, with a message that says nothing was stored: storing failed, for example the pharmacy's file could not be created. The cause is logged at error level ("Enrolment error" or "Re-enrolment error").
+
+Every registration holds its ImpressoRx tenant id, and re-enrolment always compares the id in the reply with the stored one. A control database with a registration that has no id (one enrolled before ImpressoRx sent it, on a development database) cannot be upgraded: control migration 007 refuses, and the server does not start, with a message naming each such registration (`<registration id> (<slug>)`). Nothing is changed by the refused migration. Such a database predates the id (no production registration does) and must be created again. After the migration the database itself refuses a registration without an id.
+
+Moving a pharmacy to a new origin is not possible from the console. It remains a manual procedure on `control.db`, done with the server stopped and a fresh backup.
+
+### Log alerts to watch
+
+- `code: "tenant_mismatch"` ("Tenant mismatch", error): a row of another context was found in a pharmacy's file. No row content is logged.
+- `alert: "link_check"` (error): the nightly link check found an action grant whose action no longer exists, or could not check a pharmacy.
+- `alert: "backup_stale"` (error, every hour until it is fixed): the newest restorable copy of `control`, `personal` or a pharmacy is older than 26 hours or missing. See Backups.
+- `alert: "tenant_file_missing"` (error, every night until it is fixed): an active or suspended pharmacy's file is not on disk, so it could not be backed up. Restore it from a backup. See Backups.
+- "backup skipped: the tenant is refused service" (error, every night until it is fixed): see Backups.
+- "Monthly restore test failed" (error): see Backups.
+- "Deployment key refresh failed" (warning): Oneon could not refresh a deployment's public keys. The refresh runs at startup and once a day. If it keeps failing for 7 days after the pharmacy rotates its key, the pharmacy can be stranded.
 
 ## Firewall (Optional but Recommended)
 

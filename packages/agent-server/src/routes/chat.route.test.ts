@@ -3,12 +3,24 @@ import express from "express";
 import request from "supertest";
 import { z } from "zod";
 import type {
+  ActionInstanceRepository,
+  ActiveContext,
+  ContextDb,
   ConversationMessage,
   ConversationRepository,
   Logger,
 } from "@oneon/domain";
-import { createToolRegistry, type ModelGateway } from "@oneon/application";
+import {
+  createActionRegistry,
+  createListPendingActionsTool,
+  createShowMyAccessTool,
+  createToolRegistry,
+  type ModelContext,
+  type ModelGateway,
+} from "@oneon/application";
+import { TenantRefusedError } from "@oneon/infrastructure";
 import { createChatRouter, type ChatRouteDeps } from "./chat.route.js";
+import type { Request } from "express";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -45,11 +57,33 @@ function createMockLogger(): Logger {
   };
 }
 
-function buildApp(deps: ChatRouteDeps, userId = "user-A"): express.Express {
+type TestDeps = Omit<ChatRouteDeps, "conversationsFor" | "modelGatewayFor" | "tenantActionsFor"> &
+  Partial<Pick<ChatRouteDeps, "modelGatewayFor" | "tenantActionsFor">> & { conversationRepo: ConversationRepository; modelGateway?: ModelGateway | null };
+
+/** `context` is what resolveActiveContext would have set on the request. */
+function buildApp(
+  { conversationRepo, modelGateway, modelGatewayFor, tenantActionsFor, ...deps }: TestDeps,
+  userId = "user-A",
+  context: { active?: ActiveContext; db: ContextDb } | null = null,
+  holdContext?: <T>(fn: () => T) => T,
+): express.Express {
   const app = express();
   app.use(express.json());
-  app.use((req, _res, next) => { req.userId = userId; next(); });
-  app.use("/api/chat", createChatRouter(deps));
+  app.use((req, _res, next) => {
+    req.userId = userId;
+    if (holdContext) req.holdContext = holdContext;
+    if (context) {
+      req.activeContext = context.active;
+      req.contextDb = context.db;
+    }
+    next();
+  });
+  app.use("/api/chat", createChatRouter({
+    ...deps,
+    conversationsFor: () => conversationRepo,
+    modelGatewayFor: modelGatewayFor ?? (() => modelGateway ?? null),
+    tenantActionsFor: tenantActionsFor ?? (() => { throw new Error("no tenant actions in this test"); }),
+  }));
   return app;
 }
 
@@ -104,7 +138,70 @@ describe("POST /api/chat", () => {
     expect(res.body.error).toContain("conversationId");
   });
 
+  it("returns 400 for a conversationId over 128 characters, so it never reaches the append-only audit", async () => {
+    const res = await request(app)
+      .post("/api/chat")
+      .send({ message: "Hello", conversationId: "x".repeat(129) })
+      .expect(400);
+
+    expect(res.body.error).toContain("conversationId");
+  });
+
+  it("accepts a conversationId of exactly 128 characters", async () => {
+    const res = await request(app).post("/api/chat").send({ message: "Hello", conversationId: "x".repeat(128) });
+    expect(res.status).not.toBe(400);
+  });
+
   // ── Successful request ─────────────────────────────────────
+
+  it("answers 403 context_unavailable, as the middleware does, when the context can no longer be held (re-review N2)", async () => {
+    const holdContext = <T,>(_fn: () => T): T => {
+      throw new TenantRefusedError("tenant_unavailable");
+    };
+    const held = buildApp({ conversationRepo, logger }, "user-A", null, holdContext);
+    const res = await request(held).post("/api/chat").send({ message: "Hello Oneon" });
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "context_unavailable" });
+    expect(conversationRepo.append).not.toHaveBeenCalled();
+  });
+
+  it("does not label an unrelated synchronous failure of the turn as a lost context (re-review N2)", async () => {
+    const failing = buildApp(
+      {
+        conversationRepo,
+        logger,
+        modelGatewayFor: () => {
+          throw new Error("wiring bug");
+        },
+      },
+      "user-A",
+      null,
+      (fn) => fn(),
+    );
+    const res = await request(failing).post("/api/chat").send({ message: "Hello Oneon" });
+    expect(res.status).toBe(500);
+    expect(logger.error).toHaveBeenCalledWith("Chat route: failed to process message", { error: "wiring bug" });
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toMatch(/hold the context|suspended/);
+  });
+
+  it("holds the request's context for the whole turn, the writes included", async () => {
+    const appends = () => (conversationRepo.append as ReturnType<typeof vi.fn>).mock.calls.length;
+    const seen = { holds: 0, appendsAtStart: -1, appendsAtEnd: -1 };
+    const holdContext = <T,>(fn: () => T): T => {
+      seen.holds += 1;
+      seen.appendsAtStart = appends();
+      const result = fn();
+      void Promise.resolve(result).then(() => {
+        seen.appendsAtEnd = appends();
+      });
+      return result;
+    };
+    const held = buildApp({ conversationRepo, logger }, "user-A", null, holdContext);
+    await request(held).post("/api/chat").send({ message: "Hello Oneon" }).expect(200);
+    expect(seen.holds).toBe(1);
+    expect(seen.appendsAtStart).toBe(0);
+    expect(seen.appendsAtEnd).toBeGreaterThanOrEqual(2); // the user turn and the assistant turn
+  });
 
   it("returns 200 with response for valid message", async () => {
     const res = await request(app)
@@ -167,13 +264,14 @@ describe("POST /api/chat", () => {
       beginTurn: () => ({
         call: async (req) =>
           req.purpose === "chat_reply"
-            ? { kind: "denied", reason: "required_part_withheld", withheld: [], decisionId: "d" }
+            ? { kind: "denied", reason: "required_part_withheld", withheld: [], decisionId: "d", callId: "c" }
             : {
                 kind: "answered",
                 text: "",
                 json: intentRounds++ === 0 ? [{ tool: "create_calendar_event", parameters: {} }] : [{ tool: "none", parameters: {} }],
                 withheld: [],
                 decisionId: "d",
+                callId: "c",
               },
         restoreToolParams: (params) => ({ ok: true, params }),
         effectiveLimit: () => "D2",
@@ -187,6 +285,24 @@ describe("POST /api/chat", () => {
       .expect(200);
 
     expect(res.body.actions).toEqual([action]);
+  });
+
+  it("begins the model turn linked to its conversation and to the user message that started it", async () => {
+    const beginTurn = vi.fn((_context: ModelContext, _options?: { channel?: string; conversationId?: string; turnId?: string }) => ({
+      call: async () => ({ kind: "denied", reason: "required_part_withheld", withheld: [], decisionId: "d", callId: "c" }) as const,
+      restoreToolParams: (params: Record<string, unknown>) => ({ ok: true as const, params }),
+      effectiveLimit: () => "D2" as const,
+    }));
+    app = buildApp({ conversationRepo, logger, modelGateway: { beginTurn } as unknown as ModelGateway, toolRegistry: createToolRegistry() });
+
+    const res = await request(app).post("/api/chat").send({ message: "Hello", conversationId: "conv-9" }).expect(200);
+
+    // The user message row is saved before the model is asked, and its id is the turn.
+    expect(res.body.userMessageId).toBe("msg-001");
+    expect(beginTurn).toHaveBeenCalledWith(
+      { kind: "personal", identityId: "user-A" },
+      { channel: "web", conversationId: "conv-9", turnId: res.body.userMessageId },
+    );
   });
 
   it("counts only the session user's actions awaiting approval", async () => {
@@ -244,7 +360,7 @@ describe("POST /api/chat", () => {
         logger,
         // Cast here so we can drive RED first before adding route dep typing.
         userProfileRepo,
-      } as ChatRouteDeps,
+      } as TestDeps,
     );
 
     await request(app)
@@ -253,5 +369,103 @@ describe("POST /api/chat", () => {
       .expect(200);
 
     expect(userProfileRepo.findByUserId).toHaveBeenCalledWith("user-A");
+  });
+});
+
+// ── Tenant context ───────────────────────────────────────────
+
+describe("POST /api/chat in a tenant context", () => {
+  const active: ActiveContext = { kind: "tenant", identityId: "i1", membershipId: "m1", tenantId: "t1", registrationId: "r1" };
+  const handle: ContextDb = { kind: "tenant", tenantId: "t1", raw: {}, __brand: "TenantDb" };
+  const membership = { identityId: "i1", status: "active", role: "Admin", permissions: ["inventory.view"], locationIds: ["loc-1"], snapshotAt: "2026-10-08T09:00:00.000Z" };
+  const personalTool = vi.fn(() => ({ data: [], summary: "personal" }));
+  const actions = { instanceRepo: { list: vi.fn(() => []) } as unknown as ActionInstanceRepository, registry: createActionRegistry([]) };
+
+  function tenantRegistry(findById: (id: string) => typeof membership | null = () => membership) {
+    const registry = createToolRegistry();
+    registry.register({
+      name: "list_inbox",
+      version: "1",
+      description: "personal inbox",
+      contexts: ["personal"],
+      inputSchema: z.object({}).passthrough(),
+      output: { fields: {}, summaryClass: "D1" },
+      execute: personalTool,
+    });
+    registry.register(createListPendingActionsTool({ instanceRepo: { list: vi.fn() } as unknown as ActionInstanceRepository, registry: createActionRegistry([]) }));
+    registry.register(createShowMyAccessTool({ memberships: { findById } }));
+    return registry;
+  }
+
+  /** Intent rounds follow the script; the chat reply is denied so the tool summaries answer. */
+  function scripted(intents: Array<Array<{ tool: string; parameters: Record<string, unknown> }>>) {
+    const requests: Array<{ purpose: string; parts: unknown[] }> = [];
+    let round = 0;
+    const beginTurn = vi.fn((_context: ModelContext, _options?: { channel?: string; conversationId?: string; turnId?: string }) => ({
+      call: async (req: { purpose: string; parts: unknown[] }) => {
+        requests.push(req);
+        return req.purpose === "chat_reply"
+          ? ({ kind: "denied", reason: "required_part_withheld", withheld: [], decisionId: "d", callId: "c" } as const)
+          : ({ kind: "answered", text: "", json: intents[round++] ?? [{ tool: "none", parameters: {} }], withheld: [], decisionId: "d", callId: "c" } as const);
+      },
+      restoreToolParams: (params: Record<string, unknown>) => ({ ok: true as const, params }),
+      effectiveLimit: () => "D1" as const,
+    }));
+    return { gateway: { beginTurn } as unknown as ModelGateway, beginTurn, requests };
+  }
+
+  const tenantApp = (deps: Partial<TestDeps>) =>
+    buildApp({ conversationRepo: createMockConversationRepo(), logger: createMockLogger(), tenantActionsFor: () => actions, ...deps }, "i1", { active, db: handle });
+
+  beforeEach(() => personalTool.mockClear());
+
+  it("asks for the gateway of the request's own handle", async () => {
+    const { gateway } = scripted([]);
+    const modelGatewayFor = vi.fn((_req: Request) => gateway);
+
+    await request(tenantApp({ modelGatewayFor, toolRegistry: tenantRegistry() })).post("/api/chat").send({ message: "hello" }).expect(200);
+
+    expect(modelGatewayFor).toHaveBeenCalledTimes(1);
+    expect(modelGatewayFor.mock.calls[0][0].contextDb).toBe(handle);
+  });
+
+  it("begins the turn with the tenant model context and offers only the tenant tools", async () => {
+    const { gateway, beginTurn, requests } = scripted([]);
+
+    await request(tenantApp({ modelGateway: gateway, toolRegistry: tenantRegistry() })).post("/api/chat").send({ message: "what can you do?" }).expect(200);
+
+    expect(beginTurn).toHaveBeenCalledWith({ kind: "tenant", identityId: "i1", tenantId: "t1", membershipId: "m1" }, { channel: "web", conversationId: "user:i1", turnId: "msg-001" });
+    expect(requests[0].parts).toContainEqual(
+      expect.objectContaining({ kind: "tool_catalog", tools: [expect.objectContaining({ name: "list_pending_actions" }), expect.objectContaining({ name: "show_my_access" })] }),
+    );
+  });
+
+  it("shows the person their own access, from the membership the session names", async () => {
+    const findById = vi.fn(() => membership);
+    const { gateway } = scripted([[{ tool: "show_my_access", parameters: { membershipId: "m-other" } }]]);
+
+    const res = await request(tenantApp({ modelGateway: gateway, toolRegistry: tenantRegistry(findById) })).post("/api/chat").send({ message: "what is my role?" }).expect(200);
+
+    expect(findById).toHaveBeenCalledWith("m1");
+    expect(res.body.response).toContain("Role Admin");
+  });
+
+  it("does not run a personal tool the model asks for in a tenant context", async () => {
+    const { gateway } = scripted([[{ tool: "list_inbox", parameters: {} }]]);
+
+    await request(tenantApp({ modelGateway: gateway, toolRegistry: tenantRegistry() })).post("/api/chat").send({ message: "read my mail" }).expect(200);
+
+    expect(personalTool).not.toHaveBeenCalled();
+  });
+
+  it("gives a tenant request no model and no tools when its context is not fully resolved", async () => {
+    const { gateway, beginTurn } = scripted([]);
+    const modelGatewayFor = vi.fn((_req: Request) => gateway);
+    const app = buildApp({ conversationRepo: createMockConversationRepo(), logger: createMockLogger(), modelGatewayFor, toolRegistry: tenantRegistry() }, "i1", { db: handle });
+
+    const res = await request(app).post("/api/chat").send({ message: "hello" }).expect(200);
+
+    expect(beginTurn).not.toHaveBeenCalled();
+    expect(res.body.response).toContain("not connected to tools");
   });
 });

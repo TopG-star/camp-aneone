@@ -1,0 +1,193 @@
+import { Router, type Request, type Response } from "express";
+import { TenantAiLimitWriteSchema, type TenantAiLimitChangeResult, type TenantAiLimitView, type TenantProviderLimitView } from "@oneon/contracts";
+import type { Logger } from "@oneon/domain";
+import {
+  PROVIDER_IDS,
+  PROVIDER_REGISTRY,
+  classRank,
+  explainProviderLimit,
+  lowestOfLayers,
+  providerLimit,
+  type ModelRouting,
+  type ProviderEntry,
+  type ProviderId,
+  type ProviderOverride,
+} from "@oneon/application";
+import type { MembershipRepository, TenantAiLimitRepository, TenantLimitClass } from "@oneon/infrastructure";
+import { MANAGE_ONEON } from "../ai-limit-recheck.js";
+import { IMPRESSORX_UNREACHABLE, LAUNCH_REQUIRED, SUSPENDED, type SnapshotRefresher } from "../middleware/active-context.js";
+
+const CONTEXT_UNAVAILABLE = {
+  error: "context_unavailable",
+  message: "This pharmacy isn't available right now. Open Oneon from ImpressoRx again, or ask a pharmacy administrator.",
+} as const;
+
+/** ImpressoRx cannot be reached and the change is not a lowering: only a lowering may rest on the cached snapshot (spec 9.4). */
+const LIVE_CHECK_REQUIRED = {
+  error: "live_check_required",
+  message: "Oneon can't reach ImpressoRx right now. Until it can, the limit can only be lowered. Nothing was changed.",
+} as const;
+
+export interface TenantSettingsRouteDeps {
+  limits: Pick<TenantAiLimitRepository, "current" | "history" | "change">;
+  memberships: Pick<MembershipRepository, "findById">;
+  /** The live ImpressoRx check: it applies the snapshot to the membership and classifies a refusal the same way a context refresh does. */
+  snapshots: Pick<SnapshotRefresher, "checkLive">;
+  /** The provider registry; the platform's own unless a test brings its own. */
+  registry?: Record<ProviderId, ProviderEntry>;
+  configuredProviders: ProviderId[];
+  overrides: Map<ProviderId, ProviderOverride>;
+  /** Which provider serves each route, recorded with a raise; null when there is no gateway. */
+  routing: ModelRouting | null;
+  clock?: () => Date;
+  logger: Logger;
+}
+
+type TenantContext = Extract<NonNullable<Request["activeContext"]>, { kind: "tenant" }>;
+
+/**
+ * The pharmacy's AI data limit (spec 9.4). Mount behind the context chain (session, requireUser, resolveActiveContext): the pharmacy
+ * is the active context's registration and nothing in the request names one.
+ */
+export function createTenantSettingsRouter(deps: TenantSettingsRouteDeps): Router {
+  const router = Router();
+  const registry = deps.registry ?? PROVIDER_REGISTRY;
+  const clock = deps.clock ?? (() => new Date());
+
+  router.use((req, res, next) => {
+    if (req.activeContext?.kind !== "tenant") {
+      res.status(403).json({ error: "tenant_context_required" });
+      return;
+    }
+    next();
+  });
+
+  /**
+   * Spec 9.4 (amendment A3): for each configured provider, the most a call to it may carry in this pharmacy now. It is the gateway's own
+   * computation (explainProviderLimit is providerLimit with its reason, and lowestOfLayers is the rule decide() applies), with the
+   * pharmacy's stored limit as the choice layer, read from the same row the gateway reads. The purpose's own limit is left out: it is
+   * per task, and every purpose's limit is D2 today, so it lowers nothing a pharmacy can set.
+   */
+  const providerLimits = (current: TenantLimitClass): TenantProviderLimitView[] =>
+    PROVIDER_IDS.filter((id) => deps.configuredProviders.includes(id)).map((id) => {
+      const entry = registry[id];
+      const provider = explainProviderLimit(entry, "tenant", deps.overrides.get(id));
+      if (provider.limit === "suspended" || provider.limit === "unknown") return { id, label: entry.label, effective: null, limitedBy: provider.cap };
+      const effective = lowestOfLayers(provider.limit, current) as TenantLimitClass;
+      return { id, label: entry.label, effective, limitedBy: classRank(effective) < classRank(current) ? provider.cap : null };
+    });
+
+  const view = (ctx: TenantContext, canChange: boolean): TenantAiLimitView => {
+    const current = deps.limits.current(ctx.registrationId);
+    return {
+      current,
+      history: deps.limits.history(ctx.registrationId).map((v) => ({ id: v.id, maxClass: v.maxClass, at: v.createdAt, byYou: v.setBy === ctx.identityId })),
+      providers: providerLimits(current),
+      canChange,
+    };
+  };
+
+  /**
+   * The providers that allow a raise to `maxClass` (spec 9.4): configured, with a tenant limit that reaches the class. That limit is the
+   * one the gateway applies on every call (providerLimit, after the platform's overrides), and it is what keeps a provider that is not
+   * reviewed and without a signed DPA below D2, so a raise to D2 can only rest on a provider that really may receive it; the evidence then
+   * carries its review and DPA. It also records the override that applied to each ceiling and the routing in force. Null when no provider
+   * allows the raise.
+   */
+  function raiseEvidence(maxClass: TenantLimitClass): Record<string, unknown> | null {
+    const needsReview = classRank(maxClass) >= classRank("D2");
+    const providers = PROVIDER_IDS.flatMap((id) => {
+      const entry = registry[id];
+      const override = deps.overrides.get(id) ?? null;
+      const ceiling = providerLimit(entry, "tenant", override ?? undefined);
+      if (!deps.configuredProviders.includes(id) || ceiling === "suspended" || ceiling === "unknown" || classRank(ceiling) < classRank(maxClass)) return [];
+      return [{ id, tenantCeiling: ceiling, override, ...(needsReview ? { review: entry.review, tenantDpa: entry.tenantDpa } : {}) }];
+    });
+    return providers.length > 0 ? { requested: maxClass, providers, routing: deps.routing } : null;
+  }
+
+  const changed = (ctx: TenantContext, authorisedFrom: TenantAiLimitChangeResult["authorisedFrom"]): TenantAiLimitChangeResult => ({ ...view(ctx, true), authorisedFrom });
+
+  const refuseLive = (res: Response, reason: "membership_suspended" | "launch_required" | "impressorx_unreachable") => {
+    if (reason === "impressorx_unreachable") res.status(503).json(IMPRESSORX_UNREACHABLE);
+    else res.status(403).json(reason === "membership_suspended" ? SUSPENDED : LAUNCH_REQUIRED);
+  };
+
+  router.get("/ai-limit", (req, res) => {
+    const ctx = req.activeContext as TenantContext;
+    try {
+      // Whether to show the control comes from the cached snapshot; the change itself is checked live.
+      const canChange = deps.memberships.findById(ctx.membershipId)?.permissions.includes(MANAGE_ONEON) ?? false;
+      res.json(view(ctx, canChange));
+    } catch (error) {
+      deps.logger.error("Failed to read the pharmacy AI limit", { error: error instanceof Error ? error.message : String(error) });
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  router.post("/ai-limit", async (req, res) => {
+    const ctx = req.activeContext as TenantContext;
+    const parsed = TenantAiLimitWriteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "invalid_request" });
+      return;
+    }
+    const { maxClass, expectedCurrent } = parsed.data;
+    if (maxClass === "D3" || maxClass === "D4") {
+      res.status(400).json({ error: "class_not_allowed" });
+      return;
+    }
+    try {
+      const membership = deps.memberships.findById(ctx.membershipId);
+      if (!membership) {
+        res.status(403).json(CONTEXT_UNAVAILABLE);
+        return;
+      }
+      // Always live first, whatever the cached snapshot says: a refusal changes nothing.
+      const live = await deps.snapshots.checkLive({ sessionId: req.sessionId, membership });
+      if (!live.ok) {
+        // Spec 9.4 (owner decision 2026-10-14): ImpressoRx being out of reach lets a hand-off session lower the limit on the strength of
+        // the membership's stored snapshot, whatever its age, if it shows settings.oneon. Only a strict lowering, decided inside the write,
+        // and re-checked when ImpressoRx next delivers a snapshot for this membership. A Google session never reaches this: it has no bound
+        // grant, so its live check is launch_required, not unreachable.
+        if (live.reason === "impressorx_unreachable" && req.sessionId && membership.permissions.includes(MANAGE_ONEON)) {
+          const liveCheckRef = JSON.stringify({ authorisedFrom: "cached_snapshot", snapshotAt: membership.snapshotAt, liveCheckFailedAt: clock().toISOString() });
+          const change = deps.limits.change(
+            { registrationId: ctx.registrationId, maxClass, setBy: ctx.identityId, liveCheckRef, expectedCurrent, cachedSnapshot: { membershipId: membership.id } },
+            () => null,
+          );
+          if (!change.ok) {
+            if (change.reason === "live_check_required") res.status(503).json(LIVE_CHECK_REQUIRED);
+            else res.status(409).json({ error: change.reason });
+            return;
+          }
+          deps.logger.warn("AI limit lowered from the cached snapshot while ImpressoRx is unreachable", { membershipId: membership.id, maxClass });
+          res.json(changed(ctx, "cached_snapshot"));
+          return;
+        }
+        refuseLive(res, live.reason);
+        return;
+      }
+      if (!live.membership.permissions.includes(MANAGE_ONEON)) {
+        res.status(403).json({ error: "permission_required" });
+        return;
+      }
+      const liveCheckRef = JSON.stringify({ tokenVersion: live.tokenVersion, checkedAt: clock().toISOString() });
+      // Lowering or keeping the class is always written. A raise is decided against the newest row, inside the write.
+      const change = deps.limits.change(
+        { registrationId: ctx.registrationId, maxClass, setBy: ctx.identityId, liveCheckRef, expectedCurrent },
+        () => raiseEvidence(maxClass),
+      );
+      if (!change.ok) {
+        res.status(409).json({ error: change.reason });
+        return;
+      }
+      res.json(changed(ctx, "live_check"));
+    } catch (error) {
+      deps.logger.error("Failed to change the pharmacy AI limit", { error: error instanceof Error ? error.message : String(error) });
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  return router;
+}

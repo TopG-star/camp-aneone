@@ -85,6 +85,15 @@ function contextComplete(ctx: ModelContext): boolean {
   return ctx.kind === "personal" || (!!ctx.tenantId && !!ctx.membershipId);
 }
 
+/**
+ * The lowest-of-layers rule (boundary spec 6.2): a call carries at most the lowest of the provider's limit, the choice layer (a person's
+ * choice, or in a pharmacy its stored limit) and the purpose's own limit. Without a purpose, the most any call to that provider may carry.
+ */
+export function lowestOfLayers(provider: DataClass, choice: DataClass, purpose?: DataClass): DataClass {
+  const layered = lowerClass(provider, choice);
+  return purpose === undefined ? layered : lowerClass(layered, purpose);
+}
+
 export function decide(input: DecideInput): Decision {
   const purposes: Record<string, PurposeDefinition> = input.purposes ?? PURPOSES;
   const def = Object.prototype.hasOwnProperty.call(purposes, input.request.purpose) ? purposes[input.request.purpose] : undefined;
@@ -107,7 +116,7 @@ export function decide(input: DecideInput): Decision {
   if (!def) return deny("unknown_purpose", null);
   if (pLimit === "suspended" || pLimit === "unknown") return deny("provider_unavailable", null);
   if (!contextComplete(input.context)) return deny("invalid_context", null);
-  const limit = lowerClass(lowerClass(pLimit, input.choiceLimit), def.limit);
+  const limit = lowestOfLayers(pLimit, input.choiceLimit, def.limit);
 
   // C4 by location: a D4 hit in the current user message, or in any data (declared D4, rowClass D4, record free text), denies the
   // call; a D4 hit in an earlier history turn withholds that turn only. Scan results are kept for stage 2b.

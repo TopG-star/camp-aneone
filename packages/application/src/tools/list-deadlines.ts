@@ -38,6 +38,7 @@ export function createListDeadlinesTool(
   return {
     name: "list_deadlines",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "List deadlines within a date range. Defaults to the next 7 days. Optionally filter by status (open, done, dismissed).",
     inputSchema: listDeadlinesSchema,

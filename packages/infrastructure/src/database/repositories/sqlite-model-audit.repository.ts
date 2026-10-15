@@ -1,4 +1,6 @@
 import type Database from "better-sqlite3";
+import { assertRowTenant, type ContextDb } from "@oneon/domain";
+import { rawDb } from "../context-db-gate.js";
 import type { ModelAuditRepository, ModelDecisionRecord, ModelOutcomeRecord } from "@oneon/application";
 
 type Row = {
@@ -9,6 +11,8 @@ type Row = {
   identity_id: string;
   tenant_id: string | null;
   membership_id: string | null;
+  conversation_id: string | null;
+  turn_id: string | null;
   purpose: string;
   channel: string | null;
   provider: string;
@@ -36,6 +40,7 @@ type Row = {
   checks_json: string;
   output_fingerprint: string | null;
   o_key_version: number;
+  o_tenant_id: string | null;
 };
 
 function mapDecision(r: Row): ModelDecisionRecord {
@@ -47,6 +52,8 @@ function mapDecision(r: Row): ModelDecisionRecord {
     identityId: r.identity_id,
     tenantId: r.tenant_id,
     membershipId: r.membership_id,
+    conversationId: r.conversation_id,
+    turnId: r.turn_id,
     purpose: r.purpose,
     channel: r.channel,
     provider: r.provider,
@@ -84,18 +91,28 @@ function mapOutcome(r: Row): ModelOutcomeRecord | null {
 }
 
 export class SqliteModelAuditRepository implements ModelAuditRepository {
-  constructor(private readonly db: Database.Database) {}
+  private readonly db: Database.Database;
+
+  constructor(private readonly context: ContextDb) {
+    this.db = rawDb(context);
+  }
+
+  private tenantId(): string | null {
+    return this.context.kind === "tenant" ? this.context.tenantId : null;
+  }
 
   recordDecision(r: ModelDecisionRecord): void {
+    // A record naming another context is refused, never re-stamped.
+    assertRowTenant(this.context, r.tenantId, "model_call_decisions");
     this.db
       .prepare(
-        `INSERT INTO model_call_decisions (id, call_id, created_at, context_kind, identity_id, tenant_id, membership_id, purpose, channel, provider, model,
+        `INSERT INTO model_call_decisions (id, call_id, created_at, context_kind, identity_id, tenant_id, membership_id, conversation_id, turn_id, purpose, channel, provider, model,
            effective_limit, layers_json, decision, deny_reason, released_json, withheld_json, placeholder_count, scanner_d3, scanner_d4, alert,
            policy_fingerprint, input_fingerprint, key_version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        r.id, r.callId, r.createdAt, r.contextKind, r.identityId, r.tenantId, r.membershipId, r.purpose, r.channel, r.provider, r.model,
+        r.id, r.callId, r.createdAt, r.contextKind, r.identityId, this.tenantId(), r.membershipId, r.conversationId, r.turnId, r.purpose, r.channel, r.provider, r.model,
         r.effectiveLimit, JSON.stringify(r.layers), r.decision, r.denyReason, JSON.stringify(r.released), JSON.stringify(r.withheld),
         r.placeholderCount, r.scannerHits.D3, r.scannerHits.D4, r.alert ? 1 : 0, r.policyFingerprint, r.inputFingerprint, r.keyVersion,
       );
@@ -105,21 +122,25 @@ export class SqliteModelAuditRepository implements ModelAuditRepository {
     this.db
       .prepare(
         `INSERT INTO model_call_outcomes (call_id, created_at, status, block_reason, attempts, latency_ms, input_tokens, output_tokens, checks_json,
-           output_fingerprint, key_version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           output_fingerprint, key_version, tenant_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(r.callId, r.createdAt, r.status, r.blockReason, r.attempts, r.latencyMs, r.inputTokens, r.outputTokens, JSON.stringify(r.checks), r.outputFingerprint, r.keyVersion);
+      .run(r.callId, r.createdAt, r.status, r.blockReason, r.attempts, r.latencyMs, r.inputTokens, r.outputTokens, JSON.stringify(r.checks), r.outputFingerprint, r.keyVersion, this.tenantId());
   }
 
   listRecentForIdentity(identityId: string, limit: number): Array<{ decision: ModelDecisionRecord; outcome: ModelOutcomeRecord | null }> {
     const rows = this.db
       .prepare(
         `SELECT d.*, o.created_at AS o_created_at, o.status, o.block_reason, o.attempts, o.latency_ms, o.input_tokens, o.output_tokens,
-                o.checks_json, o.output_fingerprint, o.key_version AS o_key_version
+                o.checks_json, o.output_fingerprint, o.key_version AS o_key_version, o.tenant_id AS o_tenant_id
          FROM model_call_decisions d LEFT JOIN model_call_outcomes o ON o.call_id = d.call_id
          WHERE d.identity_id = ? ORDER BY d.created_at DESC, d.rowid DESC LIMIT ?`,
       )
       .all(identityId, limit) as Row[];
-    return rows.map((r) => ({ decision: mapDecision(r), outcome: mapOutcome(r) }));
+    return rows.map((r) => {
+      assertRowTenant(this.context, r.tenant_id, "model_call_decisions");
+      if (r.status !== null) assertRowTenant(this.context, r.o_tenant_id, "model_call_outcomes");
+      return { decision: mapDecision(r), outcome: mapOutcome(r) };
+    });
   }
 }

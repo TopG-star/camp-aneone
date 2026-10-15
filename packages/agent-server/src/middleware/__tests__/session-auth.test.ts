@@ -94,145 +94,359 @@ describe("Session Auth Middleware", () => {
   });
 
   describe("createSessionAuthMiddleware", () => {
+    type Identity = { id: string; status: "active" | "disabled" };
+    type Kind = "google" | "impressorx";
+
+    function fakeIdentities(over: {
+      findByLogin?: (kind: Kind, subject: string) => Identity | null;
+      attachGoogleSubByEmailOnce?: (email: string, sub: string) => Identity | null;
+      createWithLogin?: (input: { kind: Kind; subject: string; email?: string; id?: string }) => Identity;
+    } = {}) {
+      return {
+        findByLogin: vi.fn(over.findByLogin ?? (() => null)),
+        attachGoogleSubByEmailOnce: vi.fn(over.attachGoogleSubByEmailOnce ?? (() => null)),
+        createWithLogin: vi.fn(
+          over.createWithLogin ?? ((input) => ({ id: input.id ?? "generated", status: "active" as const })),
+        ),
+      };
+    }
+
     function createApp(
-      findUser: (email: string) => { id: string } | null,
+      identities: ReturnType<typeof fakeIdentities>,
       upsertUser?: (user: { id: string; email: string }) => { id: string },
     ) {
       const app = express();
       app.use(cookieParser());
-      const sessionAuth = createSessionAuthMiddleware(TEST_SECRET, findUser, upsertUser);
-      app.use(sessionAuth);
+      app.use(createSessionAuthMiddleware(TEST_SECRET, identities, upsertUser));
       app.get("/test", (req, res) => {
-        res.json({ userId: req.userId ?? null, userEmail: req.userEmail ?? null });
+        res.json({
+          userId: req.userId ?? null,
+          identityId: req.identityId ?? null,
+          userEmail: req.userEmail ?? null,
+        });
       });
       return app;
     }
 
-    it("sets req.userId when valid session cookie is present", async () => {
-      const jwe = await createSessionJWE({ email: "alice@test.com" });
-      const findUser = vi.fn().mockReturnValue({ id: "u1" });
-      const app = createApp(findUser);
+    const cookie = (jwe: string) => `authjs.session-token=${jwe}`;
 
-      const res = await request(app)
-        .get("/test")
-        .set("Cookie", `authjs.session-token=${jwe}`);
+    it("resolves the identity by sub", async () => {
+      const jwe = await createSessionJWE({ email: "alice@test.com", sub: "g-1" });
+      const identities = fakeIdentities({ findByLogin: () => ({ id: "u1", status: "active" }) });
 
-      expect(res.status).toBe(200);
-      expect(res.body.userId).toBe("u1");
-      expect(res.body.userEmail).toBe("alice@test.com");
-      expect(findUser).toHaveBeenCalledWith("alice@test.com");
+      const res = await request(createApp(identities)).get("/test").set("Cookie", cookie(jwe));
+
+      expect(res.body).toEqual({ userId: "u1", identityId: "u1", userEmail: "alice@test.com" });
+      expect(identities.findByLogin).toHaveBeenCalledWith("google", "g-1");
+      expect(identities.attachGoogleSubByEmailOnce).not.toHaveBeenCalled();
     });
 
-    it("sets req.userId when session token is split into cookie chunks", async () => {
-      const jwe = await createSessionJWE({ email: "chunked@test.com" });
+    it("migrates a pre-existing user on first sign-in with sub", async () => {
+      const jwe = await createSessionJWE({ email: "alice@test.com", sub: "g-1" });
+      const identities = fakeIdentities({ attachGoogleSubByEmailOnce: () => ({ id: "users-id", status: "active" }) });
+
+      const res = await request(createApp(identities)).get("/test").set("Cookie", cookie(jwe));
+
+      expect(res.body.identityId).toBe("users-id");
+      expect(res.body.userId).toBe("users-id");
+      expect(identities.attachGoogleSubByEmailOnce).toHaveBeenCalledWith("alice@test.com", "g-1");
+    });
+
+    it("a session without sub is treated as signed out", async () => {
+      const jwe = await createSessionJWE({ email: "alice@test.com" });
+      const identities = fakeIdentities({ findByLogin: () => ({ id: "u1", status: "active" }) });
+      const upsertUser = vi.fn();
+
+      const res = await request(createApp(identities, upsertUser)).get("/test").set("Cookie", cookie(jwe));
+
+      expect(res.body).toEqual({ userId: null, identityId: null, userEmail: null });
+      expect(identities.findByLogin).not.toHaveBeenCalled();
+      expect(identities.attachGoogleSubByEmailOnce).not.toHaveBeenCalled();
+      expect(upsertUser).not.toHaveBeenCalled();
+    });
+
+    it("creates an identity and a users row with the same id for a new user", async () => {
+      const jwe = await createSessionJWE({ email: "new@test.com", sub: "g-new" });
+      const identities = fakeIdentities();
+      const upsertUser = vi.fn((user: { id: string; email: string }) => ({ id: user.id }));
+
+      const res = await request(createApp(identities, upsertUser)).get("/test").set("Cookie", cookie(jwe));
+
+      const created = identities.createWithLogin.mock.calls[0]![0];
+      expect(created).toMatchObject({ kind: "google", subject: "g-new", email: "new@test.com" });
+      expect(upsertUser).toHaveBeenCalledWith({ id: created.id, email: "new@test.com" });
+      expect(res.body.identityId).toBe(created.id);
+      expect(res.body.userId).toBe(created.id);
+    });
+
+    it("does not auto-create when upsertUser is not provided", async () => {
+      const jwe = await createSessionJWE({ email: "unknown@test.com", sub: "g-x" });
+      const identities = fakeIdentities();
+
+      const res = await request(createApp(identities)).get("/test").set("Cookie", cookie(jwe));
+
+      expect(res.body.userId).toBeNull();
+      expect(identities.createWithLogin).not.toHaveBeenCalled();
+    });
+
+    it("treats a disabled identity as signed out", async () => {
+      const jwe = await createSessionJWE({ email: "alice@test.com", sub: "g-1" });
+      const identities = fakeIdentities({ findByLogin: () => ({ id: "u1", status: "disabled" }) });
+
+      const res = await request(createApp(identities)).get("/test").set("Cookie", cookie(jwe));
+
+      expect(res.body.identityId).toBeNull();
+    });
+
+    it("recovers when a concurrent request created the identity first", async () => {
+      const jwe = await createSessionJWE({ email: "race@test.com", sub: "g-race" });
+      const lookups: Array<Identity | null> = [null, { id: "winner", status: "active" }];
+      const identities = fakeIdentities({
+        findByLogin: () => lookups.shift() ?? null,
+        createWithLogin: () => {
+          throw Object.assign(new Error("UNIQUE constraint failed"), { code: "SQLITE_CONSTRAINT_UNIQUE" });
+        },
+      });
+
+      const res = await request(createApp(identities, (user) => ({ id: user.id })))
+        .get("/test")
+        .set("Cookie", cookie(jwe));
+
+      expect(res.body.identityId).toBe("winner");
+    });
+
+    it("logs other creation errors without token material and treats the session as signed out", async () => {
+      const jwe = await createSessionJWE({ email: "boom@test.com", sub: "g-boom" });
+      const identities = fakeIdentities({
+        createWithLogin: () => {
+          throw Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" });
+        },
+      });
+      const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+      const app = express();
+      app.use(cookieParser());
+      app.use(createSessionAuthMiddleware(TEST_SECRET, identities, (user) => ({ id: user.id }), logger));
+      app.get("/test", (req, res) => res.json({ identityId: req.identityId ?? null }));
+
+      const res = await request(app).get("/test").set("Cookie", cookie(jwe));
+
+      expect(res.body.identityId).toBeNull();
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(jwe);
+    });
+
+    it("reads a session token split into cookie chunks", async () => {
+      const jwe = await createSessionJWE({ email: "chunked@test.com", sub: "g-chunk" });
       const chunkSize = Math.ceil(jwe.length / 3);
-      const chunks = [
-        jwe.slice(0, chunkSize),
-        jwe.slice(chunkSize, chunkSize * 2),
-        jwe.slice(chunkSize * 2),
-      ];
+      const identities = fakeIdentities({ findByLogin: () => ({ id: "u-chunk", status: "active" }) });
 
-      const findUser = vi.fn().mockReturnValue({ id: "u-chunk" });
-      const app = createApp(findUser);
-
-      const res = await request(app)
+      const res = await request(createApp(identities))
         .get("/test")
         .set("Cookie", [
-          `authjs.session-token.0=${chunks[0]}`,
-          `authjs.session-token.1=${chunks[1]}`,
-          `authjs.session-token.2=${chunks[2]}`,
+          `authjs.session-token.0=${jwe.slice(0, chunkSize)}`,
+          `authjs.session-token.1=${jwe.slice(chunkSize, chunkSize * 2)}`,
+          `authjs.session-token.2=${jwe.slice(chunkSize * 2)}`,
         ]);
 
-      expect(res.status).toBe(200);
       expect(res.body.userId).toBe("u-chunk");
-      expect(res.body.userEmail).toBe("chunked@test.com");
-      expect(findUser).toHaveBeenCalledWith("chunked@test.com");
     });
 
-    it("does not set userId when no cookie", async () => {
-      const findUser = vi.fn();
-      const app = createApp(findUser);
+    it("does nothing when there is no cookie or the cookie is garbage", async () => {
+      const identities = fakeIdentities();
+      const app = createApp(identities);
 
-      const res = await request(app).get("/test");
+      const none = await request(app).get("/test");
+      const garbage = await request(app).get("/test").set("Cookie", "authjs.session-token=garbage");
 
-      expect(res.status).toBe(200);
-      expect(res.body.userId).toBeNull();
-      expect(findUser).not.toHaveBeenCalled();
+      expect(none.body.userId).toBeNull();
+      expect(garbage.body.userId).toBeNull();
+      expect(identities.findByLogin).not.toHaveBeenCalled();
     });
 
-    it("does not set userId when user not found in DB", async () => {
-      const jwe = await createSessionJWE({ email: "unknown@test.com" });
-      const findUser = vi.fn().mockReturnValue(null);
-      const app = createApp(findUser);
+    describe("Google sessions that chose a pharmacy with the context picker", () => {
+      function contextApp(identities: ReturnType<typeof fakeIdentities>) {
+        const app = express();
+        app.use(cookieParser());
+        app.use(createSessionAuthMiddleware(TEST_SECRET, identities));
+        app.get("/test", (req, res) =>
+          res.json({ identityId: req.identityId ?? null, sessionId: req.sessionId ?? null, sessionContext: req.sessionContext ?? null }),
+        );
+        return app;
+      }
+      const google = { email: "alice@test.com", sub: "g-1" };
+      const known = () => fakeIdentities({ findByLogin: () => ({ id: "u1", status: "active" }) });
 
-      const res = await request(app)
-        .get("/test")
-        .set("Cookie", `authjs.session-token=${jwe}`);
+      it("carries the chosen pharmacy as the session context, with no session id", async () => {
+        const jwe = await createSessionJWE({ ...google, activeContext: { kind: "tenant", membershipId: "m9" } });
 
-      expect(res.status).toBe(200);
-      expect(res.body.userId).toBeNull();
+        const res = await request(contextApp(known())).get("/test").set("Cookie", cookie(jwe));
+
+        expect(res.body).toEqual({ identityId: "u1", sessionId: null, sessionContext: { kind: "tenant", membershipId: "m9" } });
+      });
+
+      it.each([
+        ["personal", { kind: "personal" }],
+        ["no context", undefined],
+        ["a tenant context without a membership id", { kind: "tenant" }],
+        ["an unknown kind", { kind: "other", membershipId: "m9" }],
+      ])("treats %s as the personal context", async (_name, activeContext) => {
+        const jwe = await createSessionJWE({ ...google, activeContext });
+
+        const res = await request(contextApp(known())).get("/test").set("Cookie", cookie(jwe));
+
+        expect(res.body).toEqual({ identityId: "u1", sessionId: null, sessionContext: null });
+      });
+
+      it("carries no context for a session that is signed out", async () => {
+        const jwe = await createSessionJWE({ ...google, activeContext: { kind: "tenant", membershipId: "m9" } });
+
+        const res = await request(contextApp(fakeIdentities())).get("/test").set("Cookie", cookie(jwe));
+
+        expect(res.body).toEqual({ identityId: null, sessionId: null, sessionContext: null });
+      });
     });
 
-    it("does not set userId for invalid cookie value", async () => {
-      const findUser = vi.fn();
-      const app = createApp(findUser);
+    describe("hand-off sessions (provider impressorx)", () => {
+      const base = {
+        provider: "impressorx",
+        identityId: "irx-id",
+        sessionId: "sess-1",
+        activeContext: { kind: "tenant", membershipId: "m1" },
+      };
+      const activeMembership = { id: "m1", identityId: "irx-id", status: "active" as const };
 
-      const res = await request(app)
-        .get("/test")
-        .set("Cookie", "authjs.session-token=garbage");
+      function handoffApp(
+        identities: ReturnType<typeof fakeIdentities>,
+        checks: ReturnType<typeof deps> | undefined,
+        upsertUser?: (user: { id: string; email: string }) => { id: string },
+      ) {
+        const app = express();
+        app.use(cookieParser());
+        app.use(
+          createSessionAuthMiddleware(
+            TEST_SECRET,
+            identities,
+            upsertUser,
+            undefined,
+            checks && { memberships: checks.memberships, identities: { findById: checks.findIdentity }, hasActiveSession: checks.hasActiveSession },
+          ),
+        );
+        app.get("/test", (req, res) =>
+          res.json({
+            userId: req.userId ?? null,
+            identityId: req.identityId ?? null,
+            sessionId: req.sessionId ?? null,
+            activeContext: req.sessionContext ?? null,
+            userEmail: req.userEmail ?? null,
+          }),
+        );
+        return app;
+      }
+      const deps = (over: { membership?: unknown; sessionActive?: boolean; identity?: Identity | null } = {}) => ({
+        memberships: { findById: vi.fn(() => ("membership" in over ? over.membership : activeMembership) as never) },
+        findIdentity: vi.fn(() => ("identity" in over ? over.identity! : { id: "irx-id", status: "active" as const })),
+        hasActiveSession: vi.fn(() => over.sessionActive ?? true),
+      });
 
-      expect(res.status).toBe(200);
-      expect(res.body.userId).toBeNull();
+      it("checks the grant against the session, the identity and the membership", async () => {
+        const jwe = await createSessionJWE(base);
+        const checks = deps();
+        await request(handoffApp(fakeIdentities(), checks)).get("/test").set("Cookie", cookie(jwe));
+        expect(checks.hasActiveSession).toHaveBeenCalledWith("sess-1", "irx-id", "m1");
+      });
+
+      it("resolves by identityId, carries the session and context, and never looks up a Google sub", async () => {
+        const jwe = await createSessionJWE({ ...base, sub: "irx-id" });
+        const identities = fakeIdentities({ findByLogin: () => ({ id: "someone-else", status: "active" }) });
+        const upsertUser = vi.fn();
+
+        const res = await request(handoffApp(identities, deps(), upsertUser)).get("/test").set("Cookie", cookie(jwe));
+
+        expect(res.body).toEqual({
+          userId: "irx-id",
+          identityId: "irx-id",
+          sessionId: "sess-1",
+          activeContext: { kind: "tenant", membershipId: "m1" },
+          userEmail: null,
+        });
+        expect(identities.findByLogin).not.toHaveBeenCalled();
+        expect(identities.attachGoogleSubByEmailOnce).not.toHaveBeenCalled();
+        expect(identities.createWithLogin).not.toHaveBeenCalled();
+        expect(upsertUser).not.toHaveBeenCalled();
+      });
+
+      it("is never resolved as a Google sub even when the token carries an email and a sub", async () => {
+        const jwe = await createSessionJWE({ ...base, email: "x@y.com", sub: "g-1", identityId: undefined });
+        const identities = fakeIdentities({ findByLogin: () => ({ id: "u1", status: "active" }) });
+
+        const res = await request(handoffApp(identities, deps())).get("/test").set("Cookie", cookie(jwe));
+
+        expect(res.body.identityId).toBeNull();
+        expect(identities.findByLogin).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ["the membership is not active", { membership: { ...activeMembership, status: "suspended" } }],
+        ["the membership is unknown", { membership: null }],
+        ["the membership belongs to another identity", { membership: { ...activeMembership, identityId: "other" } }],
+        ["the identity is disabled", { identity: { id: "irx-id", status: "disabled" as const } }],
+        ["the attended grant is gone (signed out, revoked, expired)", { sessionActive: false }],
+      ])("is signed out when %s", async (_name, over) => {
+        const jwe = await createSessionJWE(base);
+        const res = await request(handoffApp(fakeIdentities(), deps(over))).get("/test").set("Cookie", cookie(jwe));
+        expect(res.body.identityId).toBeNull();
+        expect(res.body.sessionId).toBeNull();
+      });
+
+      it.each([
+        ["no sessionId", { sessionId: undefined }],
+        ["no identityId", { identityId: undefined }],
+        ["no active context", { activeContext: undefined }],
+        ["a context of another kind", { activeContext: { kind: "personal" } }],
+      ])("is signed out with %s", async (_name, over) => {
+        const jwe = await createSessionJWE({ ...base, ...over });
+        const res = await request(handoffApp(fakeIdentities(), deps())).get("/test").set("Cookie", cookie(jwe));
+        expect(res.body.identityId).toBeNull();
+      });
+
+      it("is signed out when hand-off support is not configured", async () => {
+        const jwe = await createSessionJWE(base);
+        const res = await request(handoffApp(fakeIdentities(), undefined)).get("/test").set("Cookie", cookie(jwe));
+        expect(res.body.identityId).toBeNull();
+      });
+
+      it("treats an unknown provider as signed out", async () => {
+        const jwe = await createSessionJWE({ ...base, provider: "github", email: "a@b.com", sub: "s" });
+        const identities = fakeIdentities({ findByLogin: () => ({ id: "u1", status: "active" }) });
+        const res = await request(handoffApp(identities, deps())).get("/test").set("Cookie", cookie(jwe));
+        expect(res.body.identityId).toBeNull();
+        expect(identities.findByLogin).not.toHaveBeenCalled();
+      });
+
+      it("a Google session ignores the hand-off identity and session id it carries (its context is only a picker choice, checked per request)", async () => {
+        const jwe = await createSessionJWE({ provider: "google", email: "a@b.com", sub: "g-1", identityId: "irx-id", sessionId: "s", activeContext: base.activeContext });
+        const identities = fakeIdentities({ findByLogin: () => ({ id: "u1", status: "active" }) });
+        const res = await request(handoffApp(identities, deps())).get("/test").set("Cookie", cookie(jwe));
+        expect(res.body).toMatchObject({ identityId: "u1", sessionId: null });
+        expect(identities.findByLogin).toHaveBeenCalledWith("google", "g-1");
+      });
     });
 
-    it("reads secure session cookie when x-forwarded-proto contains https in a list", async () => {
+    it("reads the secure session cookie when x-forwarded-proto contains https in a list", async () => {
       const jwe = await createSessionJWE(
-        { email: "secure-list@test.com" },
+        { email: "secure-list@test.com", sub: "g-secure" },
         TEST_SECRET,
         "__Secure-authjs.session-token",
       );
-      const findUser = vi.fn().mockReturnValue({ id: "u-secure" });
-      const app = createApp(findUser);
+      const identities = fakeIdentities({ findByLogin: () => ({ id: "u-secure", status: "active" }) });
 
-      const res = await request(app)
+      const res = await request(createApp(identities))
         .get("/test")
         .set("x-forwarded-proto", "https,http")
         .set("Cookie", `__Secure-authjs.session-token=${jwe}`);
 
-      expect(res.status).toBe(200);
       expect(res.body.userId).toBe("u-secure");
       expect(res.body.userEmail).toBe("secure-list@test.com");
-    });
-
-    it("auto-creates user via upsertUser when user not found", async () => {
-      const jwe = await createSessionJWE({ email: "new-user@test.com" });
-      const findUser = vi.fn().mockReturnValue(null);
-      const upsertUser = vi.fn().mockReturnValue({ id: "new-uuid" });
-      const app = createApp(findUser, upsertUser);
-
-      const res = await request(app)
-        .get("/test")
-        .set("Cookie", `authjs.session-token=${jwe}`);
-
-      expect(res.status).toBe(200);
-      expect(res.body.userId).toBe("new-uuid");
-      expect(res.body.userEmail).toBe("new-user@test.com");
-      expect(upsertUser).toHaveBeenCalledWith(
-        expect.objectContaining({ email: "new-user@test.com" }),
-      );
-    });
-
-    it("does not auto-create when upsertUser is not provided", async () => {
-      const jwe = await createSessionJWE({ email: "unknown@test.com" });
-      const findUser = vi.fn().mockReturnValue(null);
-      const app = createApp(findUser); // no upsertUser
-
-      const res = await request(app)
-        .get("/test")
-        .set("Cookie", `authjs.session-token=${jwe}`);
-
-      expect(res.status).toBe(200);
-      expect(res.body.userId).toBeNull();
     });
   });
 });

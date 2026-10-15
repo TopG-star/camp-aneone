@@ -46,6 +46,7 @@ export function createSummarizeFinanceSpendTool(
   return {
     name: "summarize_finance_spend",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "Summarize outgoing spend by inferred category based on transaction descriptions.",
     inputSchema: summarizeFinanceSpendSchema,

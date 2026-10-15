@@ -1,3 +1,4 @@
+import type { PersonalDb } from "@oneon/domain";
 import { describe, it, expect, beforeEach } from "vitest";
 import type Database from "better-sqlite3";
 import type { Logger, NewActionInstance } from "@oneon/domain";
@@ -6,6 +7,7 @@ import { createDatabase, runMigrations } from "./connection.js";
 import { SqliteActionInstanceRepository } from "./repositories/sqlite-action-instance.repository.js";
 import { SqliteActionConfigRepository } from "./repositories/sqlite-action-config.repository.js";
 import { SqliteLegacyActionRepository } from "./repositories/sqlite-legacy-action.repository.js";
+import { SqliteModelAuditRepository } from "./repositories/sqlite-model-audit.repository.js";
 import { runActionDriftCheck } from "./action-drift-check.js";
 
 const logger: Logger = { info() {}, warn() {}, error() {}, debug() {} };
@@ -30,6 +32,7 @@ function newInstance(overrides: Partial<NewActionInstance> = {}): NewActionInsta
     retryOf: null,
     attemptNumber: 1,
     resourceRef: "inbound_item:item-1",
+    modelCallId: null,
     ...overrides,
   };
 }
@@ -41,7 +44,7 @@ beforeEach(() => {
   db = createDatabase(":memory:");
   runMigrations(db);
   db.prepare("INSERT INTO users (id, email) VALUES (?, ?), (?, ?)").run("user-A", "a@test.com", "user-B", "b@test.com");
-  repo = new SqliteActionInstanceRepository(db, () => new Date("2026-10-01T12:00:00.000Z"));
+  repo = new SqliteActionInstanceRepository(asPersonal(db), () => new Date("2026-10-01T12:00:00.000Z"));
 });
 
 describe("migration 014", () => {
@@ -142,6 +145,28 @@ describe("SqliteActionInstanceRepository", () => {
     expect(repo.count("user-A", { statuses: ["proposed", "cancelled"] })).toBe(2);
   });
 
+  it("filters to the actions a person owns or initiated, and leaves out originals that were retried", () => {
+    // A pharmacy file: the actions are owned by the tenant, and the person is user_id / initiator_user_id.
+    const tenantRepo = new SqliteActionInstanceRepository({ kind: "tenant", tenantId: "t-1", raw: db, __brand: "TenantDb" } as never, () => new Date("2026-10-01T12:00:00.000Z"));
+    const create = (id: string, over: Partial<NewActionInstance>) =>
+      tenantRepo.create(newInstance({ id, idempotencyKey: `k-${id}`, resourceRef: null, scope: "tenant", ownerId: "t-1", tenantId: "t-1", ...over }), USER);
+    create("own", { userId: "user-A", initiatorUserId: "user-A" });
+    create("initiated", { userId: "user-B", initiatorUserId: "user-A" });
+    create("colleagues", { userId: "user-B", initiatorUserId: "user-B" });
+    create("rule", { userId: "user-A", initiatorUserId: null });
+    create("original", { userId: "user-A", initiatorUserId: "user-A" });
+    create("retry", { userId: "user-A", initiatorUserId: "user-A", retryOf: "original", attemptNumber: 2 });
+    const ids = (filter: Parameters<typeof repo.list>[1]) => tenantRepo.list("t-1", filter).map((i) => i.id).sort();
+
+    expect(ids({ userId: "user-A" })).toEqual(["initiated", "original", "own", "retry", "rule"]);
+    expect(ids({ userId: "user-B" })).toEqual(["colleagues", "initiated"]);
+    expect(ids({ excludeRetried: true })).toEqual(["colleagues", "initiated", "own", "retry", "rule"]);
+    expect(ids({ userId: "user-A", excludeRetried: true })).toEqual(["initiated", "own", "retry", "rule"]);
+    expect(tenantRepo.count("t-1", { userId: "user-A", excludeRetried: true })).toBe(4);
+    // Off by default: nothing about the existing reads changes.
+    expect(ids({})).toEqual(["colleagues", "initiated", "original", "own", "retry", "rule"]);
+  });
+
   it("records heartbeats and undo starts without touching status or events", () => {
     repo.create(newInstance(), USER);
     repo.recordHeartbeat("act-1", "2026-10-01T12:01:00.000Z");
@@ -155,6 +180,48 @@ describe("SqliteActionInstanceRepository", () => {
     expect(repo.markUndoStarted("act-1", "2026-10-01T12:02:00.000Z")).toBe(true);
     expect(repo.markUndoStarted("act-1", "2026-10-01T12:03:00.000Z")).toBe(false);
     expect(repo.findById("user-A", "act-1")!.undoStartedAt).toBe("2026-10-01T12:02:00.000Z");
+  });
+
+  describe("approvedAt and notes (spec 7.6)", () => {
+    const at = (iso: string) => new SqliteActionInstanceRepository(asPersonal(db), () => new Date(iso));
+
+    it("returns the time of the event that moved the action to approved, and null before that", () => {
+      at("2026-10-01T12:00:00.000Z").create(newInstance(), USER);
+      expect(repo.approvedAt("act-1")).toBeNull();
+      at("2026-10-01T12:01:00.000Z").appendTransition({ actionId: "act-1", expectedStatus: "proposed", toStatus: "validating", actor: SYSTEM });
+      at("2026-10-01T12:02:00.000Z").appendTransition({ actionId: "act-1", expectedStatus: "validating", toStatus: "approved", actor: SYSTEM });
+      expect(repo.approvedAt("act-1")).toBe("2026-10-01T12:02:00.000Z");
+      expect(repo.approvedAt("nobody")).toBeNull();
+    });
+
+    it("records a note as an event that leaves the status, the clock and the rest of the row alone", () => {
+      at("2026-10-01T12:00:00.000Z").create(newInstance(), USER);
+      at("2026-10-01T12:01:00.000Z").appendTransition({ actionId: "act-1", expectedStatus: "proposed", toStatus: "validating", actor: SYSTEM });
+      at("2026-10-01T12:02:00.000Z").appendTransition({ actionId: "act-1", expectedStatus: "validating", toStatus: "approved", actor: USER });
+      const before = repo.findById("user-A", "act-1")!;
+
+      at("2026-10-01T13:00:00.000Z").recordNote({ actionId: "act-1", expectedStatus: "approved", actor: SYSTEM, data: { retry: "impressorx_unreachable" } });
+
+      const after = repo.findById("user-A", "act-1")!;
+      expect(after).toMatchObject({ status: "approved", updatedAt: before.updatedAt, lastEventSeq: before.lastEventSeq + 1 });
+      expect(repo.listEvents("user-A", "act-1").at(-1)).toMatchObject({
+        seq: before.lastEventSeq + 1,
+        fromStatus: "approved",
+        toStatus: "approved",
+        actor: SYSTEM,
+        data: { retry: "impressorx_unreachable" },
+        createdAt: "2026-10-01T13:00:00.000Z",
+      });
+      // The note is not the approval: the age is still measured from the first approved event.
+      expect(repo.approvedAt("act-1")).toBe("2026-10-01T12:02:00.000Z");
+      expect(runActionDriftCheck(db, logger)).toBe(0);
+    });
+
+    it("refuses a note when the action has moved on, and records nothing", () => {
+      repo.create(newInstance(), USER);
+      expect(() => repo.recordNote({ actionId: "act-1", expectedStatus: "approved", actor: SYSTEM, data: {} })).toThrow(TransitionConflictError);
+      expect(repo.listEvents("user-A", "act-1")).toHaveLength(1);
+    });
   });
 });
 
@@ -170,7 +237,7 @@ describe("runActionDriftCheck", () => {
 
 describe("SqliteActionConfigRepository", () => {
   it("saves config and appends history that cannot be edited", () => {
-    const config = new SqliteActionConfigRepository(db, () => new Date("2026-10-02T09:00:00.000Z"));
+    const config = new SqliteActionConfigRepository(asPersonal(db), () => new Date("2026-10-02T09:00:00.000Z"));
     config.save({ scope: "personal", ownerId: "user-A", actionType: "create_reminder", configJson: '{"approval":{"mode":"auto"}}', changedBy: "user-A" });
     config.save({ scope: "personal", ownerId: "user-A", actionType: "create_reminder", configJson: '{"approval":{"mode":"always"}}', changedBy: "user-A" });
     expect(config.get("personal", "user-A", "create_reminder")).toMatchObject({ configJson: '{"approval":{"mode":"always"}}', updatedBy: "user-A" });
@@ -192,7 +259,7 @@ describe("SqliteLegacyActionRepository", () => {
        VALUES ('l1','item-1','archive','approval_required','proposed','user-A','2026-09-01T00:00:00Z'),
               ('l2','item-2','notify','auto','executed','user-A','2026-09-02T00:00:00Z')`,
     ).run();
-    const legacy = new SqliteLegacyActionRepository(db);
+    const legacy = new SqliteLegacyActionRepository(asPersonal(db));
     expect(legacy.listUnimportedProposed("user-A").map((r) => r.id)).toEqual(["l1"]);
     repo.create(newInstance({ id: "act-9", actionType: "archive", idempotencyKey: "email:item-1" }), USER);
     legacy.recordImport("l1", "act-9");
@@ -207,9 +274,48 @@ describe("SqliteLegacyActionRepository", () => {
        VALUES ('n1','item-1','archive','approval_required','proposed',NULL,'2026-09-01T00:00:00Z'),
               ('u1','item-2','archive','approval_required','proposed','user-A','2026-09-01T00:00:00Z')`,
     ).run();
-    const legacy = new SqliteLegacyActionRepository(db);
+    const legacy = new SqliteLegacyActionRepository(asPersonal(db));
     expect(legacy.listUnimportedProposed("user-A").map((r) => r.id)).toEqual(["u1"]);
     expect(legacy.listUnimportedProposed("").map((r) => r.id)).toEqual([]);
     expect(legacy.listForUser("user-A", { limit: 10, offset: 0 }).map((r) => r.id)).toEqual(["u1"]);
   });
 });
+
+describe("migration 017 link ids", () => {
+  it("stores the model call that proposed an action, and null for any other", () => {
+    repo.create(newInstance({ id: "act-chat", idempotencyKey: "chat:msg-1:x", modelCallId: "call-1" }), USER);
+    repo.create(newInstance({ id: "act-rule", idempotencyKey: "email:item-9" }), SYSTEM);
+    expect(repo.findById("user-A", "act-chat")?.modelCallId).toBe("call-1");
+    expect(repo.findById("user-A", "act-rule")?.modelCallId).toBeNull();
+    expect(db.prepare("SELECT id, model_call_id FROM action_instances ORDER BY id").all()).toEqual([
+      { id: "act-chat", model_call_id: "call-1" },
+      { id: "act-rule", model_call_id: null },
+    ]);
+  });
+
+  it("joining action_instances.model_call_id to model_call_decisions.call_id returns that turn", () => {
+    const audit = new SqliteModelAuditRepository(asPersonal(db));
+    const decision = (callId: string, turnId: string) => ({
+      id: `d-${callId}`, callId, createdAt: "2026-10-03T10:00:00.000Z", contextKind: "personal" as const, identityId: "user-A", tenantId: null, membershipId: null,
+      conversationId: "user:user-A", turnId, purpose: "intent_extraction", channel: "web", provider: "deepseek", model: "m", effectiveLimit: "D1" as const,
+      layers: { provider: "D2" as const, choice: "D1" as const, purpose: "D2" as const }, decision: "allow" as const, denyReason: null, released: [], withheld: [],
+      placeholderCount: 0, scannerHits: { D3: 0, D4: 0 }, alert: false, policyFingerprint: "p".repeat(64), inputFingerprint: "i".repeat(64), keyVersion: 1,
+    });
+    audit.recordDecision(decision("call-1", "msg-1"));
+    audit.recordDecision(decision("call-2", "msg-2"));
+    repo.create(newInstance({ id: "act-1", idempotencyKey: "chat:msg-1:x", modelCallId: "call-1" }), USER);
+
+    const joined = db
+      .prepare(
+        `SELECT a.id AS action_id, d.conversation_id, d.turn_id
+         FROM action_instances a JOIN model_call_decisions d ON d.call_id = a.model_call_id`,
+      )
+      .all();
+
+    expect(joined).toEqual([{ action_id: "act-1", conversation_id: "user:user-A", turn_id: "msg-1" }]);
+  });
+});
+
+function asPersonal(raw: unknown): PersonalDb {
+  return { kind: "personal", raw, __brand: "PersonalDb" };
+}

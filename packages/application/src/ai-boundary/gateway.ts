@@ -4,22 +4,22 @@ import { ApprovedModelCall, ProviderError, type ModelProvider } from "./approved
 import { checkAnswer, restoreToolParams, type OutputBlockReason } from "./answer-check.js";
 import { assemblePrompt } from "./assemble.js";
 import type { AiDataChoiceRepository, ModelAuditRepository } from "./audit.js";
-import { decide, type Decision, type DenyReason, type FieldDisposition, type SecretLocation, type WithheldItem } from "./decide.js";
+import { decide, lowestOfLayers, type Decision, type DenyReason, type FieldDisposition, type SecretLocation, type WithheldItem } from "./decide.js";
 import type { Fingerprinter } from "./fingerprints.js";
 import { PlaceholderMap } from "./placeholders.js";
 import { findRestoredValue } from "./restored-values.js";
 import { PROVIDER_REGISTRY, providerLimit, type ProviderEntry, type ProviderOverride } from "./providers.js";
 import { PURPOSES, type PurposeDefinition } from "./purposes/index.js";
 import { removeSpans } from "./scanner.js";
-import { classRank, lowerClass, type ClassifiedField, type DataClass, type ModelContext, type ModelRequest, type ProviderId } from "./types.js";
+import { classRank, type ClassifiedField, type DataClass, type ModelContext, type ModelRequest, type ProviderId } from "./types.js";
 
 export const TENANT_CHOICE_LIMIT: DataClass = "D1";
 
 export type GatewayResult =
-  | { kind: "answered"; text: string; json?: unknown; withheld: WithheldItem[]; decisionId: string }
-  | { kind: "denied"; reason: DenyReason; /** Set when reason is secret_present: where the secret was. A response detail only; never stored. */ secretIn?: SecretLocation; withheld: WithheldItem[]; decisionId: string }
-  | { kind: "blocked"; reason: OutputBlockReason; withheld: WithheldItem[]; decisionId: string }
-  | { kind: "failed"; message: string; withheld: WithheldItem[]; decisionId: string };
+  | { kind: "answered"; text: string; json?: unknown; withheld: WithheldItem[]; decisionId: string; callId: string }
+  | { kind: "denied"; reason: DenyReason; /** Set when reason is secret_present: where the secret was. A response detail only; never stored. */ secretIn?: SecretLocation; withheld: WithheldItem[]; decisionId: string; callId: string }
+  | { kind: "blocked"; reason: OutputBlockReason; withheld: WithheldItem[]; decisionId: string; callId: string }
+  | { kind: "failed"; message: string; withheld: WithheldItem[]; decisionId: string; callId: string };
 
 export interface ModelRouting {
   standard: ProviderId;
@@ -35,6 +35,10 @@ export interface ModelGatewayDeps {
   models: Partial<Record<ProviderId, { standard: string; reasoning: string }>>;
   choices: AiDataChoiceRepository;
   audit: ModelAuditRepository;
+  /** The audit repository a call is written to. Defaults to `audit`. A tenant context must return its own file's repository (spec 9.5). */
+  auditFor?: (context: ModelContext) => ModelAuditRepository;
+  /** The tenant layer of the limit (spec 9.4), read per call. Defaults to TENANT_CHOICE_LIMIT; the server supplies each pharmacy's stored limit. */
+  tenantLimit?: (tenantId: string) => DataClass;
   fingerprinter: Fingerprinter;
   maxRetries: number;
   timeouts: { standard: number; reasoning: number };
@@ -53,7 +57,11 @@ export interface ModelTurn {
 }
 
 export interface ModelGateway {
-  beginTurn(context: ModelContext, options?: { channel?: string }): ModelTurn;
+  /**
+   * `conversationId` and `turnId` (the id of the user message row that started the turn) link every call of a chat turn to it in the audit.
+   * A turn that is not a chat turn (email classification, the briefing, background jobs) passes neither, and its calls record null.
+   */
+  beginTurn(context: ModelContext, options?: { channel?: string; conversationId?: string; turnId?: string }): ModelTurn;
 }
 
 /** The text the person wrote that was actually sent in this request, with D3 spans removed (answer check O1 exemption). */
@@ -132,9 +140,11 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
   const purposeOf = (name: string): PurposeDefinition | undefined => (Object.prototype.hasOwnProperty.call(purposes, name) ? purposes[name] : undefined);
   const clock = deps.clock ?? (() => new Date());
   const newId = deps.newId ?? randomUUID;
+  const auditFor = deps.auditFor ?? (() => deps.audit);
+  const tenantLimit = deps.tenantLimit ?? (() => TENANT_CHOICE_LIMIT);
 
   const choiceLimit = (context: ModelContext, provider: ProviderId): DataClass =>
-    context.kind === "tenant" ? TENANT_CHOICE_LIMIT : (deps.choices.current(context.identityId, provider)?.maxClass ?? "D1");
+    context.kind === "tenant" ? tenantLimit(context.tenantId) : (deps.choices.current(context.identityId, provider)?.maxClass ?? "D1");
 
   const providerFor = (purpose: string): ProviderId => {
     return purposeOf(purpose)?.tier === "reasoning" ? deps.routing.reasoning : deps.routing.standard;
@@ -143,12 +153,15 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
   async function runCall(
     context: ModelContext,
     channel: string | null,
+    link: { conversationId: string | null; turnId: string | null },
     request: ModelRequest,
     provider: ProviderId,
     map: PlaceholderMap,
   ): Promise<GatewayResult> {
     const callId = newId();
     const decisionId = newId();
+    // One repository for the whole call: the decision and the outcome are written to the same file.
+    const audit = auditFor(context);
     const def = purposeOf(request.purpose);
     const entry = deps.providers[provider] ? registry[provider] : undefined;
     const decision = decide({ context, request, provider: { entry, override: deps.overrides.get(provider) }, choiceLimit: choiceLimit(context, provider), purposes });
@@ -162,6 +175,8 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
       identityId: context.identityId,
       tenantId: context.kind === "tenant" ? context.tenantId : null,
       membershipId: context.kind === "tenant" ? context.membershipId : null,
+      conversationId: link.conversationId,
+      turnId: link.turnId,
       purpose: request.purpose,
       channel,
       provider,
@@ -177,8 +192,8 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
     if (decision.alert) deps.logger.warn("boundary_alert", { purpose: request.purpose, callId, withheld: decision.withheld.length });
 
     if (decision.kind === "deny") {
-      deps.audit.recordDecision({ ...base, decision: "deny", denyReason: decision.reason, released: [], placeholderCount: 0, inputFingerprint: null });
-      return { kind: "denied", reason: decision.reason, ...(decision.secretIn ? { secretIn: decision.secretIn } : {}), withheld: decision.withheld, decisionId };
+      audit.recordDecision({ ...base, decision: "deny", denyReason: decision.reason, released: [], placeholderCount: 0, inputFingerprint: null });
+      return { kind: "denied", reason: decision.reason, ...(decision.secretIn ? { secretIn: decision.secretIn } : {}), withheld: decision.withheld, decisionId, callId };
     }
 
     // decide() denies unknown purposes, so an allow always has a definition.
@@ -191,11 +206,11 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
     // prompt another way, e.g. echoed by a tool after its placeholder was restored. Values the person typed are exempt.
     if (classRank(decision.effectiveLimit) < classRank("D2") && findRestoredValue(sentDataText(request, decision), map, userText, authored)) {
       deps.logger.warn("boundary_alert", { purpose: request.purpose, callId, reason: "masked_value_present" });
-      deps.audit.recordDecision({ ...base, alert: true, decision: "deny", denyReason: "masked_value_present", released: [], placeholderCount: 0, inputFingerprint: null });
-      return { kind: "denied", reason: "masked_value_present", withheld: decision.withheld, decisionId };
+      audit.recordDecision({ ...base, alert: true, decision: "deny", denyReason: "masked_value_present", released: [], placeholderCount: 0, inputFingerprint: null });
+      return { kind: "denied", reason: "masked_value_present", withheld: decision.withheld, decisionId, callId };
     }
 
-    deps.audit.recordDecision({
+    audit.recordDecision({
       ...base,
       decision: "allow",
       denyReason: null,
@@ -245,15 +260,15 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
       keyVersion: deps.fingerprinter.keyVersion,
     };
     if (failure !== null || last === null) {
-      deps.audit.recordOutcome({ ...outcomeBase, status: "failed", blockReason: null, checks: { O1: "skipped", O2: "skipped", O3: "skipped", O4: "skipped" }, outputFingerprint: null });
-      return { kind: "failed", message: failure ?? "no answer", withheld: decision.withheld, decisionId };
+      audit.recordOutcome({ ...outcomeBase, status: "failed", blockReason: null, checks: { O1: "skipped", O2: "skipped", O3: "skipped", O4: "skipped" }, outputFingerprint: null });
+      return { kind: "failed", message: failure ?? "no answer", withheld: decision.withheld, decisionId, callId };
     }
     if (!last.ok) {
-      deps.audit.recordOutcome({ ...outcomeBase, status: "blocked", blockReason: last.reason, checks: last.checks, outputFingerprint: null });
-      return { kind: "blocked", reason: last.reason, withheld: decision.withheld, decisionId };
+      audit.recordOutcome({ ...outcomeBase, status: "blocked", blockReason: last.reason, checks: last.checks, outputFingerprint: null });
+      return { kind: "blocked", reason: last.reason, withheld: decision.withheld, decisionId, callId };
     }
-    deps.audit.recordOutcome({ ...outcomeBase, status: "answered", blockReason: null, checks: last.checks, outputFingerprint: deps.fingerprinter.of(context, last.text) });
-    return { kind: "answered", text: last.text, json: last.json, withheld: decision.withheld, decisionId };
+    audit.recordOutcome({ ...outcomeBase, status: "answered", blockReason: null, checks: last.checks, outputFingerprint: deps.fingerprinter.of(context, last.text) });
+    return { kind: "answered", text: last.text, json: last.json, withheld: decision.withheld, decisionId, callId };
   }
 
   return {
@@ -262,14 +277,15 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
       // Spec §6.8: the shadow provider may have a lower limit, so its placeholders live in a map of their own.
       const shadowMap = new PlaceholderMap();
       const channel = options?.channel ?? null;
+      const link = { conversationId: options?.conversationId ?? null, turnId: options?.turnId ?? null };
       return {
         async call(request) {
           const provider = providerFor(request.purpose);
-          const result = await runCall(context, channel, request, provider, map);
+          const result = await runCall(context, channel, link, request, provider, map);
           const shadow = deps.routing.shadow;
           if (shadow && shadow !== provider && deps.providers[shadow]) {
-            // Spec §6.8: the shadow copy is its own call with its own decision; it never affects the result.
-            void runCall(context, "shadow", request, shadow, shadowMap).catch((error: unknown) =>
+            // Spec §6.8: the shadow copy is its own call with its own decision; it never affects the result. It belongs to the same turn.
+            void runCall(context, "shadow", link, request, shadow, shadowMap).catch((error: unknown) =>
               deps.logger.warn("Shadow model call failed", { error: error instanceof Error ? error.message : String(error) }),
             );
           }
@@ -282,7 +298,7 @@ export function createModelGateway(deps: ModelGatewayDeps): ModelGateway {
           const provider = providerFor(purpose);
           const p = providerLimit(deps.providers[provider] ? registry[provider] : undefined, context.kind, deps.overrides.get(provider));
           if (p === "suspended" || p === "unknown") return null;
-          return lowerClass(lowerClass(p, choiceLimit(context, provider)), def.limit);
+          return lowestOfLayers(p, choiceLimit(context, provider), def.limit);
         },
       };
     },

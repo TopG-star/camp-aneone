@@ -1,17 +1,18 @@
 import { Router } from "express";
 import { ActionConfigWriteSchema, type ActionDefinitionView } from "@oneon/contracts";
-import type { ActionConfigRepository, Logger } from "@oneon/domain";
+import type { ActiveContext, ContextDb, Logger } from "@oneon/domain";
 import {
   approvalOptions,
   clampPolicy,
   validateConfigWrite,
-  type ActionRegistry,
   type AnyActionDefinition,
 } from "@oneon/application";
+import type { ActionsModule } from "../actions-wiring.js";
+import { ownerOf } from "../context-wiring.js";
 
 export interface ActionDefinitionsRouteDeps {
-  registry: ActionRegistry;
-  configRepo: ActionConfigRepository;
+  /** The module for the request's own handle; a tenant request never reaches the personal module. */
+  actionsFor(db: ContextDb): ActionsModule;
   logger: Logger;
 }
 
@@ -46,8 +47,10 @@ export function createActionDefinitionsRouter(deps: ActionDefinitionsRouteDeps):
     return base;
   };
 
-  const toView = (userId: string, def: AnyActionDefinition): ActionDefinitionView => {
-    const stored = deps.configRepo.get("personal", userId, def.type);
+  const toView = (actions: ActionsModule, ctx: ActiveContext, def: AnyActionDefinition): ActionDefinitionView => {
+    const { scope, ownerId } = ownerOf(ctx);
+    const userId = ctx.identityId;
+    const stored = actions.configRepo.get(scope, ownerId, def.type);
     const clamp = clampStored(def, stored?.configJson ?? null);
     if (clamp.clamped.length > 0 || clamp.rejected) {
       deps.logger.warn("Stored action config clamped on read", {
@@ -57,7 +60,7 @@ export function createActionDefinitionsRouter(deps: ActionDefinitionsRouteDeps):
         rejected: clamp.rejected,
       });
     }
-    const last = deps.configRepo.history("personal", userId, def.type, 1)[0];
+    const last = actions.configRepo.history(scope, ownerId, def.type, 1)[0];
     const labels = Object.fromEntries(Object.entries(def.thresholdMetrics).map(([k, m]) => [k, m.label]));
     return {
       type: def.type,
@@ -76,10 +79,18 @@ export function createActionDefinitionsRouter(deps: ActionDefinitionsRouteDeps):
     };
   };
 
+  router.use((req, res, next) => {
+    if (!req.activeContext || !req.contextDb) {
+      res.status(403).json({ error: "context_unavailable" });
+      return;
+    }
+    next();
+  });
+
   router.get("/", (req, res) => {
-    const userId = req.userId!;
     try {
-      res.json({ definitions: deps.registry.list().map((d) => toView(userId, d)) });
+      const actions = deps.actionsFor(req.contextDb!);
+      res.json({ definitions: actions.registry.list().map((d) => toView(actions, req.activeContext!, d)) });
     } catch (error) {
       deps.logger.error("Action definitions list failed", { error: error instanceof Error ? error.message : String(error) });
       res.status(500).json({ error: "Internal server error" });
@@ -87,12 +98,15 @@ export function createActionDefinitionsRouter(deps: ActionDefinitionsRouteDeps):
   });
 
   router.put("/:type/config", (req, res) => {
-    const userId = req.userId!;
-    if (!deps.registry.has(req.params.type)) {
+    const ctx = req.activeContext!;
+    const userId = ctx.identityId;
+    const actions = deps.actionsFor(req.contextDb!);
+    const { scope, ownerId } = ownerOf(ctx);
+    if (!actions.registry.has(req.params.type)) {
       res.status(404).json({ error: "Unknown action type" });
       return;
     }
-    const def = deps.registry.get(req.params.type);
+    const def = actions.registry.get(req.params.type);
     if (def.execute === null) {
       res.status(403).json({ error: "This action is not available yet." });
       return;
@@ -104,7 +118,7 @@ export function createActionDefinitionsRouter(deps: ActionDefinitionsRouteDeps):
     }
 
     try {
-      const next = mergeBase(def, deps.configRepo.get("personal", userId, def.type)?.configJson ?? null);
+      const next = mergeBase(def, actions.configRepo.get(scope, ownerId, def.type)?.configJson ?? null);
       if (body.data.enabled !== undefined) next.enabled = body.data.enabled;
       if (body.data.approvalMode !== undefined) {
         next.approval =
@@ -118,9 +132,9 @@ export function createActionDefinitionsRouter(deps: ActionDefinitionsRouteDeps):
         res.status(422).json({ errors: validated.errors });
         return;
       }
-      deps.configRepo.save({ scope: "personal", ownerId: userId, actionType: def.type, configJson: validated.configJson, changedBy: userId });
+      actions.configRepo.save({ scope, ownerId, actionType: def.type, configJson: validated.configJson, changedBy: userId });
       deps.logger.info("Action config changed", { userId, actionType: def.type, config: validated.configJson });
-      res.json(toView(userId, def));
+      res.json(toView(actions, ctx, def));
     } catch (error) {
       deps.logger.error("Action config write failed", { userId, actionType: def.type, error: error instanceof Error ? error.message : String(error) });
       res.status(500).json({ error: "Internal server error" });

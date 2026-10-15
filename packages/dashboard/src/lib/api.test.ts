@@ -57,3 +57,38 @@ describe("apiFetch error message", () => {
     await expect(apiFetch("/x")).rejects.toMatchObject({ message: "Nope" });
   });
 });
+
+describe("apiFetch context refusals", () => {
+  it.each([
+    ["launch_required", "Open Oneon from ImpressoRx again to continue."],
+    ["membership_suspended", "This pharmacy has switched Oneon off, or your account is inactive."],
+  ])("shows the %s message and does not send the person to sign-in", async (code, message) => {
+    const assign = stubBrowser(403, { error: code, message });
+    await expect(apiFetch("/x")).rejects.toMatchObject({ status: 403, message });
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it("shows the message of a context_unavailable validate refusal too, but still redirects other 403s", async () => {
+    stubBrowser(403, { error: "context_unavailable", message: "That context isn't available to you." });
+    await expect(apiFetch("/x", undefined, { redirectOnAuth: false })).rejects.toMatchObject({ message: "That context isn't available to you." });
+
+    const assign = stubBrowser(403, { error: "context_unavailable" });
+    await expect(apiFetch("/x")).rejects.toMatchObject({ message: "context_unavailable" });
+    expect(assign).toHaveBeenCalledOnce();
+  });
+});
+
+describe("apiFetch personal-only routes", () => {
+  it("tells a Google session in a pharmacy to switch to Personal and does not send them to sign-in", async () => {
+    const assign = stubBrowser(403, { error: "personal_context_required" });
+    await expect(apiFetch("/x")).rejects.toMatchObject({ status: 403, message: "Switch to Personal to use this." });
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it("shows a hand-off session the server's own message: Personal is not on offer there", async () => {
+    const message = "Personal isn't available when you open Oneon from a pharmacy. Sign in with Google to use it.";
+    const assign = stubBrowser(403, { error: "personal_context_required", message });
+    await expect(apiFetch("/x")).rejects.toMatchObject({ status: 403, message });
+    expect(assign).not.toHaveBeenCalled();
+  });
+});

@@ -11,3 +11,4 @@ export * from "./deadlines.contract.js";
 export * from "./notifications.contract.js";
 export * from "./profile.contract.js";
 export * from "./ai-data.contract.js";
+export * from "./connections.contract.js";

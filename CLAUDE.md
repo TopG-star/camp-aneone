@@ -61,6 +61,21 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## 5. Stop for the Owner
+
+**Anything touching identity, keys, deletion or tenant matching stops for the owner's decision.**
+
+This overrides any workflow, skill or plan that says to decide, record a ruling and keep going. It covers:
+- **Identity:** how a person, pharmacy or deployment is recognised, linked, merged or told apart.
+- **Keys:** creating, storing, rotating, retiring, trusting or revoking keys, secrets, grants or tokens.
+- **Deletion:** removing or overwriting data, files, backups, audit rows or history.
+- **Tenant matching:** deciding which tenant, registration or tenant file a request, message or record belongs to.
+
+When a decision falls in one of these areas:
+- Stop before implementing it. Present the options, what each costs if wrong, and your recommendation, then wait for the owner's choice.
+- A subagent reports NEEDS_CONTEXT with those options instead of choosing; the controller takes them to the owner.
+- Reversible choices outside these areas can still be decided and recorded.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

@@ -12,8 +12,11 @@ config({ path: resolve(import.meta.dirname!, "../../..", ".env") });
 import { loadEnv, retiredEnvWarnings } from "./config/env.js";
 import { createContainer } from "./container.js";
 import { registerRoutes } from "./routes/index.js";
-import { BackgroundLoop } from "./background-loop.js";
-import { runActionRecovery, runActionStartupTasks } from "./actions-wiring.js";
+import { BackgroundLoop, BackupScheduler, DailyJob, PeriodicJob } from "./background-loop.js";
+import { checkLinks, deploymentKeyRefreshJob, writeRollups } from "./tenant-jobs.js";
+import { overdueRecheckJob } from "./ai-limit-recheck.js";
+import { prepareStorage } from "./storage-startup.js";
+import { runActionRecovery, runActionStartupTasks, runTenantActionRecovery } from "./actions-wiring.js";
 import {
   ingestGmail,
   parseBankStatements,
@@ -24,6 +27,13 @@ import {
   GmailHttpClient,
   GmailPollingAdapter,
   GmailStatementDocumentProvider,
+  StructuredLogger,
+  backupAll,
+  backupHourly,
+  pruneHourlyBackups,
+  backupScratchDir,
+  newestBackupCopies,
+  restoreTestOwned,
 } from "@oneon/infrastructure";
 
 function emptyCycleSummary(): CycleSummary {
@@ -48,6 +58,13 @@ function emptyCycleSummary(): CycleSummary {
 
 // ── Bootstrap ────────────────────────────────────────────────
 const env = loadEnv();
+// Migrate every database, each backed up first when a migration is pending, before the container opens anything (spec 8.6, 8.7).
+try {
+  await prepareStorage(env, new StructuredLogger("storage", env.LOG_LEVEL));
+} catch (error) {
+  new StructuredLogger("storage", env.LOG_LEVEL).error("Startup stopped", { error: error instanceof Error ? error.message : String(error) });
+  process.exit(1);
+}
 const container = createContainer(env);
 const { logger } = container;
 for (const message of retiredEnvWarnings(process.env)) logger.warn(message);
@@ -105,6 +122,7 @@ registerRoutes(app, container);
 
 // ── Graceful Shutdown ────────────────────────────────────────
 let server: ReturnType<typeof app.listen>;
+const dailyJobs: Array<DailyJob | PeriodicJob> = [];
 
 function handleShutdown(signal: string): void {
   logger.info(`Received ${signal}, shutting down gracefully`);
@@ -113,9 +131,13 @@ function handleShutdown(signal: string): void {
       logger.info("Background loop stopped");
     });
   }
+  // Databases close only after the background work has stopped (a backup in flight holds open handles).
+  const backupStopped = Promise.all([backupScheduler?.stop(), ...dailyJobs.map((job) => job.stop())]);
   server?.close(() => {
-    container.shutdown();
-    process.exit(0);
+    void backupStopped.then(() => {
+      container.shutdown();
+      process.exit(0);
+    });
   });
   // Force exit after 5 seconds if server doesn't close
   setTimeout(() => process.exit(1), 5000).unref();
@@ -308,9 +330,71 @@ if (env.FEATURE_BACKGROUND_LOOP) {
   logger.info("Background loop disabled via FEATURE_BACKGROUND_LOOP=false");
 }
 
-void runActionStartupTasks(container, logger).catch((error: unknown) =>
+const tenantRecovery = { registrations: container.tenantRegistrations, gate: container.backupSources.gate, actionsFor: container.actionsFor };
+void runActionStartupTasks({ ...container, tenants: tenantRecovery }, logger).catch((error: unknown) =>
   logger.error("Action startup tasks failed", { error: error instanceof Error ? error.message : String(error) }),
 );
+
+// Daily, and once at startup: refresh every enrolled deployment's public keys (spec §5.4). Only when signing keys can be opened at all.
+if (env.ONEON_SIGNING_KEY_MASTER_KEY) {
+  const keyRefresh = deploymentKeyRefreshJob(container.enrolment, logger);
+  dailyJobs.push(keyRefresh);
+  keyRefresh.start();
+}
+
+// Nightly encrypted backup and monthly restore test (spec 8.7). Without the key there are none; prepareStorage has already warned.
+let backupScheduler: BackupScheduler | null = null;
+const backupKey = env.BACKUP_ENCRYPTION_KEY;
+if (backupKey) {
+  const { gate, control } = container.backupSources;
+  const scratchDir = backupScratchDir(env.CONTROL_DATABASE_PATH);
+  backupScheduler = new BackupScheduler({
+    outDir: env.BACKUP_DIR,
+    backupAll: () => backupAll({ gate, control, outDir: env.BACKUP_DIR, keyB64: backupKey, now: () => new Date(), scratchDir, logger }),
+    // Owner decisions D2 and D6: an hourly sealed copy of control.db and every pharmacy file, the last 48 kept.
+    backupHourly: () => backupHourly({ gate, control, outDir: env.BACKUP_DIR, keyB64: backupKey, now: () => new Date(), scratchDir, logger }),
+    pruneHourly: () => pruneHourlyBackups({ outDir: env.BACKUP_DIR }),
+    restoreTest: (file) => restoreTestOwned({ file, keyB64: backupKey, tmpDir: scratchDir, control }),
+    newestCopies: () => newestBackupCopies({ outDir: env.BACKUP_DIR, registrations: container.tenantRegistrations }),
+    logger,
+  });
+  backupScheduler.start();
+}
+
+// Daily rollups (the previous UTC day) and the nightly link check. Both read tenant files through the gate, one at a time.
+{
+  const { gate, control } = container.backupSources;
+  const jobDeps = { gate, control, registrations: container.tenantRegistrations };
+  const jobLogger = new StructuredLogger("tenant-jobs", env.LOG_LEVEL);
+  dailyJobs.push(
+    new DailyJob({
+      name: "Tenant rollups",
+      run: async (now) => {
+        const day = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        const result = await writeRollups({ ...jobDeps, logger: jobLogger }, day);
+        if (result.refused.length > 0) jobLogger.warn("Tenant rollups skipped refused tenants", { day, refused: result.refused.length });
+        // Rollups are idempotent, so a day with a failed tenant is tried again at the next look.
+        if (result.failed.length > 0) throw new Error(`rollups failed for ${result.failed.length} tenant(s)`);
+      },
+      logger: jobLogger,
+    }),
+    new DailyJob({ name: "Link check", run: async () => void (await checkLinks({ ...jobDeps, logger: jobLogger })), logger: jobLogger }),
+    // Spec 9.4: an alert for any AI limit lowering from the cached snapshot still not re-checked after 24 h.
+    overdueRecheckJob(container.tenantAiLimits, new StructuredLogger("tenant-settings", env.LOG_LEVEL)),
+  );
+  // Spec §7.4: recovery runs every cycle, so a pharmacy's actions are swept and expired on the loop's interval, not only at boot.
+  if (backgroundLoop) {
+    dailyJobs.push(
+      new PeriodicJob({
+        name: "Tenant action recovery",
+        run: () => runTenantActionRecovery(tenantRecovery, logger),
+        intervalMs: env.GMAIL_POLL_INTERVAL_MS,
+        logger,
+      }),
+    );
+  }
+  for (const job of dailyJobs) job.start();
+}
 
 server = app.listen(env.PORT, () => {
   logger.info(`Server ready on port ${env.PORT}`);

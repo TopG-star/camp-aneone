@@ -4,18 +4,19 @@ import { createDecisions } from "./decisions.js";
 import { createRequestAction } from "./request-action.js";
 import { createSweeper } from "./sweeper.js";
 import { createUndo } from "./undo.js";
-import type { ActionRequest, OrchestratorDeps, RequestOutcome } from "./types.js";
+import type { ActionRequest, OrchestratorDeps, RequestOutcome, RequestSession } from "./types.js";
 
 export * from "./types.js";
 export { effectivePolicyFor, describeInstance } from "./shared.js";
 
 export interface ActionOrchestrator {
   requestAction(req: ActionRequest): Promise<RequestOutcome>;
-  advance(ownerId: string, actionId: string): Promise<ActionInstance>;
-  approve(actor: ActorContext, actionId: string): Promise<ActionInstance>;
+  advance(ownerId: string, actionId: string, session?: RequestSession): Promise<ActionInstance>;
+  /** A tenant approval needs the approver's session: it is checked live, and the action may run now with it. */
+  approve(actor: ActorContext, actionId: string, session?: RequestSession): Promise<ActionInstance>;
   reject(actor: ActorContext, actionId: string, reason?: string): Promise<ActionInstance>;
   cancel(actor: ActorContext, actionId: string, reason?: string): Promise<ActionInstance>;
-  retry(actor: ActorContext, actionId: string): Promise<RequestOutcome>;
+  retry(actor: ActorContext, actionId: string, session?: RequestSession): Promise<RequestOutcome>;
   requestUndo(actor: ActorContext, actionId: string): Promise<ActionInstance>;
   sweep(ownerId: string): Promise<{ recovered: number }>;
   expireStale(ownerId: string): Promise<number>;

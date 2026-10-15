@@ -27,6 +27,7 @@ const serverFields = z
     userId: z.string().min(1).optional(),
     turnId: z.string().min(1).optional(),
     turnExcerpt: z.string().optional(),
+    modelCallId: z.string().min(1).optional(),
   })
   .passthrough();
 
@@ -57,6 +58,7 @@ function makeTool(deps: ChatActionToolDeps, type: string, description: string): 
   return {
     name: type,
     version: "2.0.0",
+    contexts: ["personal"],
     description,
     inputSchema: serverFields,
     output: {
@@ -64,7 +66,7 @@ function makeTool(deps: ChatActionToolDeps, type: string, description: string): 
       summaryClass: "D2",
     },
     async execute(validatedInput: unknown): Promise<ToolResult> {
-      const { userId, turnId, turnExcerpt, ...actionInput } = validatedInput as z.infer<typeof serverFields>;
+      const { userId, turnId, turnExcerpt, modelCallId, ...actionInput } = validatedInput as z.infer<typeof serverFields>;
       if (!userId || !turnId) return { data: null, summary: "This tool needs a signed-in chat session." };
 
       const outcome = await deps.requestAction({
@@ -82,6 +84,7 @@ function makeTool(deps: ChatActionToolDeps, type: string, description: string): 
           },
         ],
         resourceRef: null,
+        ...(modelCallId ? { modelCallId } : {}),
       });
 
       if (outcome.kind === "refused") {

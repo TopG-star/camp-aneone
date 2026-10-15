@@ -58,6 +58,7 @@ export function createSearchEmailsTool(
   return {
     name: "search_emails",
     version: "1.0.0",
+    contexts: ["personal"],
     description:
       "Search emails by query text, source, or category. Text search matches subject, body preview, and sender.",
     inputSchema: searchEmailsSchema,

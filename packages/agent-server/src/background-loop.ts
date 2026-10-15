@@ -1,3 +1,5 @@
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import type { CycleSummary } from "@oneon/application";
 import type { Logger } from "@oneon/domain";
 
@@ -352,5 +354,295 @@ export class BackgroundLoop {
     if (this.recentErrors.length > BackgroundLoop.MAX_RECENT_ERRORS) {
       this.recentErrors.length = BackgroundLoop.MAX_RECENT_ERRORS;
     }
+  }
+}
+
+// ── BackupScheduler ──────────────────────────────────────────
+
+export interface RestoreCheck {
+  ok: boolean;
+  integrity: string;
+  contextMeta: { kind: string; tenant_id: string | null } | null;
+  /** Why a decryptable, intact file still failed (it does not belong to the context its name says). */
+  reason?: string;
+}
+
+export interface BackupSchedulerDeps {
+  /** The folder backupAll writes `<yyyy-mm-dd>/` folders into, and backupHourly `hourly/<yyyy-mm-ddThhZ>/` folders. */
+  outDir: string;
+  backupAll: () => Promise<unknown>;
+  /** Owner decisions D2 and D6: when given, each tick also takes this hour's sealed copy if the hour has none, then runs pruneHourly. */
+  backupHourly?: () => Promise<unknown>;
+  /** The per-file 48-copy retention and the .partial sweep (pruneHourlyBackups), run after each successful hourly copy only. Returns what it removed. */
+  pruneHourly?: () => string[];
+  restoreTest: (file: string) => Promise<RestoreCheck>;
+  /** When given, each tick ends by checking every context's newest copy against BACKUP_STALE_AFTER_HOURS. */
+  newestCopies?: () => Array<{ context: "control" | "personal" | "tenant"; registrationId?: string; newestAt: Date | null; activeSince?: Date }>;
+  logger: Logger;
+  now?: () => Date;
+  /** How often to look at the clock. The jobs themselves run once per day and once per month. */
+  checkIntervalMs?: number;
+}
+
+/**
+ * A context whose newest restorable copy is older than this raises `alert: "backup_stale"` on every hourly tick. A pharmacy with no copy
+ * at all is measured from when it was enrolled or last became active, so a new one, or a resumed one with no copy yet, is not alerted
+ * before its first backup. A suspended pharmacy keeps being backed up (owner decision D5), so a resumed one is measured from its copies.
+ */
+export const BACKUP_STALE_AFTER_HOURS = 26;
+
+const DAY_FOLDER = /^\d{4}-\d{2}-\d{2}$/;
+const NON_TENANT_BACKUPS = new Set(["control.db.enc", "personal.db.enc"]);
+
+/**
+ * Nightly encrypted backup (once per calendar day: today's folder existing means the day is done), an hourly sealed copy (once per
+ * hour, the same way), and a monthly restore test (one tenant from the latest daily backup, rotating). Same shape as the processing
+ * loop: a timer, no overlap, stop() awaits the tick in flight, and nothing here ever throws. Only the hourly retention deletes
+ * anything (owner decision D6, pruneHourlyBackups): daily folders and pre-migration copies are never deleted here.
+ */
+export class BackupScheduler {
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private inFlight: Promise<void> | null = null;
+  private lastRestoreMonth: string | null = null;
+  private readonly now: () => Date;
+
+  constructor(private readonly deps: BackupSchedulerDeps) {
+    this.now = deps.now ?? (() => new Date());
+  }
+
+  start(): void {
+    if (this.timer !== null) return;
+    void this.tick();
+    this.timer = setInterval(() => void this.tick(), this.deps.checkIntervalMs ?? 60 * 60 * 1000);
+    this.timer.unref();
+  }
+
+  async stop(): Promise<void> {
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    if (this.inFlight !== null) await this.inFlight;
+  }
+
+  /** One look at the clock: back up if today has no folder yet, test a restore if this month has had none. */
+  tick(): Promise<void> {
+    // Overlap guard, as in BackgroundLoop.
+    if (this.inFlight !== null) return this.inFlight;
+    this.inFlight = this.run()
+      .then(() => this.alertOnStaleBackups())
+      .finally(() => {
+        this.inFlight = null;
+      });
+    return this.inFlight;
+  }
+
+  /** Logs `backup_stale` at error for every context whose newest copy is older than the threshold or missing. Never throws. */
+  private alertOnStaleBackups(): void {
+    const { newestCopies, logger } = this.deps;
+    if (!newestCopies) return;
+    try {
+      const nowMs = this.now().getTime();
+      for (const copy of newestCopies()) {
+        const ageHours = copy.newestAt === null ? null : (nowMs - copy.newestAt.getTime()) / (60 * 60 * 1000);
+        const measuredFrom = copy.newestAt ?? copy.activeSince;
+        if (measuredFrom !== undefined && (nowMs - measuredFrom.getTime()) / (60 * 60 * 1000) <= BACKUP_STALE_AFTER_HOURS) continue;
+        logger.error("Backup is stale", {
+          alert: "backup_stale",
+          context: copy.context,
+          ...(copy.registrationId !== undefined ? { registrationId: copy.registrationId } : {}),
+          ageHours: ageHours === null ? "none" : Math.round(ageHours * 10) / 10,
+        });
+      }
+    } catch (error) {
+      logger.error("Backup age check failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  private async run(): Promise<void> {
+    const { outDir, logger } = this.deps;
+    const today = this.now().toISOString().slice(0, 10);
+    if (!existsSync(join(outDir, today))) {
+      try {
+        const result = await this.deps.backupAll();
+        const skipped = (result as { skipped?: unknown[] } | undefined)?.skipped ?? [];
+        if (skipped.length > 0) logger.warn("Nightly backup completed with tenants skipped", { day: today, skipped: skipped.length });
+        else logger.info("Nightly backup done", { day: today });
+      } catch (error) {
+        logger.error("Nightly backup failed", { day: today, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if (this.deps.backupHourly) await this.runHourly(this.deps.backupHourly);
+
+    const month = today.slice(0, 7);
+    if (this.lastRestoreMonth === month) return;
+    try {
+      const file = this.restoreCandidate();
+      if (file === null) {
+        logger.debug("Monthly restore test skipped: no tenant backup yet");
+        return;
+      }
+      this.lastRestoreMonth = month;
+      const result = await this.deps.restoreTest(file);
+      if (result.ok) {
+        logger.info("Monthly restore test passed", { file, tenantId: result.contextMeta?.tenant_id ?? null });
+      } else {
+        logger.error("Monthly restore test failed", { file, integrity: result.integrity, contextMeta: result.contextMeta, reason: result.reason });
+      }
+    } catch (error) {
+      logger.error("Monthly restore test crashed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  /** This hour's sealed copy when the hour has no folder yet; after a successful one, the hourly retention. */
+  private async runHourly(backupHourly: () => Promise<unknown>): Promise<void> {
+    const { outDir, logger } = this.deps;
+    const hour = `${this.now().toISOString().slice(0, 13)}Z`;
+    if (existsSync(join(outDir, "hourly", hour))) return;
+    try {
+      const result = await backupHourly();
+      const skipped = (result as { skipped?: unknown[] } | undefined)?.skipped ?? [];
+      if (skipped.length > 0) logger.warn("Hourly backup completed with tenants skipped", { hour, skipped: skipped.length });
+      else logger.debug("Hourly backup done", { hour });
+    } catch (error) {
+      logger.error("Hourly backup failed", { hour, error: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+    try {
+      const removed = this.deps.pruneHourly?.() ?? [];
+      if (removed.length > 0) logger.info("Old hourly backups pruned", { removed: removed.length });
+    } catch (error) {
+      logger.error("Hourly backup pruning failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  /** One tenant's file from the latest day folder that has any; the month number rotates through them. */
+  private restoreCandidate(): string | null {
+    const { outDir } = this.deps;
+    if (!existsSync(outDir)) return null;
+    const days = readdirSync(outDir)
+      .filter((name) => DAY_FOLDER.test(name))
+      .sort()
+      .reverse();
+    const date = this.now();
+    for (const day of days) {
+      const tenants = readdirSync(join(outDir, day))
+        .filter((name) => name.endsWith(".db.enc") && !NON_TENANT_BACKUPS.has(name))
+        .sort();
+      if (tenants.length === 0) continue;
+      const monthNumber = date.getUTCFullYear() * 12 + date.getUTCMonth();
+      return join(outDir, day, tenants[monthNumber % tenants.length]!);
+    }
+    return null;
+  }
+}
+
+// ── DailyJob ─────────────────────────────────────────────────
+
+export interface DailyJobDeps {
+  name: string;
+  /** Does the day's work. A throw is logged and the job tries again at the next look at the clock. */
+  run: (now: Date) => Promise<void>;
+  logger: Logger;
+  now?: () => Date;
+  /** How often to look at the clock. The job itself runs once per UTC day. */
+  checkIntervalMs?: number;
+}
+
+/**
+ * Runs a job once per UTC day (the first look at the clock on a new day; it also runs once at start). Same shape as the other loops:
+ * an unref'd timer, no overlap, stop() awaits the run in flight, and nothing here throws. A run that failed is retried at the next look.
+ * Jobs must be safe to run twice in a day (a restart runs them again).
+ */
+export class DailyJob {
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private inFlight: Promise<void> | null = null;
+  private lastDay: string | null = null;
+  private readonly now: () => Date;
+
+  constructor(private readonly deps: DailyJobDeps) {
+    this.now = deps.now ?? (() => new Date());
+  }
+
+  start(): void {
+    if (this.timer !== null) return;
+    void this.tick();
+    this.timer = setInterval(() => void this.tick(), this.deps.checkIntervalMs ?? 60 * 60 * 1000);
+    this.timer.unref();
+  }
+
+  async stop(): Promise<void> {
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    if (this.inFlight !== null) await this.inFlight;
+  }
+
+  tick(): Promise<void> {
+    if (this.inFlight !== null) return this.inFlight;
+    this.inFlight = this.run().finally(() => {
+      this.inFlight = null;
+    });
+    return this.inFlight;
+  }
+
+  private async run(): Promise<void> {
+    const now = this.now();
+    const today = now.toISOString().slice(0, 10);
+    if (this.lastDay === today) return;
+    try {
+      await this.deps.run(now);
+      this.lastDay = today;
+    } catch (error) {
+      this.deps.logger.error(`${this.deps.name} failed`, { day: today, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+}
+
+// ── PeriodicJob ──────────────────────────────────────────────
+
+export interface PeriodicJobDeps {
+  name: string;
+  run: () => Promise<void>;
+  intervalMs: number;
+  logger: Logger;
+}
+
+/**
+ * Runs a job on a fixed interval (the first run is one interval after start). Same shape as the other loops: an unref'd timer, no
+ * overlap (a tick is skipped while the last run is in flight), stop() awaits the run in flight, and nothing here throws.
+ */
+export class PeriodicJob {
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private inFlight: Promise<void> | null = null;
+
+  constructor(private readonly deps: PeriodicJobDeps) {}
+
+  start(): void {
+    if (this.timer !== null) return;
+    this.timer = setInterval(() => void this.tick(), this.deps.intervalMs);
+    this.timer.unref();
+  }
+
+  async stop(): Promise<void> {
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    if (this.inFlight !== null) await this.inFlight;
+  }
+
+  tick(): Promise<void> {
+    if (this.inFlight !== null) return this.inFlight;
+    this.inFlight = this.deps
+      .run()
+      .catch((error: unknown) => {
+        this.deps.logger.error(`${this.deps.name} failed`, { error: error instanceof Error ? error.message : String(error) });
+      })
+      .finally(() => {
+        this.inFlight = null;
+      });
+    return this.inFlight;
   }
 }
