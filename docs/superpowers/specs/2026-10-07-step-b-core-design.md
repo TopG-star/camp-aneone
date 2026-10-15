@@ -248,12 +248,13 @@ Oneon runs as one long-running Express process with better-sqlite3 on a Hetzner 
 Every table a tenant file writes carries the tenant on each row (null in the personal database). Its repository stamps it on write and compares it with the handle's tenant on every read. A mismatch throws `tenant_mismatch` and raises an operator alert.
 
 - **Tenant-data tables, with `tenant_id`:** `conversations`, `action_instances`, `action_events`, `model_call_decisions`, `model_call_outcomes`.
-- **Tenant-data tables keyed by `scope` and `owner_id` instead of `tenant_id`:** `action_definition_configs`, `action_definition_config_history`. A tenant file holds only `scope = 'tenant'` rows whose `owner_id` is its own tenant id, and the repository refuses any other (B-14-1).
+- **Exception accepted by the owner on 2026-10-15: two tenant-data tables keyed by `owner_id` under `scope = 'tenant'` instead of `tenant_id`:** `action_definition_configs`, `action_definition_config_history`. Their pharmacy column is `owner_id`: a tenant file holds only `scope = 'tenant'` rows whose `owner_id` is its own tenant id, and the repository refuses any other (B-14-1). They get no `tenant_id` column.
 - **Exempt, bookkeeping:** `schema_migrations` (the file's applied migrations), `context_meta` (the file's own kind and tenant, which the gate checks when it opens the file), `users` (identity anchor rows that let the file's foreign keys hold: an identity id and a placeholder address, no tenant content).
 - **Exempt, personal-only** (a tenant file never writes them; their repositories are built on the personal file only): `inbound_items`, `classifications`, `classification_feedback`, `deadlines`, `notifications`, `preferences`, `push_subscriptions`, `oauth_tokens`, `user_profiles`, `bank_statements`, `bank_statement_metadata`, `bank_statement_transactions`, `bank_statement_parse_runs`, `personal_memory_notes`, `personal_memory_pins`, `action_log_legacy`, `action_legacy_imports`, `ai_data_choices`.
 - **Enforcement:** an architecture test (`packages/agent-server/src/architecture.test.ts`) reads the tenant-file migrations and holds these lists. It fails when a migration creates a table that is on neither list, when a tenant-data table lacks its tenant column, or when the repository that writes it does not assert it. A new table is added to one list in the change that creates it.
 
 > Amended 2026-10-14 (owner): "every content table" became "every table a tenant file writes", with the two lists above and the architecture test as the enforcement (spec amendment A1, ADR-013).
+> Amended 2026-10-15 (owner): the two action config tables keep `owner_id` under `scope = 'tenant'` as their pharmacy column, an exception to `tenant_id` the owner accepted (ADR-013, A1).
 
 ### 8.5 Ids and cross-file links
 
