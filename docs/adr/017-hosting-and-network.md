@@ -16,7 +16,7 @@ ADR-008 chose one VM with Docker Compose and a Cloudflare Tunnel for a single us
 - ports 3000 and 4000 published on the host, which bypasses UFW;
 - a compose file that starts a temporary quick tunnel while the deploy guide describes a named one.
 
-The Hetzner account is now down, and no off-site backups existed.
+The Hetzner account has since been deleted, with no recovery possible, and no off-site backups existed. Copies of the personal database dated 2026-10-03 remain on the owner's computer; whether one of them came from the live server is not yet confirmed.
 
 Constraints set by the owner:
 - **Budget:** under $50 a month.
@@ -38,7 +38,12 @@ Constraints set by the owner:
    - Oneon's B2 key can add files but cannot delete them or override the lock. A separate override key is kept offline and used only when deletion is legally required.
    - B2 keeps hourly copies for 7 days and one copy a day up to 30 days.
    - The 30 days is stated in the retention policy and privacy notice.
-7. **Alerts:** one service for uptime checks and backup heartbeats (Better Stack, or Healthchecks.io with UptimeRobot), chosen after checking current free tiers. `/health` returns no data, so the alert service learns nothing about Oneon beyond whether it answers.
+7. **Alerts: Healthchecks.io** (owner's choice). It works by expecting pings and alerting when they stop:
+   - each successful backup pings a backup check;
+   - a liveness job inside each instance pings a liveness check every few minutes, which covers "is Oneon running";
+   - Render's own health check restarts an instance that stops answering.
+
+   Healthchecks.io is a supplier, but it sees only the pings, which carry no data. `/health` also returns no data.
 8. **Staging:** one permanent staging instance of the shared service at a stable HTTPS address, so enrolment and token exchange with ImpressoRx can be tested. The personal instance has no staging.
 9. **Storage model for the later Postgres move:** one Neon project with one schema per business, plus a control schema.
 
