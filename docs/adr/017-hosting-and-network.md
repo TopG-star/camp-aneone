@@ -46,6 +46,21 @@ Constraints set by the owner:
    Healthchecks.io is a supplier, but it sees only the pings, which carry no data. `/health` also returns no data.
 8. **Staging:** one permanent staging instance of the shared service at a stable HTTPS address, so enrolment and token exchange with ImpressoRx can be tested. The personal instance has no staging.
 9. **Storage model for the later Postgres move:** one Neon project with one schema per business, plus a control schema.
+10. **Addresses** (owner, 2026-10-17). The domain is `oneon.app`, registered with Cloudflare Registrar in Oneon's Cloudflare account.
+
+    | Instance | Address |
+    |---|---|
+    | Personal | `me.oneon.app` |
+    | Shared service | `api.oneon.app` |
+    | Shared-service staging | `staging.oneon.app` |
+
+    - ImpressoRx pins `api.oneon.app` at enrolment, so it does not change. Changing it means every business enrols again.
+    - Each address is one level below `oneon.app`, so Cloudflare's free edge certificate covers it.
+    - `.app` is on the browsers' HSTS preload list, so every address needs a valid certificate from its first request, staging included.
+    - The bare `oneon.app` serves nothing for now.
+    - Zone settings applied 2026-10-17: SSL/TLS Full (strict), Always Use HTTPS on, minimum TLS 1.2.
+    - The DNS records are added once the Render services exist. Each is a CNAME to its Render service, first in DNS-only mode until Render issues its certificate, then proxied. Whether Render can renew a certificate while the record is proxied is checked against Render's documentation at that point.
+    - Email from the domain: ADR-018.
 
 ## Open item (owner decision: deletion)
 

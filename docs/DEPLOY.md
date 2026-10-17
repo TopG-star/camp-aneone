@@ -56,8 +56,8 @@ docker compose version
 2. Click **Create a tunnel** → Name it `camp-aneone-staging`
 3. Copy the **tunnel token** (starts with `eyJ…`)
 4. Add a **Public Hostname**:
-   - Subdomain: `app` (or your choice)
-   - Domain: `aneone.com` (or your domain)
+   - Subdomain: `me`
+   - Domain: `oneon.app`
    - Service: `http://dashboard:3000`
 5. DNS record is created automatically by Cloudflare
 
@@ -78,9 +78,9 @@ Fill in all required values in `.env`:
 ```
 NODE_ENV=production
 PORT=4000
-PUBLIC_URL=https://app.aneone.com
+PUBLIC_URL=https://me.oneon.app
 NEXTAUTH_SECRET=<openssl rand -base64 32>
-NEXTAUTH_URL=https://app.aneone.com
+NEXTAUTH_URL=https://me.oneon.app
 ALLOWED_EMAILS=your@email.com
 API_TOKEN=<openssl rand -base64 32>
 OAUTH_TOKEN_ENCRYPTION_KEY=<openssl rand -base64 32>
@@ -92,7 +92,7 @@ DATABASE_PATH=./data/oneon.db
 FEATURE_BACKGROUND_LOOP=true
 ```
 
-> **Important**: Update your Google OAuth authorized redirect URI to `https://app.aneone.com/api/auth/callback/google`.
+> **Important**: Update your Google OAuth authorized redirect URI to `https://me.oneon.app/api/auth/callback/google`.
 
 ## 4. Deploy
 
@@ -118,7 +118,7 @@ docker compose ps
 curl -s http://localhost:4000/health | python3 -m json.tool
 
 # Check Cloudflare Tunnel
-# Visit https://app.aneone.com in your browser
+# Visit https://me.oneon.app in your browser
 ```
 
 ## Subsequent Deploys
